@@ -1,0 +1,19 @@
+[package]
+name        = "dex-sdk"
+version     = "0.1.0"
+edition     = "2024"
+resolver    = "3"
+build       = "build.rs"
+
+[dependencies]
+alloy               = { version = "1.0.41", features = ["contract", "full", "node-bindings", "transports"] }
+alloy-sol-types     = { version = "1.4.1", features = ["more-tuple-impls"] }
+fastnum             = { version = "0.7.2" }
+futures             = { version = "0.3.31" }
+hashbrown           = { version = "0.16.0" }
+itertools           = { version = "0.14.0" }
+thiserror           = { version = "2.0.17" }
+
+[dev-dependencies]
+tokio       = { version = "1.48.0" }
+tokio-test  = { version = "0.4" }

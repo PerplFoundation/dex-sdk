@@ -1,0 +1,353 @@
+//! Exchange state tracking.
+//!
+//! Initial state snapshot has to be taken from the recent on-chain state by the [`SnapshotBuilder`],
+//! then the snapshot can be kept up to date by the event data from [`crate::stream::raw`]
+//! in a consistent manner.
+//!
+//! [`Exchange`] is at the root of indexed state and provides access to all
+//! nested state entities, as well as basic market data derived from observed trading activity.
+//!
+//! Some of the state and market data can be retrieved/computed only from the event stream
+//! and is not available from the plain snapshot, the documentation for corresponding
+//! access methods explicitly covers such cases.
+
+mod account;
+mod exchange;
+mod l2_book;
+mod order;
+mod perpetual;
+mod position;
+
+pub use account::*;
+use alloy::{
+    eips::BlockId,
+    primitives::{Address, U256},
+    providers::Provider,
+};
+pub use exchange::*;
+use hashbrown::HashMap;
+pub use l2_book::*;
+pub use order::*;
+pub use perpetual::*;
+pub use position::*;
+
+use crate::{
+    Chain,
+    abi::dex::{self, Exchange::getExchangeInfoReturn},
+    error::DexError,
+    num, types,
+};
+
+/// Default number of orders to fetch via single call.
+/// Assuming Monad's 8100 gas per storage slot access and 30M gas limit of `eth_call`,
+/// plus some buffer.
+const DEFAULT_ORDERS_PER_BATCH: usize = 3000;
+
+/// Builds a consistent snapshot of the exchange state
+/// that can be then kept up-to-date by the data from [`crate::stream::raw`].
+pub struct SnapshotBuilder<P> {
+    chain: Chain,
+    instance: dex::Exchange::ExchangeInstance<P>,
+    provider: P,
+    block_id: BlockId,
+    perpetuals: Vec<types::PerpetualId>,
+    accounts: Vec<Address>,
+    orders_per_batch: usize,
+}
+
+impl<P: Provider + Clone> SnapshotBuilder<P> {
+    /// Creates a new [`SnapshotBuilder`] which fetches the full exchange state
+    /// at the latest block.
+    pub fn new(chain: &Chain, provider: P) -> Self {
+        Self {
+            chain: chain.clone(),
+            instance: dex::Exchange::new(chain.exchange(), provider.clone()),
+            provider,
+            block_id: BlockId::Number(alloy::eips::BlockNumberOrTag::Latest),
+            perpetuals: chain.perpetuals.clone(),
+            accounts: vec![],
+            orders_per_batch: DEFAULT_ORDERS_PER_BATCH,
+        }
+    }
+
+    /// Sets the block number or tag to fetch the state at (default: latest).
+    /// If tag is provided, it gets converted to a specific block number first
+    /// to ensure state consistency.
+    pub fn at_block(mut self, block: BlockId) -> Self {
+        self.block_id = block;
+        self
+    }
+
+    /// Sets the list of perpetual contract IDs to fetch the state for.
+    pub fn with_perpetuals(mut self, perpetuals: Vec<types::PerpetualId>) -> Self {
+        self.perpetuals = perpetuals;
+        self
+    }
+
+    /// Sets the list of addresses to fetch the state of exchange accounts for.
+    pub fn with_accounts(mut self, accounts: Vec<Address>) -> Self {
+        self.accounts = accounts;
+        self
+    }
+
+    /// Sets the number of orders to fetch in a single batch via multicall (default: 3000),
+    /// according to node/provider gas and response size limits.
+    pub fn with_orders_per_batch(mut self, orders_per_batch: usize) -> Self {
+        self.orders_per_batch = orders_per_batch;
+        self
+    }
+
+    /// Build the snapshot
+    pub async fn build(mut self) -> Result<Exchange, DexError> {
+        // Normalize block ID to fetch consistent state
+        let instant = self.normalize_block().await?;
+
+        // Global exchange parameters and state
+        let (exchange_info, funding_interval, min_post, min_settle, recycle_fee, is_halted) =
+            self.exchange_info().await?;
+        let collateral_converter = num::Converter::new(exchange_info.collateralDecimals.to());
+
+        // Perpetual contracts parameters, state and active orders
+        let perpetuals = self.perpetuals(instant).await?;
+
+        // Accounts parameters, state and open positions
+        let accounts = self
+            .accounts(instant, &perpetuals, collateral_converter)
+            .await?;
+
+        Ok(Exchange::new(
+            self.chain.clone(),
+            instant,
+            collateral_converter,
+            funding_interval.to(),
+            collateral_converter.from_unsigned(min_post),
+            collateral_converter.from_unsigned(min_settle),
+            collateral_converter.from_unsigned(recycle_fee),
+            perpetuals,
+            accounts,
+            is_halted,
+        ))
+    }
+
+    async fn normalize_block(&mut self) -> Result<types::StateInstant, DexError> {
+        // Transform provided block ID to fixed number block ID and use if for all calls
+        // to retrieve consistent state
+        let block_header = self
+            .provider
+            .get_block(self.block_id)
+            .await
+            .map_err(DexError::from)?
+            .map(|b| b.into_header())
+            .ok_or(DexError::InvalidRequest("block not found".to_string()))?;
+        self.block_id = BlockId::number(block_header.number);
+        Ok(types::StateInstant::new(
+            block_header.number,
+            block_header.timestamp,
+        ))
+    }
+
+    async fn exchange_info(
+        &self,
+    ) -> Result<(getExchangeInfoReturn, U256, U256, U256, U256, bool), DexError> {
+        let (
+            exchange_info_call,
+            funding_interval_call,
+            min_post_call,
+            min_settle_call,
+            recycle_fee_call,
+            is_halted_call,
+        ) = (
+            self.instance.getExchangeInfo().block(self.block_id),
+            self.instance.getFundingInterval().block(self.block_id),
+            self.instance.getMinimumPostCNS().block(self.block_id),
+            self.instance.getMinimumSettleCNS().block(self.block_id),
+            self.instance.getRecycleFeeCNS().block(self.block_id),
+            self.instance.isHalted().block(self.block_id),
+        );
+        futures::try_join!(
+            exchange_info_call.call().into_future(),
+            funding_interval_call.call().into_future(),
+            min_post_call.call().into_future(),
+            min_settle_call.call().into_future(),
+            recycle_fee_call.call().into_future(),
+            is_halted_call.call().into_future(),
+        )
+        .map_err(DexError::from)
+    }
+
+    async fn perpetuals(
+        &self,
+        instant: types::StateInstant,
+    ) -> Result<HashMap<types::PerpetualId, perpetual::Perpetual>, DexError> {
+        let perpetual_futs = self.perpetuals.iter().map(|perp_id| async {
+            let pid = U256::from(*perp_id);
+            let (perp_info_call, maker_fee_call, taker_fee_call, margins_call) = (
+                self.instance.getPerpetualInfo(pid).block(self.block_id),
+                self.instance.getMakerFee(pid).block(self.block_id),
+                self.instance.getTakerFee(pid).block(self.block_id),
+                self.instance
+                    .getMarginFractions(pid, U256::ZERO)
+                    .block(self.block_id),
+            );
+
+            futures::try_join!(
+                perp_info_call.call().into_future(),
+                maker_fee_call.call().into_future(),
+                taker_fee_call.call().into_future(),
+                margins_call.call().into_future(),
+            )
+            .map(|(perp_info, maker_fee, taker_fee, margins)| {
+                (*perp_id, perp_info, maker_fee, taker_fee, margins)
+            })
+        });
+
+        let mut perpetuals = futures::future::try_join_all(perpetual_futs)
+            .await?
+            .into_iter()
+            .map(|(perp_id, perp_info, maker_fee, taker_fee, margins)| {
+                let perp = Perpetual::new(
+                    instant,
+                    perp_id,
+                    &perp_info,
+                    maker_fee,
+                    taker_fee,
+                    margins.perpInitMarginFracHdths,
+                    margins.perpMaintMarginFracHdths,
+                );
+                (perp_id, perp)
+            })
+            .collect::<HashMap<_, _>>();
+
+        // Fetching orders one perp at a time to bound parallel requests
+        for (_, perp) in &mut perpetuals {
+            self.perpetual_orders(perp).await?;
+        }
+
+        Ok(perpetuals)
+    }
+
+    async fn perpetual_orders(&self, perp: &mut perpetual::Perpetual) -> Result<(), DexError> {
+        let pid = U256::from(perp.id());
+        let order_id_index = self
+            .instance
+            .getOrderIdIndex(pid)
+            .block(self.block_id)
+            .call()
+            .await?;
+
+        let order_ids = order_id_index
+            .leaves
+            .into_iter()
+            .enumerate()
+            .map(|(leaf, bitmap)| {
+                // Skip the first bit of the first leaf slot (_NULL_ORDER_ID)
+                ((if leaf == 0 { 1 } else { 0 })..U256::BITS).filter_map(move |bit| {
+                    bitmap
+                        .bit(bit)
+                        .then(|| (leaf * U256::BITS + bit) as types::OrderId)
+                })
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+
+        let order_batch_futs = order_ids.chunks(self.orders_per_batch).map(|chunk| {
+            let multicall = self
+                .provider
+                .multicall()
+                .block(self.block_id)
+                .dynamic()
+                .extend(
+                    chunk
+                        .into_iter()
+                        .map(|oid| self.instance.getOrder(pid, U256::from(*oid))),
+                );
+            async move { multicall.aggregate().await }
+        });
+
+        let (instant, base_price, price_converter, size_converter, leverage_converter) = (
+            perp.instant(),
+            perp.base_price(),
+            perp.price_converter(),
+            perp.size_converter(),
+            perp.leverage_converter(),
+        );
+        futures::future::try_join_all(order_batch_futs)
+            .await
+            .map_err(DexError::from)?
+            .into_iter()
+            .flatten()
+            .for_each(|ord| {
+                perp.add_order(Order::new(
+                    instant,
+                    ord,
+                    base_price,
+                    price_converter,
+                    size_converter,
+                    leverage_converter,
+                ));
+            });
+
+        Ok(())
+    }
+
+    async fn accounts(
+        &self,
+        instant: types::StateInstant,
+        perpetuals: &HashMap<types::PerpetualId, perpetual::Perpetual>,
+        collateral_converter: num::Converter,
+    ) -> Result<HashMap<types::AccountId, Account>, DexError> {
+        let account_futs = self.accounts.iter().map(|acc_addr| async {
+            let acc_info = self
+                .instance
+                .getAccountByAddr(*acc_addr)
+                .block(self.block_id)
+                .call()
+                .await?;
+            let perps_with_positions = perpetuals_with_position(&acc_info.positions);
+            let position_futs = perps_with_positions.iter().map(|perp_id| async {
+                self.instance
+                    .getPosition(U256::from(*perp_id), acc_info.accountId)
+                    .block(self.block_id)
+                    .call()
+                    .await
+                    .map(|pos_info| (*perp_id, pos_info))
+            });
+            let positions = futures::future::try_join_all(position_futs).await?;
+            Ok::<_, DexError>((acc_info.accountId, acc_info, positions))
+        });
+
+        Ok(futures::future::try_join_all(account_futs)
+            .await?
+            .into_iter()
+            .map(|(acc_id, acc_info, positions)| {
+                (
+                    acc_id.to(),
+                    Account::new(
+                        instant,
+                        acc_id.to(),
+                        &acc_info,
+                        positions
+                            .into_iter()
+                            .filter_map(|(perp_id, pos_info)| {
+                                perpetuals.get(&perp_id).map(|perp| {
+                                    (
+                                        perp_id,
+                                        Position::new(
+                                            instant,
+                                            perp_id,
+                                            &pos_info,
+                                            collateral_converter,
+                                            perp.price_converter(),
+                                            perp.size_converter(),
+                                        ),
+                                    )
+                                })
+                            })
+                            .collect(),
+                        collateral_converter,
+                    ),
+                )
+            })
+            .collect())
+    }
+}

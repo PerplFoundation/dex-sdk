@@ -1,0 +1,210 @@
+use alloy::primitives::U256;
+use fastnum::{UD64, UD128};
+
+use crate::{abi::dex::Exchange::OrderDesc, num};
+
+/// ID of perpetual contract.
+pub type PerpetualId = u32;
+
+/// ID of exchange account.
+pub type AccountId = u32;
+
+/// Exchange internal ID of the order.
+/// Unique only within particular perpetual contract at the
+/// exact point in time.
+pub type OrderId = u16;
+
+/// Order request ID.
+pub type RequestId = u64;
+
+/// Type of the placed order.
+///
+/// Bid Order Types:
+/// * [`OrderType::OpenLong`] is used to open a long position (or to decrease, close, or invert a long
+///     position). The only restrictions applied are the user account must have sufficient
+///     collateral available.
+/// * [`OrderType::CloseShort`] is a reduce only order type and can only be used to close all or part of
+///     an existing short position on the perpetual contract.
+///
+/// Ask Order Types:
+/// * [`OrderType::OpenShort`] is used to open a short position (or to decrease, close, or invert a
+///     short position). The only restrictions applied are the user account must have
+///     sufficient collateral available.
+/// * [`OrderType::CloseLong`] is a reduce only order type and can only be used to close all or part of
+///     an existing long position on the perpetual contract.
+#[derive(Clone, Copy, Debug)]
+pub enum OrderType {
+    OpenLong,
+    OpenShort,
+    CloseLong,
+    CloseShort,
+}
+
+/// Side of the order.
+#[derive(Clone, Copy, Debug)]
+pub enum OrderSide {
+    Ask,
+    Bid,
+}
+
+/// Instant in chain history the state/event is up to date with.
+#[derive(Clone, Copy, Debug)]
+pub struct StateInstant {
+    block_number: u64,
+    block_timestamp: u64,
+}
+
+/// Type of the order request.
+///
+/// * [`RequestType::OpenLong`] is used to open a long position (or to decrease, close, or invert a long
+///   position). The only restrictions applied are the user account must have sufficient
+///   collateral available.
+/// * [`RequestType::OpenShort`] is used to open a short position (or to decrease, close, or invert a
+///   short position). The only restrictions applied are the user account must have
+///   sufficient collateral available.
+/// * [`RequestType::CloseLong`] is a reduce only order type and can only be used to close all or part of
+///   an existing long position on the perpetual contract.
+/// * [`RequestType::CloseShort`] is a reduce only order type and can only be used to close all or part of
+///   an existing short position on the perpetual contract.
+/// * [`RequestType::Cancel`] is used to cancel an existing order on the perpetual contract's order book.
+/// * [`RequestType::IncreasePositionCollateral`] is an operation to increase the collateral of an existing
+///   position in the event that it has insufficient margin or the account holder wishes to
+///   reduce leverage.
+/// * [`RequestType::Change`] is an operation to change parameters of an existing order, gas-efficiently.
+#[derive(Clone, Copy, Debug)]
+pub enum RequestType {
+    OpenLong,
+    OpenShort,
+    CloseLong,
+    CloseShort,
+    Cancel,
+    IncreasePositionCollateral,
+    Change,
+}
+
+/// Request to post/modify an order.
+#[derive(Clone, Debug)]
+pub struct OrderRequest {
+    request_id: RequestId,
+    perp_id: PerpetualId,
+    r#type: RequestType,
+    order_id: Option<OrderId>,
+    price: UD64,
+    size: UD64,
+    expiry_block: Option<u64>,
+    post_only: bool,
+    fill_or_kill: bool,
+    immediate_or_cancel: bool,
+    max_matches: Option<u32>,
+    leverage: UD64,
+    last_exec_block: Option<u64>,
+    amount: Option<UD128>,
+}
+
+impl OrderType {
+    pub fn side(&self) -> OrderSide {
+        match self {
+            OrderType::OpenLong | OrderType::CloseShort => OrderSide::Bid,
+            OrderType::OpenShort | OrderType::CloseLong => OrderSide::Ask,
+        }
+    }
+}
+
+impl From<u8> for OrderType {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => OrderType::OpenLong,
+            1 => OrderType::OpenShort,
+            2 => OrderType::CloseLong,
+            3 => OrderType::CloseShort,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl StateInstant {
+    pub(crate) fn new(block_number: u64, block_timestamp: u64) -> Self {
+        Self {
+            block_number,
+            block_timestamp,
+        }
+    }
+
+    pub fn block_number(&self) -> u64 {
+        self.block_number
+    }
+
+    pub fn block_timestamp(&self) -> u64 {
+        self.block_timestamp
+    }
+}
+
+impl OrderRequest {
+    /// Create a new request with provided parameters.
+    ///
+    /// See [`crate::abi::dex::Exchange::OrderDesc`] for more details on particular parameters.
+    ///
+    /// This wrapper converts [`price`]/[`size`] into an exchange numeric system automatically.
+    pub fn new(
+        request_id: RequestId,
+        perp_id: PerpetualId,
+        r#type: RequestType,
+        order_id: Option<OrderId>,
+        price: UD64,
+        size: UD64,
+        expiry_block: Option<u64>,
+        post_only: bool,
+        fill_or_kill: bool,
+        immediate_or_cancel: bool,
+        max_matches: Option<u32>,
+        leverage: UD64,
+        last_exec_block: Option<u64>,
+        amount: Option<UD128>,
+    ) -> Self {
+        Self {
+            request_id,
+            perp_id,
+            r#type,
+            order_id,
+            price,
+            size,
+            expiry_block,
+            post_only,
+            fill_or_kill,
+            immediate_or_cancel,
+            max_matches,
+            leverage,
+            last_exec_block,
+            amount,
+        }
+    }
+
+    pub(crate) fn to_order_desc(
+        &self,
+        price_converter: num::Converter,
+        size_converter: num::Converter,
+        leverage_converter: num::Converter,
+        collateral_converter: Option<num::Converter>,
+    ) -> OrderDesc {
+        OrderDesc {
+            orderDescId: U256::from(self.request_id),
+            perpId: U256::from(self.perp_id),
+            orderType: self.r#type as u8,
+            orderId: U256::from(self.order_id.unwrap_or_default()),
+            pricePNS: price_converter.to_unsigned(self.price),
+            lotLNS: size_converter.to_unsigned(self.size),
+            expiryBlock: U256::from(self.expiry_block.unwrap_or_default()),
+            postOnly: self.post_only,
+            fillOrKill: self.fill_or_kill,
+            immediateOrCancel: self.immediate_or_cancel,
+            maxMatches: U256::from(self.max_matches.unwrap_or_default()),
+            leverageHdths: leverage_converter.to_unsigned(self.leverage),
+            lastExecutionBlock: U256::from(self.last_exec_block.unwrap_or_default()),
+            amountCNS: self
+                .amount
+                .zip(collateral_converter)
+                .map(|(a, conv)| conv.to_unsigned(a))
+                .unwrap_or_default(),
+        }
+    }
+}
