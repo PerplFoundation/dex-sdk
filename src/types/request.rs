@@ -1,7 +1,7 @@
 use alloy::primitives::U256;
 use fastnum::{UD64, UD128};
 
-use crate::{abi::dex::Exchange::OrderDesc, num};
+use crate::{abi::dex::Exchange::OrderDesc, num, state};
 
 use super::*;
 
@@ -53,11 +53,10 @@ pub struct OrderRequest {
 }
 
 impl OrderRequest {
-    /// Create a new request with provided parameters.
+    /// Create a new order request with provided parameters.
     ///
-    /// See [`crate::abi::dex::Exchange::OrderDesc`] for more details on particular parameters.
-    ///
-    /// This wrapper converts [`price`]/[`size`] into an exchange numeric system automatically.
+    /// Use [`Self::prepare`] to get [`OrderDesc`]s and then issue transactions with
+    /// [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`] calls.
     pub fn new(
         request_id: RequestId,
         perp_id: PerpetualId,
@@ -90,6 +89,20 @@ impl OrderRequest {
             last_exec_block,
             amount,
         }
+    }
+
+    /// Prepare order request to execution.
+    pub fn prepare(&self, exchange: &state::Exchange) -> OrderDesc {
+        let perp = exchange
+            .perpetuals()
+            .get(&self.perp_id)
+            .expect("known perpetual");
+        self.to_order_desc(
+            perp.price_converter(),
+            perp.size_converter(),
+            perp.leverage_converter(),
+            Some(exchange.collateral_converter()),
+        )
     }
 
     pub(crate) fn to_order_desc(

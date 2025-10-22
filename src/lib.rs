@@ -7,7 +7,10 @@
 //! Use [`state::SnapshotBuilder`] to capture initial state snapshot, then
 //! [`stream::raw`] to catch up with the recent state and keep snapshot
 //! up to date.
-//! 
+//!
+//! Use [`types::OrderRequest`] to prepare order requests to send them with
+//! [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`].
+//!
 //! See `./tests` for examples.
 //!
 //! # Limitations/follow-ups
@@ -19,7 +22,7 @@
 //!     WebSocket subscriptions and/or Monad [`execution events`].
 //!
 //! * State tracking is supported only for existing accounts and perpetual contracts.
-//! 
+//!
 //! * Test coverage is far below reasonable.
 //!
 //! # Testing
