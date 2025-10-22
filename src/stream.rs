@@ -1,26 +1,12 @@
 use std::time::Duration;
 
-use alloy::{
-    primitives::TxHash, providers::Provider, rpc::types::Filter, sol_types::SolEventInterface,
-};
+use alloy::{providers::Provider, rpc::types::Filter, sol_types::SolEventInterface};
 use futures::{Stream, stream};
 
 use crate::{Chain, abi::dex::Exchange::ExchangeEvents, error::DexError, types};
 
-/// Raw exchange smart contract events from a specific block.
-#[derive(Debug)]
-pub struct RawBlockEvents {
-    instant: types::StateInstant,
-    events: Vec<RawExchangeEvent>,
-}
-
-#[derive(Debug)]
-pub struct RawExchangeEvent {
-    tx_hash: TxHash,
-    tx_index: u64,
-    log_index: u64,
-    event: ExchangeEvents,
-}
+pub type RawEvent = types::EventContext<ExchangeEvents>;
+pub type RawBlockEvents = types::BlockEvents<RawEvent>;
 
 /// Returns stream of raw events emitted by the DEX smart contract,
 /// batched per block, starting from the specified block.
@@ -37,7 +23,7 @@ pub struct RawExchangeEvent {
 pub fn raw<P, S, SFut>(
     chain: &Chain,
     provider: P,
-    from_block: u64,
+    from: types::StateInstant,
     sleep: S,
 ) -> impl Stream<Item = Result<RawBlockEvents, DexError>>
 where
@@ -46,7 +32,7 @@ where
     SFut: Future<Output = ()>,
 {
     stream::unfold(
-        (provider, from_block),
+        (provider, from.block_number()),
         move |(provider, mut block_num)| async move {
             let filter = Filter::new()
                 .address(chain.exchange())
@@ -61,22 +47,19 @@ where
                         let mut events = Vec::with_capacity(logs.len());
                         let block_ts = logs.first().map(|l| l.block_timestamp).flatten();
                         for log in &logs {
-                            events.push(RawExchangeEvent {
-                                tx_hash: log.transaction_hash.unwrap_or_default(),
-                                tx_index: log.transaction_index.unwrap_or_default(),
-                                log_index: log.log_index.unwrap_or_default(),
-                                event: ExchangeEvents::decode_log(&log.inner)
+                            events.push(RawEvent::new(
+                                log.transaction_hash.unwrap_or_default(),
+                                log.transaction_index.unwrap_or_default(),
+                                log.log_index.unwrap_or_default(),
+                                ExchangeEvents::decode_log(&log.inner)
                                     .map_err(DexError::from)?
                                     .data,
-                            });
+                            ));
                         }
-                        Ok(RawBlockEvents {
-                            instant: types::StateInstant::new(
-                                block_num,
-                                block_ts.unwrap_or_default(),
-                            ),
+                        Ok(RawBlockEvents::new(
+                            types::StateInstant::new(block_num, block_ts.unwrap_or_default()),
                             events,
-                        })
+                        ))
                     });
                 if result.is_ok() {
                     block_num += 1;
@@ -91,33 +74,6 @@ where
             }
         },
     )
-}
-
-impl RawBlockEvents {
-    /// Instant the events produced at.
-    pub fn instant(&self) -> types::StateInstant {
-        self.instant
-    }
-
-    /// Raw exchange events
-    pub fn events(&self) -> &[RawExchangeEvent] {
-        &self.events
-    }
-}
-
-impl RawExchangeEvent {
-    pub fn tx_hash(&self) -> TxHash {
-        self.tx_hash
-    }
-    pub fn tx_index(&self) -> u64 {
-        self.tx_index
-    }
-    pub fn log_index(&self) -> u64 {
-        self.log_index
-    }
-    pub fn event(&self) -> &ExchangeEvents {
-        &self.event
-    }
 }
 
 #[cfg(test)]
@@ -142,7 +98,12 @@ mod tests {
 
         let testnet = Chain::testnet();
         let from_block = 41753780;
-        let stream = raw(&testnet, provider, from_block, tokio::time::sleep);
+        let stream = raw(
+            &testnet,
+            provider,
+            types::StateInstant::new(from_block, 0),
+            tokio::time::sleep,
+        );
         let block_results = stream.take(100).collect::<Vec<_>>().await;
 
         let block = block_results[0].as_ref().unwrap();
@@ -150,7 +111,7 @@ mod tests {
         assert_eq!(block.instant().block_timestamp(), 1759844205);
         assert_eq!(block.events().len(), 3);
         assert!(
-            matches!(block.events()[0], RawExchangeEvent { tx_hash, tx_index: 5, log_index: 14, event: ExchangeEvents::OrderRequest(ref r)} if tx_hash == b256!("0x47de82c4aa40baa30cabac4a74568488a8c74ded85a4e905f1ceaad4f29945e3") && r.orderDescId == U256::from(1759844204673u64))
+            matches!(block.events()[0], RawEvent { tx_hash, tx_index: 5, log_index: 14, event: ExchangeEvents::OrderRequest(ref r)} if tx_hash == b256!("0x47de82c4aa40baa30cabac4a74568488a8c74ded85a4e905f1ceaad4f29945e3") && r.orderDescId == U256::from(1759844204673u64))
         );
 
         let block = block_results[2].as_ref().unwrap();
@@ -158,7 +119,7 @@ mod tests {
         assert_eq!(block.instant().block_timestamp(), 1759844206);
         assert_eq!(block.events().len(), 7);
         assert!(
-            matches!(block.events()[0], RawExchangeEvent { tx_hash, tx_index: 2, log_index: 3, event: ExchangeEvents::LinkPriceUpdated(ref r)} if tx_hash == b256!("0xe2f90e72fd2c741ed02cfd7153e40d0d2d15472a44f5e9c30d3c9d189f02bcf6") && r.perpId == U256::from(64) && r.pricePNS == U256::from(34552) && r.timestamp == U256::from(1759844205))
+            matches!(block.events()[0], RawEvent { tx_hash, tx_index: 2, log_index: 3, event: ExchangeEvents::LinkPriceUpdated(ref r)} if tx_hash == b256!("0xe2f90e72fd2c741ed02cfd7153e40d0d2d15472a44f5e9c30d3c9d189f02bcf6") && r.perpId == U256::from(64) && r.pricePNS == U256::from(34552) && r.timestamp == U256::from(1759844205))
         );
 
         let mut block_num = from_block;
@@ -182,7 +143,12 @@ mod tests {
 
         let testnet = Chain::testnet();
         let mut block_num = provider.get_block_number().await.unwrap() + 1;
-        let stream = raw(&testnet, provider, block_num, tokio::time::sleep);
+        let stream = raw(
+            &testnet,
+            provider,
+            types::StateInstant::new(block_num, 0),
+            tokio::time::sleep,
+        );
         let block_results = stream.take(10).collect::<Vec<_>>().await;
 
         for b in &block_results {

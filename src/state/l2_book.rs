@@ -80,16 +80,14 @@ impl L2Book {
         self.bids.first_key_value().map(|(k, v)| (k.0, v.size))
     }
 
-    /// Ask price the requested size can be, at least partially, filled at,
-    /// along with the fillable size and size-averaged price.
-    pub fn ask_price_size(&self, want_size: UD64) -> Option<(UD64, UD64, UD64)> {
-        Self::want_price_size(self.asks.iter(), want_size)
+    /// Ask impact price for the requested size, along with the fillable size and size-averaged price.
+    pub fn ask_impact(&self, want_size: UD64) -> Option<(UD64, UD64, UD64)> {
+        Self::impact(self.asks.iter(), want_size)
     }
 
-    /// Bid price the requested size can be, at least partially, filled at,
-    /// along with the fillable size and size-averaged price.
-    pub fn bid_price_size(&self, want_size: UD64) -> Option<(UD64, UD64, UD64)> {
-        Self::want_price_size(self.bids.iter().map(|(k, v)| (&k.0, v)), want_size)
+    /// Bid impact price for the requested size, along with the fillable size and size-averaged price.
+    pub fn bid_impact(&self, want_size: UD64) -> Option<(UD64, UD64, UD64)> {
+        Self::impact(self.bids.iter().map(|(k, v)| (&k.0, v)), want_size)
     }
 
     pub(crate) fn add_order(&mut self, order: &Order) {
@@ -159,7 +157,7 @@ impl L2Book {
         }
     }
 
-    fn want_price_size<'a>(
+    fn impact<'a>(
         mut side: impl Iterator<Item = (&'a UD64, &'a L2Level)>,
         want_size: UD64,
     ) -> Option<(UD64, UD64, UD64)> {
@@ -238,44 +236,44 @@ mod tests {
         assert_eq!(book.best_bid(), Some((udec64!(90), udec64!(0.2))));
 
         assert_eq!(
-            book.ask_price_size(udec64!(0.05)),
+            book.ask_impact(udec64!(0.05)),
             Some((udec64!(110), udec64!(0.05), udec64!(110)))
         );
         assert_eq!(
-            book.ask_price_size(udec64!(0.2)),
+            book.ask_impact(udec64!(0.2)),
             Some((udec64!(120), udec64!(0.2), udec64!(115)))
         );
         assert_eq!(
-            book.ask_price_size(udec64!(0.3)),
+            book.ask_impact(udec64!(0.3)),
             Some((udec64!(120), udec64!(0.3), udec64!(35) / udec64!(0.3)))
         );
         assert_eq!(
-            book.ask_price_size(udec64!(0.6)),
+            book.ask_impact(udec64!(0.6)),
             Some((udec64!(130), udec64!(0.6), udec64!(74) / udec64!(0.6)))
         );
         assert_eq!(
-            book.ask_price_size(udec64!(1)),
+            book.ask_impact(udec64!(1)),
             Some((udec64!(130), udec64!(0.6), udec64!(74) / udec64!(0.6)))
         );
 
         assert_eq!(
-            book.bid_price_size(udec64!(0.05)),
+            book.bid_impact(udec64!(0.05)),
             Some((udec64!(90), udec64!(0.05), udec64!(90)))
         );
         assert_eq!(
-            book.bid_price_size(udec64!(0.3)),
+            book.bid_impact(udec64!(0.3)),
             Some((udec64!(80), udec64!(0.3), udec64!(26) / udec64!(0.3)))
         );
         assert_eq!(
-            book.bid_price_size(udec64!(0.5)),
+            book.bid_impact(udec64!(0.5)),
             Some((udec64!(80), udec64!(0.5), udec64!(42) / udec64!(0.5)))
         );
         assert_eq!(
-            book.bid_price_size(udec64!(0.9)),
+            book.bid_impact(udec64!(0.9)),
             Some((udec64!(70), udec64!(0.9), udec64!(70) / udec64!(0.9)))
         );
         assert_eq!(
-            book.bid_price_size(udec64!(1)),
+            book.bid_impact(udec64!(1)),
             Some((udec64!(70), udec64!(0.9), udec64!(70) / udec64!(0.9)))
         );
 

@@ -3,56 +3,7 @@ use fastnum::{UD64, UD128};
 
 use crate::{abi::dex::Exchange::OrderDesc, num};
 
-/// ID of perpetual contract.
-pub type PerpetualId = u32;
-
-/// ID of exchange account.
-pub type AccountId = u32;
-
-/// Exchange internal ID of the order.
-/// Unique only within particular perpetual contract at the
-/// exact point in time.
-pub type OrderId = u16;
-
-/// Order request ID.
-pub type RequestId = u64;
-
-/// Type of the placed order.
-///
-/// Bid Order Types:
-/// * [`OrderType::OpenLong`] is used to open a long position (or to decrease, close, or invert a long
-///     position). The only restrictions applied are the user account must have sufficient
-///     collateral available.
-/// * [`OrderType::CloseShort`] is a reduce only order type and can only be used to close all or part of
-///     an existing short position on the perpetual contract.
-///
-/// Ask Order Types:
-/// * [`OrderType::OpenShort`] is used to open a short position (or to decrease, close, or invert a
-///     short position). The only restrictions applied are the user account must have
-///     sufficient collateral available.
-/// * [`OrderType::CloseLong`] is a reduce only order type and can only be used to close all or part of
-///     an existing long position on the perpetual contract.
-#[derive(Clone, Copy, Debug)]
-pub enum OrderType {
-    OpenLong,
-    OpenShort,
-    CloseLong,
-    CloseShort,
-}
-
-/// Side of the order.
-#[derive(Clone, Copy, Debug)]
-pub enum OrderSide {
-    Ask,
-    Bid,
-}
-
-/// Instant in chain history the state/event is up to date with.
-#[derive(Clone, Copy, Debug)]
-pub struct StateInstant {
-    block_number: u64,
-    block_timestamp: u64,
-}
+use super::*;
 
 /// Type of the order request.
 ///
@@ -99,44 +50,6 @@ pub struct OrderRequest {
     leverage: UD64,
     last_exec_block: Option<u64>,
     amount: Option<UD128>,
-}
-
-impl OrderType {
-    pub fn side(&self) -> OrderSide {
-        match self {
-            OrderType::OpenLong | OrderType::CloseShort => OrderSide::Bid,
-            OrderType::OpenShort | OrderType::CloseLong => OrderSide::Ask,
-        }
-    }
-}
-
-impl From<u8> for OrderType {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => OrderType::OpenLong,
-            1 => OrderType::OpenShort,
-            2 => OrderType::CloseLong,
-            3 => OrderType::CloseShort,
-            _ => unreachable!(),
-        }
-    }
-}
-
-impl StateInstant {
-    pub(crate) fn new(block_number: u64, block_timestamp: u64) -> Self {
-        Self {
-            block_number,
-            block_timestamp,
-        }
-    }
-
-    pub fn block_number(&self) -> u64 {
-        self.block_number
-    }
-
-    pub fn block_timestamp(&self) -> u64 {
-        self.block_timestamp
-    }
 }
 
 impl OrderRequest {
@@ -205,6 +118,33 @@ impl OrderRequest {
                 .zip(collateral_converter)
                 .map(|(a, conv)| conv.to_unsigned(a))
                 .unwrap_or_default(),
+        }
+    }
+}
+
+impl From<u8> for RequestType {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => RequestType::OpenLong,
+            1 => RequestType::OpenShort,
+            2 => RequestType::CloseLong,
+            3 => RequestType::CloseShort,
+            4 => RequestType::Cancel,
+            5 => RequestType::IncreasePositionCollateral,
+            6 => RequestType::Change,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl From<RequestType> for OrderType {
+    fn from(value: RequestType) -> Self {
+        match value {
+            RequestType::OpenLong => OrderType::OpenLong,
+            RequestType::OpenShort => OrderType::OpenShort,
+            RequestType::CloseLong => OrderType::CloseLong,
+            RequestType::CloseShort => OrderType::CloseShort,
+            _ => unreachable!(),
         }
     }
 }

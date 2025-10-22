@@ -8,7 +8,7 @@ use alloy::{
     transports,
 };
 
-use crate::abi::errors::Exchange::ExchangeErrors;
+use crate::{abi::errors::Exchange::ExchangeErrors, types};
 
 pub type DexError = ProviderError<ExchangeErrors>;
 
@@ -46,6 +46,18 @@ pub enum ProviderError<R> {
 
     #[error("transaction timed out")]
     Timeout,
+
+    #[error("block out of order, expected: {0}, got: {1}")]
+    BlockOutOfOrder(u64, u64),
+
+    #[error("order context expected, tx: {0}, log: {1}")]
+    OrderContextExpected(u64, u64),
+
+    #[error("order not found: {0}")]
+    OrderNotFound(types::PerpetualId, types::OrderId),
+
+    #[error("position not found, acc: {0}, perp: {1}")]
+    PositionNotFound(types::AccountId, types::PerpetualId),
 }
 
 impl<R: SolInterface> From<contract::Error> for ProviderError<R> {

@@ -1,6 +1,6 @@
 use alloy::primitives::U256;
-use fastnum::UD64;
-use hashbrown::HashMap;
+use fastnum::{UD64, UD128};
+use hashbrown::{HashMap, hash_map::Entry};
 
 use super::*;
 use crate::{abi::dex::Exchange::PerpetualInfo, types};
@@ -23,6 +23,7 @@ pub struct Perpetual {
     price_converter: num::Converter,
     size_converter: num::Converter,
     leverage_converter: num::Converter,
+    fee_converter: num::Converter,
     base_price: UD64, // SC allocates 32 bits
 
     maker_fee: UD64,          // SC allocates 16 bits
@@ -48,7 +49,7 @@ pub struct Perpetual {
     orders: HashMap<types::OrderId, Order>,
     l2_book: L2Book,
 
-    open_interest: UD64, // SC allocates 40 bits
+    open_interest: UD128,
 }
 
 impl Perpetual {
@@ -75,6 +76,7 @@ impl Perpetual {
             price_converter,
             size_converter,
             leverage_converter,
+            fee_converter,
             base_price: price_converter.from_unsigned(info.basePricePNS),
 
             maker_fee: fee_converter.from_unsigned(maker_fee), // Fees are per 100K
@@ -146,6 +148,11 @@ impl Perpetual {
     /// Converter of leverage/margin between internal fixed-point and decimal representations.
     pub fn leverage_converter(&self) -> num::Converter {
         self.leverage_converter
+    }
+
+    /// Converter of fees between internal fixed-point and decimal representations.
+    pub fn fee_converter(&self) -> num::Converter {
+        self.fee_converter
     }
 
     /// Maker fee, gets collected only on position opening/increasing.
@@ -245,7 +252,7 @@ impl Perpetual {
     }
 
     /// Open interest in the perpetual contract.
-    pub fn open_interest(&self) -> UD64 {
+    pub fn open_interest(&self) -> UD128 {
         self.open_interest
     }
 
@@ -256,5 +263,106 @@ impl Perpetual {
     pub(crate) fn add_order(&mut self, order: Order) {
         self.l2_book.add_order(&order);
         self.orders.insert(order.order_id(), order);
+    }
+
+    pub(crate) fn update_order(&mut self, order: Order) -> Result<(), DexError> {
+        match self.orders.entry(order.order_id()) {
+            Entry::Occupied(mut e) => {
+                let prev = e.get();
+                if prev.price() != order.price() {
+                    self.l2_book.remove_order(prev);
+                    self.l2_book.add_order(&order);
+                } else {
+                    self.l2_book.update_order(&order, prev.size());
+                }
+                e.insert(order);
+                Ok(())
+            }
+            Entry::Vacant(_) => Err(DexError::OrderNotFound(self.id, order.order_id())),
+        }
+    }
+
+    pub(crate) fn remove_order(&mut self, order_id: types::OrderId) -> Result<Order, DexError> {
+        match self.orders.entry(order_id) {
+            Entry::Occupied(e) => {
+                self.l2_book.remove_order(e.get());
+                Ok(e.remove())
+            }
+            Entry::Vacant(_) => Err(DexError::OrderNotFound(self.id, order_id)),
+        }
+    }
+
+    pub(crate) fn update_paused(&mut self, instant: types::StateInstant, paused: bool) {
+        self.is_paused = paused;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_maker_fee(&mut self, instant: types::StateInstant, maker_fee: UD64) {
+        self.maker_fee = maker_fee;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_taker_fee(&mut self, instant: types::StateInstant, taker_fee: UD64) {
+        self.taker_fee = taker_fee;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_initial_margin(
+        &mut self,
+        instant: types::StateInstant,
+        initial_margin: UD64,
+    ) {
+        self.initial_margin = initial_margin;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_maintenance_margin(
+        &mut self,
+        instant: types::StateInstant,
+        maintenance_margin: UD64,
+    ) {
+        self.maintenance_margin = maintenance_margin;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_last_price(&mut self, instant: types::StateInstant, last_price: UD64) {
+        self.last_price = last_price;
+        self.last_price_block = Some(instant.block_number());
+        self.last_price_timestamp = instant.block_timestamp();
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_mark_price(&mut self, instant: types::StateInstant, mark_price: UD64) {
+        self.mark_price = mark_price;
+        self.mark_price_block = Some(instant.block_number());
+        self.mark_price_timestamp = instant.block_timestamp();
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_oracle_price(&mut self, instant: types::StateInstant, oracle_price: UD64) {
+        self.oracle_price = oracle_price;
+        self.oracle_price_block = Some(instant.block_number());
+        self.oracle_price_timestamp = instant.block_timestamp();
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_price_max_age(
+        &mut self,
+        instant: types::StateInstant,
+        price_max_age: u64,
+    ) {
+        self.price_max_age = price_max_age;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_open_interest(
+        &mut self,
+        instant: types::StateInstant,
+        prev_size: UD64,
+        new_size: UD64,
+    ) {
+        self.open_interest -= prev_size.resize();
+        self.open_interest += new_size.resize();
+        self.instant = instant;
     }
 }

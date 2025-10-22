@@ -1,11 +1,11 @@
 use std::time::Instant;
 
 use dex_sdk::{state, testing, types};
-use fastnum::{UD64, udec64};
+use fastnum::{UD64, udec64, udec128};
 
-/// Tests the creation of initial exchange snapshot.
+/// Tests the creation of exchange snapshot when perpetual order book is full.
 #[tokio::test]
-async fn test_initial_snapshot() {
+async fn test_full_book_snapshot() {
     let exchange = testing::TestExchange::new().await;
     let maker = exchange.account(0, 1_000_000).await;
     let taker = exchange.account(1, 100_000).await;
@@ -158,7 +158,7 @@ async fn test_initial_snapshot() {
     assert_eq!(perp.last_price(), udec64!(99990));
     assert_eq!(perp.mark_price(), udec64!(100000));
     assert_eq!(perp.funding_start_block(), 8571);
-    assert_eq!(perp.open_interest(), udec64!(0.09));
+    assert_eq!(perp.open_interest(), udec128!(0.09));
 
     assert_eq!(perp.orders().len(), 65424);
     assert!(
@@ -177,11 +177,11 @@ async fn test_initial_snapshot() {
     );
 
     assert_eq!(
-        perp.l2_book().ask_price_size(udec64!(1)),
+        perp.l2_book().ask_impact(udec64!(1)),
         Some((udec64!(101100), udec64!(1), udec64!(100600.5)))
     );
     assert_eq!(
-        perp.l2_book().bid_price_size(udec64!(1)),
+        perp.l2_book().bid_impact(udec64!(1)),
         Some((udec64!(98990), udec64!(1), udec64!(99489.5)))
     );
 }

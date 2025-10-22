@@ -7,12 +7,20 @@
 //! Use [`state::SnapshotBuilder`] to capture initial state snapshot, then
 //! [`stream::raw`] to catch up with the recent state and keep snapshot
 //! up to date.
+//! 
+//! See `./tests` for examples.
 //!
-//! # Limitations
+//! # Limitations/follow-ups
 //!
-//! Current version relies on log polling to implement reliably continuous
-//! stream of events. Future versions could improve indexing latency by utilizing
-//! WebSocket subscriptions and/or Monad [`execution events`].
+//! * Funding events processing is to follow.
+//!
+//! * Current version relies on log polling to implement reliably continuous
+//!     stream of events. Future versions could improve indexing latency by utilizing
+//!     WebSocket subscriptions and/or Monad [`execution events`].
+//!
+//! * State tracking is supported only for existing accounts and perpetual contracts.
+//! 
+//! * Test coverage is far below reasonable.
 //!
 //! # Testing
 //!

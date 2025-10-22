@@ -12,6 +12,7 @@
 //! access methods explicitly covers such cases.
 
 mod account;
+mod event;
 mod exchange;
 mod l2_book;
 mod order;
@@ -24,6 +25,7 @@ use alloy::{
     primitives::{Address, U256},
     providers::Provider,
 };
+pub use event::*;
 pub use exchange::*;
 use hashbrown::HashMap;
 pub use l2_book::*;
@@ -85,6 +87,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
     }
 
     /// Sets the list of addresses to fetch the state of exchange accounts for.
+    /// Assumes accounts already exist, snapshot creation will fail otherwise.
     pub fn with_accounts(mut self, accounts: Vec<Address>) -> Self {
         self.accounts = accounts;
         self

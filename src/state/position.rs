@@ -3,7 +3,7 @@ use fastnum::{D256, UD64, UD128};
 use super::num;
 use crate::{abi::dex::Exchange::PositionInfo, types};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PositionType {
     Long = 0,
     Short = 1,
@@ -19,9 +19,8 @@ pub struct Position {
     entry_price: UD64, // SC allocates 32 bits
     size: UD64,        // SC allocates 40 bits
     deposit: UD128,    // SC allocates 80 bits
-    pnl: D256,
-    delta_pnl: D256,
-    premium_pnl: D256,
+    delta_pnl: D256,   // SC calculations and ABI use 256 bits
+    premium_pnl: D256, // SC calculations and ABI use 256 bits
 }
 
 impl Position {
@@ -41,9 +40,30 @@ impl Position {
             entry_price: price_converter.from_unsigned(info.pricePNS),
             size: size_converter.from_unsigned(info.lotLNS),
             deposit: collateral_converter.from_unsigned(info.depositCNS),
-            pnl: collateral_converter.from_signed(info.pnlCNS),
             delta_pnl: collateral_converter.from_signed(info.deltaPnlCNS),
             premium_pnl: collateral_converter.from_signed(info.premiumPnlCNS),
+        }
+    }
+
+    pub(crate) fn opened(
+        instant: types::StateInstant,
+        perpetual_id: types::PerpetualId,
+        account_id: types::AccountId,
+        r#type: PositionType,
+        entry_price: UD64,
+        size: UD64,
+        deposit: UD128,
+    ) -> Self {
+        Self {
+            instant,
+            perpetual_id,
+            account_id,
+            r#type,
+            entry_price,
+            size,
+            deposit,
+            delta_pnl: D256::ZERO,
+            premium_pnl: D256::ZERO,
         }
     }
 
@@ -77,14 +97,9 @@ impl Position {
         self.size
     }
 
-    /// Deposit (margin) locked in the position.
+    /// Collateral deposit / margin locked in the position.
     pub fn deposit(&self) -> UD128 {
         self.deposit
-    }
-
-    /// Unrealized PnL (Delta PnL + Premium PnL) of the position.
-    pub fn pnl(&self) -> D256 {
-        self.pnl
     }
 
     /// Unrealized Delta PnL of the position.
@@ -95,6 +110,36 @@ impl Position {
     /// Unrealized Premium PnL of the position.
     pub fn premium_pnl(&self) -> D256 {
         self.premium_pnl
+    }
+
+    pub(crate) fn update_type(&mut self, instant: types::StateInstant, r#type: PositionType) {
+        self.r#type = r#type;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_entry_price(&mut self, instant: types::StateInstant, entry_price: UD64) {
+        self.entry_price = entry_price;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_size(&mut self, instant: types::StateInstant, size: UD64) {
+        self.size = size;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_deposit(&mut self, instant: types::StateInstant, deposit: UD128) {
+        self.deposit = deposit;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_delta_pnl(&mut self, instant: types::StateInstant, delta_pnl: D256) {
+        self.delta_pnl = delta_pnl;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_premium_pnl(&mut self, instant: types::StateInstant, premium_pnl: D256) {
+        self.premium_pnl = premium_pnl;
+        self.instant = instant;
     }
 }
 

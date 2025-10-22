@@ -1,8 +1,8 @@
 use alloy::primitives::U256;
 use fastnum::UD64;
 
-use super::types;
-use crate::{abi::dex, state::num};
+use super::{event, types};
+use crate::{abi::dex, num};
 
 /// Active order in the perpetual contract order book.
 ///
@@ -65,6 +65,54 @@ impl Order {
             post_only: None,
             fill_or_kill: None,
             immediate_or_cancel: None,
+        }
+    }
+
+    pub(crate) fn placed(
+        instant: types::StateInstant,
+        ctx: &event::OrderContext,
+        order_id: types::OrderId,
+        size: UD64,
+        price_converter: num::Converter,
+        leverage_converter: num::Converter,
+    ) -> Self {
+        Self {
+            instant,
+            request_id: Some(ctx.request_id),
+            order_id: order_id,
+            r#type: ctx.r#type.into(),
+            account_id: ctx.account_id,
+            price: price_converter.from_unsigned(ctx.price),
+            size,
+            expiry_block: ctx.expiry_block,
+            leverage: leverage_converter.from_unsigned(ctx.leverage),
+            post_only: Some(ctx.post_only),
+            fill_or_kill: Some(ctx.fill_or_kill),
+            immediate_or_cancel: Some(ctx.immediate_or_cancel),
+        }
+    }
+
+    pub(crate) fn updated(
+        &self,
+        instant: types::StateInstant,
+        ctx: &Option<event::OrderContext>,
+        price: Option<UD64>,
+        size: Option<UD64>,
+        expiry_block: Option<u64>,
+    ) -> Self {
+        Self {
+            instant,
+            request_id: ctx.as_ref().map(|c| c.request_id),
+            order_id: self.order_id,
+            r#type: self.r#type,
+            account_id: self.account_id,
+            price: price.unwrap_or(self.price),
+            size: size.unwrap_or(self.size),
+            expiry_block: expiry_block.unwrap_or(self.expiry_block),
+            leverage: self.leverage,
+            post_only: self.post_only,
+            fill_or_kill: self.fill_or_kill,
+            immediate_or_cancel: self.immediate_or_cancel,
         }
     }
 

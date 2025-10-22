@@ -77,6 +77,29 @@ impl Account {
     pub fn positions(&self) -> &HashMap<types::PerpetualId, position::Position> {
         &self.positions
     }
+
+    pub(crate) fn update_frozen(&mut self, instant: types::StateInstant, frozen: bool) {
+        self.frozen = frozen;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_balance(&mut self, instant: types::StateInstant, balance: UD128) {
+        self.balance = balance;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_locked_balance(
+        &mut self,
+        instant: types::StateInstant,
+        locked_balance: UD128,
+    ) {
+        self.locked_balance = locked_balance;
+        self.instant = instant;
+    }
+
+    pub(crate) fn positions_mut(&mut self) -> &mut HashMap<types::PerpetualId, position::Position> {
+        &mut self.positions
+    }
 }
 
 /// Returns IDs of perpetuals with positions according to [`PositionBitMap`].
