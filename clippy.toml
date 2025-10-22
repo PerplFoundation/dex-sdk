@@ -1,0 +1,11 @@
+# Clippy configuration
+# See: https://doc.rust-lang.org/clippy/configuration.html
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 30
+
+# Maximum allowed lines for a function
+too-many-lines-threshold = 100
+
+# Maximum allowed arguments for a function
+too-many-arguments-threshold = 7
