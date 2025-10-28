@@ -19,26 +19,27 @@ mod order;
 mod perpetual;
 mod position;
 
-pub use account::*;
-use alloy::{
-    eips::BlockId,
-    primitives::{Address, U256},
-    providers::Provider,
-};
-pub use event::*;
-pub use exchange::*;
-use hashbrown::HashMap;
-pub use l2_book::*;
-pub use order::*;
-pub use perpetual::*;
-pub use position::*;
-
 use crate::{
     Chain,
     abi::dex::{self, Exchange::getExchangeInfoReturn},
     error::DexError,
     num, types,
 };
+use alloy::{
+    eips::BlockId,
+    primitives::{Address, U256},
+    providers::Provider,
+};
+use std::collections::HashMap;
+
+// Public re-exports
+pub use account::*;
+pub use event::*;
+pub use exchange::*;
+pub use l2_book::*;
+pub use order::*;
+pub use perpetual::*;
+pub use position::*;
 
 /// Default number of orders to fetch via single call.
 /// Assuming Monad's 8100 gas per storage slot access and 30M gas limit of `eth_call`,
@@ -222,7 +223,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .collect::<HashMap<_, _>>();
 
         // Fetching orders one perp at a time to bound parallel requests
-        for (_, perp) in &mut perpetuals {
+        for perp in perpetuals.values_mut() {
             self.perpetual_orders(perp).await?;
         }
 
@@ -242,15 +243,12 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .leaves
             .into_iter()
             .enumerate()
-            .map(|(leaf, bitmap)| {
+            .flat_map(|(leaf, bitmap)| {
                 // Skip the first bit of the first leaf slot (_NULL_ORDER_ID)
-                ((if leaf == 0 { 1 } else { 0 })..U256::BITS).filter_map(move |bit| {
-                    bitmap
-                        .bit(bit)
-                        .then(|| (leaf * U256::BITS + bit) as types::OrderId)
-                })
+                ((if leaf == 0 { 1 } else { 0 })..U256::BITS)
+                    .filter(move |bit| bitmap.bit(*bit))
+                    .map(move |bit| (leaf * U256::BITS + bit) as types::OrderId)
             })
-            .flatten()
             .collect::<Vec<_>>();
 
         let order_batch_futs = order_ids.chunks(self.orders_per_batch).map(|chunk| {
@@ -261,7 +259,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                 .dynamic()
                 .extend(
                     chunk
-                        .into_iter()
+                        .iter()
                         .map(|oid| self.instance.getOrder(pid, U256::from(*oid))),
                 );
             async move { multicall.aggregate().await }

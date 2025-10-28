@@ -57,6 +57,7 @@ impl OrderRequest {
     ///
     /// Use [`Self::prepare`] to get [`OrderDesc`]s and then issue transactions with
     /// [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`] calls.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: RequestId,
         perp_id: PerpetualId,

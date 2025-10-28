@@ -79,7 +79,7 @@ impl Order {
         Self {
             instant,
             request_id: Some(ctx.request_id),
-            order_id: order_id,
+            order_id,
             r#type: ctx.r#type.into(),
             account_id: ctx.account_id,
             price: price_converter.from_unsigned(ctx.price),
@@ -122,7 +122,7 @@ impl Order {
             instant: types::StateInstant::new(0, 0),
             request_id: None,
             order_id: 0,
-            r#type: r#type,
+            r#type,
             account_id: 0,
             price,
             size,

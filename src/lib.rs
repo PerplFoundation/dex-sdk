@@ -18,8 +18,8 @@
 //! * Funding events processing is to follow.
 //!
 //! * Current version relies on log polling to implement reliably continuous
-//!     stream of events. Future versions could improve indexing latency by utilizing
-//!     WebSocket subscriptions and/or Monad [`execution events`].
+//!   stream of events. Future versions could improve indexing latency by utilizing
+//!   WebSocket subscriptions and/or Monad [`execution events`].
 //!
 //! * State tracking is supported only for existing accounts and perpetual contracts.
 //!

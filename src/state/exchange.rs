@@ -1,9 +1,7 @@
-use fastnum::{UD64, UD128};
-use hashbrown::HashMap;
-use itertools::chain;
-
 use super::*;
 use crate::{Chain, abi::dex::Exchange::ExchangeEvents, stream};
+use fastnum::{UD64, UD128};
+use itertools::chain;
 
 pub type StateBlockEvents = types::BlockEvents<types::EventContext<Vec<StateEvents>>>;
 
@@ -27,6 +25,7 @@ pub struct Exchange {
 }
 
 impl Exchange {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         chain: Chain,
         instant: types::StateInstant,
@@ -128,8 +127,8 @@ impl Exchange {
     /// Exchange emits two categories of events:
     /// * State mutation events
     /// * Order request error responses, for requests issued in batches via
-    ///     [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`]
-    ///     with `revertOnFail` = false.
+    ///   [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`]
+    ///   with `revertOnFail` = false.
     ///
     /// This method applies state mutation events only to tracked perpetual contracts and accounts
     /// provided to [`SnapshotBuilder`] during the initial snapshot creation, and returns order request
@@ -690,9 +689,9 @@ impl Exchange {
             ExchangeEvents::OracleAgeExceedsMax(_) => vec![], // Ignored
             ExchangeEvents::OracleDisabled(_) => vec![],      // Ignored
             ExchangeEvents::OracleMaxAgeUpdated(e) => {
-                self.perpetual(e.perpId).map(|perp| {
+                if let Some(perp) = self.perpetual(e.perpId) {
                     perp.update_price_max_age(instant, e.maxAgeSec.to());
-                });
+                }
                 vec![]
             }
             ExchangeEvents::OrderBatchCompleted(_) => {
@@ -966,7 +965,7 @@ impl Exchange {
                     pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
                     chain!(
                         Some(StateEvents::position(
-                            &pos,
+                            pos,
                             ctx,
                             PositionEventType::Decreased {
                                 prev_size,
@@ -1001,7 +1000,7 @@ impl Exchange {
                         pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
                         chain!(
                             Some(StateEvents::position(
-                                &pos,
+                                pos,
                                 ctx,
                                 PositionEventType::Deleveraged {
                                     force_close: e.forceClose,
@@ -1058,7 +1057,7 @@ impl Exchange {
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     chain!(
                         Some(StateEvents::position(
-                            &pos,
+                            pos,
                             ctx,
                             PositionEventType::Increased {
                                 entry_price: pos.entry_price(),
@@ -1101,7 +1100,7 @@ impl Exchange {
                     }
                     vec![
                         StateEvents::position(
-                            &pos,
+                            pos,
                             ctx,
                             PositionEventType::Inverted {
                                 r#type: pos.r#type(),
@@ -1131,7 +1130,7 @@ impl Exchange {
                     pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
                     chain!(
                         Some(StateEvents::position(
-                            &pos,
+                            pos,
                             ctx,
                             PositionEventType::Liquidated {
                                 r#type: pos.r#type(),
@@ -1320,8 +1319,9 @@ impl Exchange {
             ExchangeEvents::TakerOrderFilled(e) => {
                 let c = must_ctx()?;
                 chain!(
-                    if let Some(perp) = self.perpetuals.get(&c.perpetual_id) {
-                        Some(StateEvents::Order(OrderEvent {
+                    self.perpetuals
+                        .get(&c.perpetual_id)
+                        .map(|perp| StateEvents::Order(OrderEvent {
                             perpetual_id: perp.id(),
                             account_id: c.account_id,
                             request_id: Some(c.request_id),
@@ -1332,10 +1332,7 @@ impl Exchange {
                                 fee: cc.from_unsigned(e.feeCNS),
                                 is_maker: false,
                             },
-                        }))
-                    } else {
-                        None
-                    },
+                        })),
                     self.accounts.get_mut(&c.account_id).map(|acc| {
                         acc.update_balance(instant, cc.from_unsigned(e.balanceCNS));
                         StateEvents::account(
@@ -1395,7 +1392,7 @@ impl Exchange {
             event.tx_index(),
             event.log_index(),
         ))?;
-        Ok(self.accounts.contains_key(&c.account_id).then(|| c))
+        Ok(self.accounts.contains_key(&c.account_id).then_some(c))
     }
 
     fn account(&mut self, id: U256) -> Option<&mut Account> {

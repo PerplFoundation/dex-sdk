@@ -28,7 +28,7 @@ impl Converter {
     }
 
     pub fn from_signed<const N: usize>(&self, value: I256) -> Decimal<N> {
-        let unscaled = bint::UInt::<N>::from_le_slice(&value.unsigned_abs().as_le_slice())
+        let unscaled = bint::UInt::<N>::from_le_slice(value.unsigned_abs().as_le_slice())
             .expect("Converter: abs(I256) -> UInt::<N>");
         Decimal::<N>::from_parts(
             unscaled,
