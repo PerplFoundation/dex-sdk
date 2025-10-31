@@ -32,45 +32,60 @@ where
     SFut: Future<Output = ()>,
 {
     stream::unfold(
-        (provider, from.block_number()),
-        move |(provider, mut block_num)| async move {
+        (provider, (from.block_number(), from.block_number())),
+        move |(provider, (mut local_block_num, mut chain_block_num))| async move {
             let filter = Filter::new()
                 .address(chain.exchange())
-                .from_block(block_num)
-                .to_block(block_num);
+                .from_block(local_block_num)
+                .to_block(local_block_num);
+
             loop {
-                let result = provider
-                    .get_logs(&filter)
-                    .await
-                    .map_err(DexError::from)
-                    .and_then(|logs| {
-                        let mut events = Vec::with_capacity(logs.len());
-                        let block_ts = logs.first().and_then(|l| l.block_timestamp);
-                        for log in &logs {
-                            events.push(RawEvent::new(
-                                log.transaction_hash.unwrap_or_default(),
-                                log.transaction_index.unwrap_or_default(),
-                                log.log_index.unwrap_or_default(),
-                                ExchangeEvents::decode_log(&log.inner)
-                                    .map_err(DexError::from)?
-                                    .data,
-                            ));
-                        }
-                        Ok(RawBlockEvents::new(
-                            types::StateInstant::new(block_num, block_ts.unwrap_or_default()),
-                            events,
-                        ))
-                    });
-                if result.is_ok() {
-                    block_num += 1;
-                    return Some((result, (provider, block_num)));
-                }
-                if matches!(result, Err(DexError::InvalidRequest(_))) {
-                    // Block is not available yet
+                if local_block_num > chain_block_num {
                     sleep(provider.client().poll_interval()).await;
                     continue;
                 }
-                return Some((result, (provider, block_num)));
+
+                let log_task = provider.get_logs(&filter);
+                let block_task = provider.get_block_number();
+                let (log_result, block_result) = futures::future::join(log_task, block_task).await;
+
+                let log_result = log_result.map_err(DexError::from).and_then(|logs| {
+                    let mut events = Vec::with_capacity(logs.len());
+                    let block_ts = logs.first().and_then(|l| l.block_timestamp);
+                    for log in &logs {
+                        events.push(RawEvent::new(
+                            log.transaction_hash.unwrap_or_default(),
+                            log.transaction_index.unwrap_or_default(),
+                            log.log_index.unwrap_or_default(),
+                            ExchangeEvents::decode_log(&log.inner)
+                                .map_err(DexError::from)?
+                                .data,
+                        ));
+                    }
+                    Ok(RawBlockEvents::new(
+                        types::StateInstant::new(local_block_num, block_ts.unwrap_or_default()),
+                        events,
+                    ))
+                });
+
+                match block_result {
+                    Ok(chain_block) => {
+                        chain_block_num = chain_block;
+                    }
+                    Err(e) => {
+                        return Some((
+                            Err(DexError::from(e)),
+                            (provider, (local_block_num, chain_block_num)),
+                        ));
+                    }
+                }
+
+                if log_result.is_ok() {
+                    local_block_num += 1;
+                    return Some((log_result, (provider, (local_block_num, chain_block_num))));
+                } else {
+                    sleep(provider.client().poll_interval()).await;
+                }
             }
         },
     )
