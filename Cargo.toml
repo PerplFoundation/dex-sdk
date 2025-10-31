@@ -11,6 +11,8 @@ alloy = { version = "1.0.41", default-features = false, features = [
   "eips",
   "node-bindings",
   "provider-http",
+  "reqwest",
+  "reqwest-rustls-tls",
   "rpc",
   "rpc-client",
   "rpc-types",
