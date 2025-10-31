@@ -39,7 +39,7 @@ pub enum ProviderError<R> {
     OutOfGas,
 
     #[error("transaction reverted: {0:?}")]
-    Reverted(RevertReason<R>),
+    Reverted(Box<RevertReason<R>>),
 
     #[error("transport error: {0}")]
     Transport(String),
@@ -109,7 +109,7 @@ impl<E: Display, R: SolInterface> From<transports::RpcError<E>> for ProviderErro
                 {
                     Self::InvalidRequest(msg)
                 } else if resp.code == 3 && msg.contains("reverted") {
-                    Self::Reverted(RevertReason::from(value))
+                    Self::Reverted(Box::new(RevertReason::from(value)))
                 } else {
                     Self::Transport(value.to_string())
                 }
@@ -132,7 +132,9 @@ impl<R: SolInterface> From<MulticallError> for ProviderError<R> {
             MulticallError::ValueTx => Self::InvalidRequest(value.to_string()),
             MulticallError::DecodeError(_) => Self::Fatal(value.to_string()),
             MulticallError::NoReturnData => Self::NullResp,
-            MulticallError::CallFailed(bytes) => Self::Reverted(RevertReason::from(bytes)),
+            MulticallError::CallFailed(bytes) => {
+                Self::Reverted(Box::new(RevertReason::from(bytes)))
+            }
             MulticallError::TransportError(rpc_err) => Self::from(rpc_err),
         }
     }

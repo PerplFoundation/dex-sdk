@@ -1,12 +1,10 @@
-use alloy::primitives::{Address, U256};
-use fastnum::UD128;
-use hashbrown::HashMap;
-
 use super::*;
 use crate::{
     abi::dex::Exchange::{AccountInfo, PositionBitMap},
     types,
 };
+use alloy::primitives::{Address, U256};
+use fastnum::UD128;
 
 /// Exchange account.
 #[derive(Clone, Debug)]
@@ -133,9 +131,8 @@ pub(crate) fn perpetuals_with_position(bitmap: &PositionBitMap) -> Vec<types::Pe
     banks
         .into_iter()
         .filter(|(_, _, _, count)| *count > 0)
-        .map(|(offs, range, bank, _)| {
+        .flat_map(|(offs, range, bank, _)| {
             range.filter_map(move |i| bank.bit(i).then_some((offs + i) as types::PerpetualId))
         })
-        .flatten()
         .collect()
 }

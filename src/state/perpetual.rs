@@ -1,9 +1,9 @@
-use alloy::primitives::U256;
-use fastnum::{UD64, UD128};
-use hashbrown::{HashMap, hash_map::Entry};
+use std::collections::hash_map::Entry;
 
 use super::*;
 use crate::{abi::dex::Exchange::PerpetualInfo, types};
+use alloy::primitives::U256;
+use fastnum::{UD64, UD128};
 
 const FEE_SCALE: u8 = 5;
 const LEVERAGE_SCALE: u8 = 2;

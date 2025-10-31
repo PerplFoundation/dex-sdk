@@ -7,7 +7,7 @@
 //! basic information about exchange account.
 //!
 
-use std::{cell::RefCell, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use alloy::{
     hex::ToHexExt,
@@ -17,8 +17,8 @@ use alloy::{
     providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder, ext::AnvilApi},
     rpc::client::RpcClient,
 };
+use dashmap::{DashMap, DashSet};
 use fastnum::{UD64, UD128, udec64};
-use hashbrown::HashMap;
 
 use crate::{
     Chain,
@@ -48,8 +48,8 @@ pub struct TestExchange {
     pub price_admin: Address,
     pub price_admin_pk: String,
     pub collateral_converter: num::Converter,
-    perpetual_ids: RefCell<Vec<types::PerpetualId>>,
-    account_address: RefCell<HashMap<types::AccountId, Address>>,
+    perpetual_ids: Arc<DashSet<types::PerpetualId>>,
+    account_address: Arc<DashMap<types::AccountId, Address>>,
     anvil: AnvilInstance,
 }
 
@@ -171,8 +171,8 @@ impl TestExchange {
             price_admin,
             price_admin_pk: anvil.nth_key(2).unwrap().to_bytes().encode_hex(),
             collateral_converter: num::Converter::new(USD_DECIMALS),
-            perpetual_ids: RefCell::new(vec![]),
-            account_address: RefCell::new(HashMap::new()),
+            perpetual_ids: Arc::new(DashSet::new()),
+            account_address: Arc::new(DashMap::new()),
             anvil,
         }
     }
@@ -180,10 +180,10 @@ impl TestExchange {
     pub fn chain(&self) -> Chain {
         Chain {
             chain_id: self.chain_id,
-            collateral_token: self.token.address().clone(),
+            collateral_token: *self.token.address(),
             deployed_at_block: 0,
-            exchange: self.exchange.address().clone(),
-            perpetuals: self.perpetual_ids.borrow().clone(),
+            exchange: *self.exchange.address(),
+            perpetuals: self.perpetual_ids.iter().map(|p| *p).collect(),
         }
     }
 
@@ -224,13 +224,11 @@ impl TestExchange {
             .await
             .unwrap();
         let log = receipt.decoded_log::<Exchange::AccountCreated>().unwrap();
-        self.account_address
-            .borrow_mut()
-            .insert(log.id.to(), log.account);
+        self.account_address.insert(log.id.to(), log.account);
         TestAccount {
             id: log.id.to(),
             address: log.account,
-            exchange: &*self,
+            exchange: self,
         }
     }
 
@@ -280,14 +278,14 @@ impl TestExchange {
             .get_receipt()
             .await
             .unwrap();
-        self.perpetual_ids.borrow_mut().push(perp_id);
+        self.perpetual_ids.insert(perp_id);
         TestPerp {
             id: perp_id,
             name: name.to_string(),
             price_converter,
             size_converter: num::Converter::new(size_decimals),
             leverage_converter,
-            exchange: &*self,
+            exchange: self,
         }
     }
 
@@ -474,12 +472,12 @@ impl<'e> TestPerp<'e> {
                 Some(self.exchange.collateral_converter),
             ))
             .from(
-                self.exchange
+                *self
+                    .exchange
                     .account_address
-                    .borrow()
                     .get(&account_id)
-                    .cloned()
-                    .unwrap(),
+                    .unwrap()
+                    .value(),
             )
             .send()
             .await
@@ -510,12 +508,12 @@ impl<'e> TestPerp<'e> {
                 true,
             )
             .from(
-                self.exchange
+                *self
+                    .exchange
                     .account_address
-                    .borrow()
                     .get(&account_id)
-                    .cloned()
-                    .unwrap(),
+                    .unwrap()
+                    .value(),
             )
             .send()
             .await

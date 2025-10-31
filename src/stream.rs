@@ -45,7 +45,7 @@ where
                     .map_err(DexError::from)
                     .and_then(|logs| {
                         let mut events = Vec::with_capacity(logs.len());
-                        let block_ts = logs.first().map(|l| l.block_timestamp).flatten();
+                        let block_ts = logs.first().and_then(|l| l.block_timestamp);
                         for log in &logs {
                             events.push(RawEvent::new(
                                 log.transaction_hash.unwrap_or_default(),
