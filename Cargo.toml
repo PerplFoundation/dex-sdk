@@ -6,7 +6,7 @@ resolver = "3"
 build = "build.rs"
 
 [dependencies]
-alloy = { version = "1.0.41", default-features = false, features = [
+alloy = { version = "1.0.42", default-features = false, features = [
   "contract",
   "eips",
   "node-bindings",

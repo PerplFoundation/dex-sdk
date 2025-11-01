@@ -1179,7 +1179,7 @@ impl Exchange {
                         perp.size_converter().from_unsigned(e.lotLNS),
                         cc.from_unsigned(e.depositCNS),
                     );
-                    chain!(
+                    let events = chain!(
                         Some(StateEvents::position(
                             &pos,
                             ctx,
@@ -1200,7 +1200,9 @@ impl Exchange {
                             None
                         },
                     )
-                    .collect()
+                    .collect();
+                    acc.positions_mut().insert(perp.id(), pos);
+                    events
                 } else {
                     vec![]
                 }

@@ -39,28 +39,35 @@ where
                 .from_block(block_num)
                 .to_block(block_num);
             loop {
-                let result = provider
-                    .get_logs(&filter)
-                    .await
-                    .map_err(DexError::from)
-                    .and_then(|logs| {
-                        let mut events = Vec::with_capacity(logs.len());
-                        let block_ts = logs.first().and_then(|l| l.block_timestamp);
-                        for log in &logs {
-                            events.push(RawEvent::new(
-                                log.transaction_hash.unwrap_or_default(),
-                                log.transaction_index.unwrap_or_default(),
-                                log.log_index.unwrap_or_default(),
-                                ExchangeEvents::decode_log(&log.inner)
-                                    .map_err(DexError::from)?
-                                    .data,
-                            ));
-                        }
-                        Ok(RawBlockEvents::new(
-                            types::StateInstant::new(block_num, block_ts.unwrap_or_default()),
-                            events,
-                        ))
-                    });
+                // Anvil node, and maybe some RPC providers, produce empty response instead of
+                // error in case the block in the filter does not exist yet,
+                // so adding aditional check against the tip of the chain
+                let result =
+                    futures::try_join!(provider.get_block_number(), provider.get_logs(&filter))
+                        .map_err(DexError::from)
+                        .and_then(|(head_block_num, logs)| {
+                            if head_block_num < block_num {
+                                return Err(DexError::InvalidRequest(
+                                    "block is not available yet".to_string(),
+                                ));
+                            }
+                            let mut events = Vec::with_capacity(logs.len());
+                            let block_ts = logs.first().and_then(|l| l.block_timestamp);
+                            for log in &logs {
+                                events.push(RawEvent::new(
+                                    log.transaction_hash.unwrap_or_default(),
+                                    log.transaction_index.unwrap_or_default(),
+                                    log.log_index.unwrap_or_default(),
+                                    ExchangeEvents::decode_log(&log.inner)
+                                        .map_err(DexError::from)?
+                                        .data,
+                                ));
+                            }
+                            Ok(RawBlockEvents::new(
+                                types::StateInstant::new(block_num, block_ts.unwrap_or_default()),
+                                events,
+                            ))
+                        });
                 if result.is_ok() {
                     block_num += 1;
                     return Some((result, (provider, block_num)));
