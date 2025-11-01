@@ -21,7 +21,7 @@ pub type OrderId = u16;
 pub type RequestId = u64;
 
 /// Instant in chain history the state/event is up to date with.
-#[derive(Clone, Copy, Debug, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord, Hash, Default)]
 pub struct StateInstant {
     block_number: u64,
     block_timestamp: u64,

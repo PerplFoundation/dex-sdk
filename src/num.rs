@@ -5,7 +5,7 @@ use fastnum::{
 };
 
 /// Fixed-point to decimal converter.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Converter {
     decimals: i32,
 }
