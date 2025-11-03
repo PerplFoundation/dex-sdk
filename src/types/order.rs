@@ -13,7 +13,7 @@
 ///   sufficient collateral available.
 /// * [`OrderType::CloseLong`] is a reduce only order type and can only be used to close all or part of
 ///   an existing long position on the perpetual contract.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum OrderType {
     OpenLong,
     OpenShort,
@@ -22,7 +22,7 @@ pub enum OrderType {
 }
 
 /// Side of the order.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum OrderSide {
     Ask,
     Bid,
