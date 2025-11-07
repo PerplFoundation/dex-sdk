@@ -17,11 +17,23 @@ impl Converter {
         }
     }
 
+    pub fn decimals(&self) -> u8 {
+        self.decimals as u8
+    }
+
     pub fn from_unsigned<const N: usize>(&self, value: U256) -> UnsignedDecimal<N> {
         let unscaled = bint::UInt::<N>::from_le_slice(value.as_le_slice())
             .expect("Converter: U256 -> UInt::<N>");
         UnsignedDecimal::<N>::from_parts(
             unscaled,
+            -self.decimals,
+            Context::default().with_rounding_mode(RoundingMode::Floor),
+        )
+    }
+
+    pub fn from_u64<const N: usize>(&self, value: u64) -> UnsignedDecimal<N> {
+        UnsignedDecimal::<N>::from_parts(
+            bint::UInt::from_u64(value),
             -self.decimals,
             Context::default().with_rounding_mode(RoundingMode::Floor),
         )
@@ -36,6 +48,19 @@ impl Converter {
             match value.sign() {
                 alloy::primitives::Sign::Negative => fastnum::decimal::Sign::Minus,
                 alloy::primitives::Sign::Positive => fastnum::decimal::Sign::Plus,
+            },
+            Context::default().with_rounding_mode(RoundingMode::Floor),
+        )
+    }
+
+    pub fn from_i64<const N: usize>(&self, value: i64) -> Decimal<N> {
+        Decimal::<N>::from_parts(
+            bint::UInt::from_u64(value.unsigned_abs()),
+            -self.decimals,
+            if value < 0 {
+                fastnum::decimal::Sign::Minus
+            } else {
+                fastnum::decimal::Sign::Plus
             },
             Context::default().with_rounding_mode(RoundingMode::Floor),
         )

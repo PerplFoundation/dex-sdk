@@ -336,7 +336,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                                         Position::new(
                                             instant,
                                             perp_id,
-                                            &pos_info,
+                                            &pos_info.positionInfo,
                                             collateral_converter,
                                             perp.price_converter(),
                                             perp.size_converter(),

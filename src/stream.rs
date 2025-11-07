@@ -97,6 +97,7 @@ mod tests {
     use crate::{Chain, abi::dex::Exchange::ExchangeEvents};
 
     #[tokio::test]
+    #[ignore = "smart contract is not deployed yet"]
     async fn test_stream_historical_blocks() {
         let provider = ProviderBuilder::new()
             .connect("https://testnet-rpc.monad.xyz")
@@ -126,7 +127,7 @@ mod tests {
         assert_eq!(block.instant().block_timestamp(), 1759844206);
         assert_eq!(block.events().len(), 7);
         assert!(
-            matches!(block.events()[0], RawEvent { tx_hash, tx_index: 2, log_index: 3, event: ExchangeEvents::LinkPriceUpdated(ref r)} if tx_hash == b256!("0xe2f90e72fd2c741ed02cfd7153e40d0d2d15472a44f5e9c30d3c9d189f02bcf6") && r.perpId == U256::from(64) && r.pricePNS == U256::from(34552) && r.timestamp == U256::from(1759844205))
+            matches!(block.events()[0], RawEvent { tx_hash, tx_index: 2, log_index: 3, event: ExchangeEvents::LinkPriceUpdated(ref r)} if tx_hash == b256!("0xe2f90e72fd2c741ed02cfd7153e40d0d2d15472a44f5e9c30d3c9d189f02bcf6") && r.perpId == U256::from(64) && r.oraclePricePNS == U256::from(34552) && r.timestamp == U256::from(1759844205))
         );
 
         let mut block_num = from_block;
@@ -139,6 +140,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "smart contract is not deployed yet"]
     async fn test_stream_recent_blocks() {
         let client = RpcClient::builder()
             .layer(RetryBackoffLayer::new(10, 100, 200))

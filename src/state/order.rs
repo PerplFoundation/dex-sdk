@@ -1,4 +1,3 @@
-use alloy::primitives::U256;
 use fastnum::UD64;
 
 use super::{event, types};
@@ -61,7 +60,7 @@ impl Order {
             price: base_price + price_converter.from_unsigned(order.priceONS.to()),
             size: size_converter.from_unsigned(order.lotLNS.to()),
             expiry_block: order.expiryBlock as u64,
-            leverage: leverage_converter.from_unsigned(U256::from(order.leverageHdths)),
+            leverage: leverage_converter.from_u64(order.leverageHdths as u64),
             post_only: None,
             fill_or_kill: None,
             immediate_or_cancel: None,

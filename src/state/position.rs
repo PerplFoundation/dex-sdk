@@ -13,6 +13,7 @@ pub enum PositionType {
 #[derive(Clone, Debug)]
 pub struct Position {
     instant: types::StateInstant,
+    funding_instant: types::StateInstant,
     perpetual_id: types::PerpetualId,
     account_id: types::AccountId,
     r#type: PositionType,
@@ -34,6 +35,7 @@ impl Position {
     ) -> Self {
         Self {
             instant,
+            funding_instant: instant,
             perpetual_id,
             account_id: info.accountId.to(),
             r#type: info.positionType.into(),
@@ -56,6 +58,7 @@ impl Position {
     ) -> Self {
         Self {
             instant,
+            funding_instant: instant,
             perpetual_id,
             account_id,
             r#type,
@@ -112,6 +115,11 @@ impl Position {
         self.premium_pnl
     }
 
+    /// Unrealized PnL of the position.
+    pub fn pnl(&self) -> D256 {
+        self.delta_pnl + self.premium_pnl
+    }
+
     pub(crate) fn update_type(&mut self, instant: types::StateInstant, r#type: PositionType) {
         self.r#type = r#type;
         self.instant = instant;
@@ -140,6 +148,51 @@ impl Position {
     pub(crate) fn update_premium_pnl(&mut self, instant: types::StateInstant, premium_pnl: D256) {
         self.premium_pnl = premium_pnl;
         self.instant = instant;
+        self.funding_instant = instant;
+    }
+
+    pub(crate) fn apply_mark_price(&mut self, instant: types::StateInstant, mark_price: UD64) {
+        let sign = if self.r#type.is_long() {
+            D256::ONE
+        } else {
+            D256::ONE.neg()
+        };
+        self.delta_pnl = sign
+            * (mark_price.resize().to_signed() - self.entry_price.resize().to_signed())
+            * self.size.resize().to_signed();
+        self.instant = instant;
+    }
+
+    pub(crate) fn apply_funding_payment(
+        &mut self,
+        instant: types::StateInstant,
+        payment_per_unit: D256,
+    ) -> bool {
+        // Updating premium PnL only if it wasn't updated at the same instant
+        if self.funding_instant >= instant {
+            return false;
+        }
+
+        // Positive funding payment means longs pay shorts
+        let sign = if self.r#type.is_long() {
+            D256::ONE.neg()
+        } else {
+            D256::ONE
+        };
+        self.premium_pnl += sign * payment_per_unit * self.size.resize().to_signed();
+        self.instant = instant;
+        self.funding_instant = instant;
+        true
+    }
+}
+
+impl PositionType {
+    pub fn is_long(&self) -> bool {
+        matches!(self, PositionType::Long)
+    }
+
+    pub fn is_short(&self) -> bool {
+        matches!(self, PositionType::Short)
     }
 }
 
@@ -150,5 +203,90 @@ impl From<u8> for PositionType {
             1 => PositionType::Short,
             _ => unreachable!(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fastnum::{dec256, udec64};
+
+    use crate::types::StateInstant;
+
+    use super::*;
+
+    #[test]
+    fn test_apply_mark_price() {
+        let mut pos = Position::opened(
+            StateInstant::default(),
+            1,
+            1,
+            PositionType::Long,
+            udec64!(100),
+            udec64!(10),
+            UD128::ZERO,
+        );
+
+        pos.apply_mark_price(StateInstant::default(), udec64!(150));
+        assert_eq!(pos.delta_pnl(), dec256!(500));
+
+        pos.apply_mark_price(StateInstant::default(), udec64!(50));
+        assert_eq!(pos.delta_pnl(), dec256!(-500));
+
+        let mut pos = Position::opened(
+            StateInstant::default(),
+            1,
+            1,
+            PositionType::Short,
+            udec64!(100),
+            udec64!(10),
+            UD128::ZERO,
+        );
+        pos.apply_mark_price(StateInstant::default(), udec64!(150));
+        assert_eq!(pos.delta_pnl(), dec256!(-500));
+
+        pos.apply_mark_price(StateInstant::default(), udec64!(50));
+        assert_eq!(pos.delta_pnl(), dec256!(500));
+    }
+
+    #[test]
+    fn test_apply_funding_payment() {
+        let (i0, i1, i2) = (
+            StateInstant::default(),
+            StateInstant::new(1, 1),
+            StateInstant::new(2, 2),
+        );
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            udec64!(100),
+            udec64!(10),
+            UD128::ZERO,
+        );
+
+        assert!(pos.apply_funding_payment(i1, dec256!(5)));
+        assert_eq!(pos.premium_pnl(), dec256!(-50));
+
+        assert!(pos.apply_funding_payment(i2, dec256!(-10)));
+        assert_eq!(pos.premium_pnl(), dec256!(50));
+
+        assert!(!pos.apply_funding_payment(i2, dec256!(-10)));
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Short,
+            udec64!(100),
+            udec64!(10),
+            UD128::ZERO,
+        );
+
+        pos.apply_funding_payment(i1, dec256!(5));
+        assert_eq!(pos.premium_pnl(), dec256!(50));
+
+        pos.apply_funding_payment(i2, dec256!(-10));
+        assert_eq!(pos.premium_pnl(), dec256!(-50));
     }
 }

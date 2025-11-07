@@ -131,9 +131,51 @@
         "internalType": "uint256"
       },
       {
-        "name": "refIsIndex",
+        "name": "refIsMark",
         "type": "bool",
         "internalType": "bool"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "BuyToLiquidateBuyerRestricted",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "buyer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "BuyToLiquidateParamsExceedUnity",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "insAmtPer100K",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "userAmtPer100K",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "buyerAmtPer100K",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },
@@ -195,6 +237,52 @@
       },
       {
         "name": "orderId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "CantBuyToLiquidate",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "posAccountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "positionType",
+        "type": "uint8",
+        "internalType": "enum PositionEnum"
+      },
+      {
+        "name": "markPricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "refIsMark",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "bsLiqPricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "liqPricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "bkptPricePNS",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -334,7 +422,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "refIsIndex",
+        "name": "refIsMark",
         "type": "bool",
         "internalType": "bool"
       },
@@ -371,6 +459,11 @@
       },
       {
         "name": "liqPricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "bkptPricePNS",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -888,6 +981,32 @@
   },
   {
     "type": "error",
+    "name": "FundingPriceExceedsTol",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "fundingPricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "oraclePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "tolerancePer100k",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "FundingSumAlreadySet",
     "inputs": [
       {
@@ -961,43 +1080,6 @@
   },
   {
     "type": "error",
-    "name": "IndexExceedsOracleTol",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "indexPNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "oraclePNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "tolerancePer100k",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "IndexPriceUnitialized",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "InitialMarginFractionExceedsMaintenance",
     "inputs": [
       {
@@ -1042,7 +1124,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "refIsIndex",
+        "name": "refIsMark",
         "type": "bool",
         "internalType": "bool"
       }
@@ -1332,6 +1414,27 @@
   },
   {
     "type": "error",
+    "name": "InvalidSynthPerpPrice",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "oraclePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "oracleTimestamp",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidWithdrawLimitThousandths",
     "inputs": [
       {
@@ -1406,6 +1509,42 @@
   },
   {
     "type": "error",
+    "name": "LiquidationBuyerSettlementFailed",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "accountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "liquidationType",
+        "type": "uint8",
+        "internalType": "enum OrderEnum"
+      },
+      {
+        "name": "pricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "lotLNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "resultCode",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "LiquidationParamsExceedUnity",
     "inputs": [
       {
@@ -1446,6 +1585,43 @@
       },
       {
         "name": "maxLotLNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "MarkExceedsTol",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "markPNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "synthPerpPricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "tolerancePer100k",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "MarkPriceUninitialized",
+    "inputs": [
+      {
+        "name": "perpId",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1822,7 +1998,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "refIsIndex",
+        "name": "refIsMark",
         "type": "bool",
         "internalType": "bool"
       }
@@ -1941,7 +2117,7 @@
   },
   {
     "type": "error",
-    "name": "ProposedIndexOracleAgeExceedsMax",
+    "name": "ProposedPriceAgeExceedsMax",
     "inputs": [
       {
         "name": "perpId",
@@ -1962,7 +2138,7 @@
   },
   {
     "type": "error",
-    "name": "ProposedIndexOracleTolExceedsMax",
+    "name": "ProposedPriceTolExceedsMax",
     "inputs": [
       {
         "name": "perpId",
@@ -1991,7 +2167,7 @@
         "internalType": "uint256"
       },
       {
-        "name": "indexTimestamp",
+        "name": "markTimestamp",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -2100,6 +2276,27 @@
         "name": "maximum",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SyntheticPriceError",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "linkPricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "fundingRatePct100k",
+        "type": "int256",
+        "internalType": "int256"
       }
     ]
   },

@@ -1,5 +1,5 @@
-use alloy::primitives::U256;
-use fastnum::{D256, UD64, UD128};
+use alloy::primitives::{B256, U256};
+use fastnum::{D64, D256, UD64, UD128};
 
 use super::{account, order, perpetual, position};
 
@@ -239,6 +239,9 @@ pub struct PerpetualEvent {
 /// Type of perpetual event with corresponding details.
 #[derive(Clone, Copy, Debug)]
 pub enum PerpetualEventType {
+    /// Funding event occured and rate updated.
+    FundingEvent { rate: D64, payment_per_unit: D256 },
+
     /// Initial margin requirement updated.
     InitialMarginFractionUpdated(UD64),
 
@@ -256,6 +259,9 @@ pub enum PerpetualEventType {
 
     /// Open interest updated.
     OpenInterestUpdated(UD128),
+
+    /// Oracle configuration updated.
+    OracleConfigurationUpdated { is_used: bool, feed_id: B256 },
 
     /// Oracle price updated.
     OraclePriceUpdated(UD64),
@@ -360,6 +366,13 @@ pub enum PositionEventType {
         entry_price: UD64,
         size: UD64,
         deposit: UD128,
+    },
+
+    // Position unrealized PnL updated
+    UnrealizedPnLUpdated {
+        pnl: D256,
+        delta_pnl: D256,
+        premium_pnl: D256,
     },
 
     // Position unwound

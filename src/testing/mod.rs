@@ -302,7 +302,7 @@ impl TestExchange {
             udec64!(20),
         )
         .await
-        .with_index_price(udec64!(100000))
+        .with_mark_price(udec64!(100000))
         .await
         .unpause()
         .await
@@ -321,7 +321,7 @@ impl TestExchange {
             udec64!(20),
         )
         .await
-        .with_index_price(udec64!(4000))
+        .with_mark_price(udec64!(4000))
         .await
         .unpause()
         .await
@@ -340,7 +340,7 @@ impl TestExchange {
             udec64!(20),
         )
         .await
-        .with_index_price(udec64!(200))
+        .with_mark_price(udec64!(200))
         .await
         .unpause()
         .await
@@ -359,7 +359,7 @@ impl TestExchange {
             udec64!(20),
         )
         .await
-        .with_index_price(udec64!(0.3))
+        .with_mark_price(udec64!(0.3))
         .await
         .unpause()
         .await
@@ -367,10 +367,10 @@ impl TestExchange {
 }
 
 impl<'e> TestPerp<'e> {
-    pub async fn with_index_price(self, price: UD64) -> Self {
+    pub async fn with_mark_price(self, price: UD64) -> Self {
         self.exchange
             .exchange
-            .updateIndexPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
+            .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
             .from(self.exchange.price_admin)
             .send()
             .await
@@ -424,10 +424,10 @@ impl<'e> TestPerp<'e> {
         self
     }
 
-    pub async fn set_index_price(&self, price: UD64) {
+    pub async fn set_mark_price(&self, price: UD64) {
         self.exchange
             .exchange
-            .updateIndexPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
+            .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
             .from(self.exchange.price_admin)
             .send()
             .await

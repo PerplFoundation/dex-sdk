@@ -1,6 +1,6 @@
 use super::*;
-use crate::{Chain, abi::dex::Exchange::ExchangeEvents, stream};
-use fastnum::{UD64, UD128};
+use crate::{Chain, abi::dex::Exchange::ExchangeEvents, stream, types::EventContext};
+use fastnum::{D256, UD64, UD128};
 use itertools::chain;
 
 pub type StateBlockEvents = types::BlockEvents<types::EventContext<Vec<StateEvents>>>;
@@ -177,20 +177,36 @@ impl Exchange {
                 // Reset order context at the transaction boundary
                 order_context.take();
             }
-            let result = self.apply_event(next_instant, event, &mut order_context)?;
+            let result = self.apply_raw_event(next_instant, event, &mut order_context)?;
             if !result.is_empty() {
                 state_events.push(event.pass(result));
             }
             prev_tx_index = Some(event.tx_index());
         }
 
-        // Commit instant
+        // Commit instant, can produce its own set of events
         self.instant = events.instant();
+        let mut perp_events = vec![];
+        for perp in self.perpetuals.values_mut() {
+            let result = perp.update_state_instant(self.instant);
+            if !result.is_empty() {
+                perp_events.push(result.clone());
+                state_events.push(EventContext::empty(result));
+            }
+        }
+
+        // Applying produced state events as a second pass
+        for event in perp_events.iter().flatten() {
+            let result = self.apply_state_event(self.instant, event)?;
+            if !result.is_empty() {
+                state_events.push(EventContext::empty(result));
+            }
+        }
 
         Ok(Some(StateBlockEvents::new(self.instant, state_events)))
     }
 
-    fn apply_event(
+    fn apply_raw_event(
         &mut self,
         instant: types::StateInstant,
         event: &stream::RawEvent,
@@ -220,6 +236,14 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::AccountFrozen))
                 .into_iter()
                 .collect(),
+            ExchangeEvents::AccountLiquidationCredit(e) => self
+                .account(e.accountId)
+                .map(|acc| {
+                    acc.update_balance(instant, cc.from_unsigned(e.endBalanceCNS));
+                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::AdministratorUpdated(_) => vec![], // Ignored
             ExchangeEvents::AmountExceedsAvailableBalance(e) => self
                 .err_ctx(ctx, event)?
@@ -235,6 +259,10 @@ impl Exchange {
                 .into_iter()
                 .collect(),
             ExchangeEvents::BankruptcyPriceExceedsReferencePrice(_) => vec![], // Ignored
+            ExchangeEvents::BuyToLiquidateBuyerRestricted(_) => vec![],        // Ignored
+            ExchangeEvents::BuyToLiquidateParamsUpdated(_) => vec![],          // Ignored
+            ExchangeEvents::BuyToLiquidateThresholdUpdated(_) => vec![],       // Ignored
+            ExchangeEvents::BuyToLiquidateRestrictionUpdated(_) => vec![],     // Ignored
             ExchangeEvents::CancelExistingInvalidCloseOrders(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| {
@@ -242,6 +270,7 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            ExchangeEvents::CantBuyToLiquidate(_) => vec![], // Ignored
             ExchangeEvents::CantChangeCloseOrder(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::CantChangeCloseOrder))
@@ -394,7 +423,20 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::ContractIsPaused))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::ContractLinkFeedUpdated(_) => vec![], // Ignored
+            ExchangeEvents::ContractLinkFeedUpdated(e) => self
+                .perpetual(e.perpId)
+                .map(|perp| {
+                    perp.update_oracle_feed_id(instant, e.feedId);
+                    StateEvents::perpetual(
+                        perp,
+                        PerpetualEventType::OracleConfigurationUpdated {
+                            is_used: perp.is_oracle_used(),
+                            feed_id: perp.oracle_feed_id(),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::ContractPaused(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
@@ -428,10 +470,36 @@ impl Exchange {
             }
             ExchangeEvents::FeeParamsUpdated(_) => vec![], // Ignored
             ExchangeEvents::FundingClampPctUpdated(_) => vec![], // Ignored
-            ExchangeEvents::FundingEventCompleted(_) => vec![], // TODO: handle funding events and update unrealized premium PnL
+            ExchangeEvents::FundingEventCompleted(e) => {
+                if let Some(perp) = self.perpetual(e.perpId) {
+                    perp.update_funding(
+                        instant,
+                        perp.funding_rate_converter()
+                            .from_signed(e.actualRatePct100k),
+                        perp.price_converter()
+                            .from_i64(e.fundingPaymentPNS.as_i64()),
+                        e.fundingEventBlock.to(),
+                    );
+                }
+                vec![]
+            }
             ExchangeEvents::FundingEventSetTooEarly(_) => vec![], // Ignored
-            ExchangeEvents::FundingSumAlreadySet(_) => vec![],  // Ignored
-            ExchangeEvents::IgnoreOracleUpdated(_) => vec![],   // Ignored
+            ExchangeEvents::FundingPriceExceedsTol(_) => vec![],  // Ignored
+            ExchangeEvents::FundingSumAlreadySet(_) => vec![],    // Ignored
+            ExchangeEvents::IgnoreOracleUpdated(e) => self
+                .perpetual(e.perpId)
+                .map(|perp| {
+                    perp.update_is_oracle_used(instant, !e.ignOracle);
+                    StateEvents::perpetual(
+                        perp,
+                        PerpetualEventType::OracleConfigurationUpdated {
+                            is_used: perp.is_oracle_used(),
+                            feed_id: perp.oracle_feed_id(),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::ImmediateOrCancelExecuted(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::ImmediateOrCancelExecuted))
@@ -452,22 +520,6 @@ impl Exchange {
                 }),
             )
             .collect(),
-            ExchangeEvents::IndexExceedsOracleTol(_) => vec![], // Ignored
-            ExchangeEvents::IndexOracleTolUpdated(_) => vec![], // Ignored
-            ExchangeEvents::IndexUpdated(e) => self
-                .perpetual(e.perpId)
-                .map(|perp| {
-                    perp.update_mark_price(
-                        instant,
-                        perp.price_converter().from_unsigned(e.pricePNS),
-                    );
-                    StateEvents::perpetual(
-                        perp,
-                        PerpetualEventType::MarkPriceUpdated(perp.mark_price()),
-                    )
-                })
-                .into_iter()
-                .collect(),
             ExchangeEvents::InitialMarginFractionUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
@@ -507,16 +559,17 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::InvalidOrderId))
                 .into_iter()
                 .collect(),
+            ExchangeEvents::InvalidSynthPerpPrice(_) => vec![], // Ignored
             ExchangeEvents::LinkDatastreamConfigured(_) => vec![], // Ignored
-            ExchangeEvents::LinkDsError_0(_) => vec![],            // Ignored
-            ExchangeEvents::LinkDsError_1(_) => vec![],            // Ignored
-            ExchangeEvents::LinkDsPanic(_) => vec![],              // Ignored
+            ExchangeEvents::LinkDsError_0(_) => vec![],         // Ignored
+            ExchangeEvents::LinkDsError_1(_) => vec![],         // Ignored
+            ExchangeEvents::LinkDsPanic(_) => vec![],           // Ignored
             ExchangeEvents::LinkPriceUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
                     perp.update_oracle_price(
                         instant,
-                        perp.price_converter().from_unsigned(e.pricePNS),
+                        perp.price_converter().from_unsigned(e.oraclePricePNS),
                     );
                     StateEvents::perpetual(
                         perp,
@@ -525,6 +578,7 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            ExchangeEvents::LiquidationBuyerUpdated(_) => vec![], // Ignored
             ExchangeEvents::LiquidationParamsUpdated(_) => vec![], // Ignored
             ExchangeEvents::LotOutOfRange(_) => self
                 .err_ctx(ctx, event)?
@@ -662,6 +716,42 @@ impl Exchange {
                 }),
             )
             .collect(),
+            ExchangeEvents::MarkExceedsTol(_) => vec![], // Ignored
+            ExchangeEvents::MarkUpdated(e) => {
+                let perp_mark = self.perpetual(e.perpId).map(|perp| {
+                    perp.update_mark_price(
+                        instant,
+                        perp.price_converter().from_unsigned(e.pricePNS),
+                    );
+                    (perp.id(), perp.mark_price())
+                });
+                if let Some((perp_id, mark_price)) = perp_mark {
+                    chain!(
+                        Some(StateEvents::Perpetual(PerpetualEvent {
+                            perpetual_id: perp_id,
+                            r#type: PerpetualEventType::MarkPriceUpdated(mark_price),
+                        })),
+                        // Applying updated mark to all tracked positions
+                        self.accounts.values_mut().filter_map(|acc| {
+                            acc.positions_mut().get_mut(&perp_id).map(|pos| {
+                                pos.apply_mark_price(instant, mark_price);
+                                StateEvents::position(
+                                    pos,
+                                    &None,
+                                    PositionEventType::UnrealizedPnLUpdated {
+                                        pnl: pos.pnl(),
+                                        delta_pnl: pos.delta_pnl(),
+                                        premium_pnl: pos.premium_pnl(),
+                                    },
+                                )
+                            })
+                        }),
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                }
+            }
             ExchangeEvents::MaxMatchesReached(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::MaxMatchesReached))
@@ -688,12 +778,6 @@ impl Exchange {
             }
             ExchangeEvents::OracleAgeExceedsMax(_) => vec![], // Ignored
             ExchangeEvents::OracleDisabled(_) => vec![],      // Ignored
-            ExchangeEvents::OracleMaxAgeUpdated(e) => {
-                if let Some(perp) = self.perpetual(e.perpId) {
-                    perp.update_price_max_age(instant, e.maxAgeSec.to());
-                }
-                vec![]
-            }
             ExchangeEvents::OrderBatchCompleted(_) => {
                 // Reset context
                 ctx.take();
@@ -990,61 +1074,55 @@ impl Exchange {
                     vec![]
                 }
             }
-            ExchangeEvents::PositionDeleveraged(e) => {
-                chain!(
-                    if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
-                        let prev_size = pos.size();
-                        pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotCNS)); // Typo in SC
-                        pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
-                        pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
-                        pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
-                        chain!(
-                            Some(StateEvents::position(
-                                pos,
-                                ctx,
-                                PositionEventType::Deleveraged {
-                                    force_close: e.forceClose,
-                                    r#type: pos.r#type(),
-                                    entry_price: pos.entry_price(),
-                                    exit_price: perp
-                                        .price_converter()
-                                        .from_unsigned(e.deleveragePricePNS),
-                                    prev_size,
-                                    new_size: pos.size(),
-                                    deposit: pos.deposit(),
-                                    delta_pnl: pos.delta_pnl(),
-                                    premium_pnl: pos.premium_pnl(),
-                                }
-                            )),
-                            if pos.r#type() == PositionType::Long {
-                                perp.update_open_interest(instant, prev_size, pos.size());
-                                Some(StateEvents::perpetual(
-                                    perp,
-                                    PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
-                                ))
-                            } else {
-                                None
-                            },
-                        )
-                        .collect()
-                    } else {
-                        vec![]
-                    },
-                    self.account(e.accountId).map(|acc| {
-                        if e.endLotCNS == U256::ZERO {
-                            acc.positions_mut()
-                                .remove(&e.perpId.to::<types::PerpetualId>());
-                        }
-                        acc.update_balance(instant, cc.from_unsigned(e.balanceCNS));
-                        StateEvents::account(
-                            acc,
+            ExchangeEvents::PositionDeleveraged(e) => chain!(
+                if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
+                    let prev_size = pos.size();
+                    pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
+                    pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
+                    pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
+                    pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
+                    chain!(
+                        Some(StateEvents::position(
+                            pos,
                             ctx,
-                            AccountEventType::BalanceUpdated(acc.balance()),
-                        )
-                    }),
-                )
-                .collect()
-            }
+                            PositionEventType::Deleveraged {
+                                force_close: e.forceClose,
+                                r#type: pos.r#type(),
+                                entry_price: pos.entry_price(),
+                                exit_price: perp
+                                    .price_converter()
+                                    .from_unsigned(e.deleveragePricePNS),
+                                prev_size,
+                                new_size: pos.size(),
+                                deposit: pos.deposit(),
+                                delta_pnl: pos.delta_pnl(),
+                                premium_pnl: pos.premium_pnl(),
+                            }
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, prev_size, pos.size());
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                },
+                self.account(e.accountId).map(|acc| {
+                    if e.endLotLNS == U256::ZERO {
+                        acc.positions_mut()
+                            .remove(&e.perpId.to::<types::PerpetualId>());
+                    }
+                    acc.update_balance(instant, cc.from_unsigned(e.balanceCNS));
+                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
+                }),
+            )
+            .collect(),
             ExchangeEvents::PositionDoesNotExist(_) => vec![], // Ignored
             ExchangeEvents::PositionIncreased(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
@@ -1055,6 +1133,9 @@ impl Exchange {
                     );
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
+                    pos.update_delta_pnl(instant, D256::ZERO);
+                    pos.update_premium_pnl(instant, D256::ZERO);
+
                     chain!(
                         Some(StateEvents::position(
                             pos,
@@ -1168,6 +1249,18 @@ impl Exchange {
                 }),
             )
             .collect(),
+            ExchangeEvents::PositionLiquidationCredit(e) => self
+                .position(e.accountId, e.perpId)?
+                .map(|(pos, _)| {
+                    pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
+                    StateEvents::position(
+                        pos,
+                        ctx,
+                        PositionEventType::DepositUpdated(pos.deposit()),
+                    )
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::PositionOpened(e) => {
                 if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
                     let pos = Position::opened(
@@ -1287,11 +1380,20 @@ impl Exchange {
                 .into_iter()
                 .collect(),
             ExchangeEvents::PriceAdministratorUpdated(_) => vec![], // Ignored
+            ExchangeEvents::PriceMaxAgeUpdated(e) => {
+                if let Some(perp) = self.perpetual(e.perpId) {
+                    perp.update_price_max_age_sec(instant, e.maxAgeSec.to());
+                }
+                vec![]
+            }
             ExchangeEvents::PriceOutOfRange(_) => self
-                .err_ctx(ctx, event)?
+                .err_ctx(ctx, event)
+                .ok() // Used both for orders and mark/oracle prices
+                .flatten()
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::PriceOutOfRange))
                 .into_iter()
                 .collect(),
+            ExchangeEvents::PriceTolUpdated(_) => vec![], // Ignored
             ExchangeEvents::ProtocolBalanceDeposit(_) => vec![], // Ignored
             ExchangeEvents::ProtocolBalanceWithdraw(_) => vec![], // Ignored
             ExchangeEvents::RecycleBalanceInsufficientSevere(_) => vec![], // Ignored
@@ -1304,6 +1406,7 @@ impl Exchange {
             ExchangeEvents::ReferencePriceAgesExceedMax(_) => vec![], // Ignored
             ExchangeEvents::ReportAgeExceedsLastUpdate(_) => vec![],  // Ignored
             ExchangeEvents::ReportPriceIsNegative(_) => vec![],       // Ignored
+            ExchangeEvents::SyntheticPriceError(_) => vec![],         // Ignored
             ExchangeEvents::TakerFeeUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
@@ -1382,6 +1485,49 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::WrongAccountForOrder))
                 .into_iter()
                 .collect(),
+        })
+    }
+
+    fn apply_state_event(
+        &mut self,
+        instant: types::StateInstant,
+        event: &StateEvents,
+    ) -> Result<Vec<StateEvents>, DexError> {
+        Ok(match event {
+            StateEvents::Perpetual(pe) => {
+                match pe.r#type {
+                    PerpetualEventType::FundingEvent {
+                        rate: _,
+                        payment_per_unit,
+                    } => {
+                        // Applying funding to all tracked positions
+                        self.accounts
+                            .values_mut()
+                            .filter_map(|acc| {
+                                acc.positions_mut()
+                                    .get_mut(&pe.perpetual_id)
+                                    .and_then(|pos| {
+                                        pos.apply_funding_payment(instant, payment_per_unit).then(
+                                            || {
+                                                StateEvents::position(
+                                                    pos,
+                                                    &None,
+                                                    PositionEventType::UnrealizedPnLUpdated {
+                                                        pnl: pos.pnl(),
+                                                        delta_pnl: pos.delta_pnl(),
+                                                        premium_pnl: pos.premium_pnl(),
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    })
+                            })
+                            .collect()
+                    }
+                    _ => vec![],
+                }
+            }
+            _ => vec![],
         })
     }
 

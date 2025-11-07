@@ -2,10 +2,11 @@ use std::collections::hash_map::Entry;
 
 use super::*;
 use crate::{abi::dex::Exchange::PerpetualInfo, types};
-use alloy::primitives::U256;
-use fastnum::{UD64, UD128};
+use alloy::primitives::{B256, I256, U256};
+use fastnum::{D64, D256, UD64, UD128};
 
 const FEE_SCALE: u8 = 5;
+const FUNDING_RATE_SCALE: u8 = 5;
 const LEVERAGE_SCALE: u8 = 2;
 
 /// Perpetual contract tradeable at the exchange.
@@ -15,6 +16,7 @@ const LEVERAGE_SCALE: u8 = 2;
 #[derive(Clone, Debug)]
 pub struct Perpetual {
     instant: types::StateInstant,
+    state_instant: types::StateInstant,
     id: types::PerpetualId,
     name: String,
     symbol: String,
@@ -24,6 +26,7 @@ pub struct Perpetual {
     size_converter: num::Converter,
     leverage_converter: num::Converter,
     fee_converter: num::Converter,
+    funding_rate_converter: num::Converter,
     base_price: UD64, // SC allocates 32 bits
 
     maker_fee: UD64,          // SC allocates 16 bits
@@ -43,8 +46,15 @@ pub struct Perpetual {
     oracle_price_block: Option<u64>,
     oracle_price_timestamp: u64,
 
+    prev_funding_rate: D64,             // SC allocates 16 bits of precision
+    next_funding_rate: Option<D64>,     // SC allocates 16 bits of precision
+    next_funding_payment: Option<D256>, // SC allocates 48 bits of precision
+    next_funding_event_block: Option<u64>,
     funding_start_block: u64,
-    price_max_age: u64,
+
+    oracle_feed_id: B256,
+    is_oracle_used: bool,
+    price_max_age_sec: u64,
 
     orders: HashMap<types::OrderId, Order>,
     l2_book: L2Book,
@@ -53,6 +63,7 @@ pub struct Perpetual {
 }
 
 impl Perpetual {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         instant: types::StateInstant,
         id: types::PerpetualId,
@@ -64,10 +75,12 @@ impl Perpetual {
     ) -> Self {
         let price_converter = num::Converter::new(info.priceDecimals.to());
         let size_converter = num::Converter::new(info.lotDecimals.to());
-        let fee_converter = num::Converter::new(FEE_SCALE);
         let leverage_converter = num::Converter::new(LEVERAGE_SCALE);
+        let fee_converter = num::Converter::new(FEE_SCALE);
+        let funding_rate_converter = num::Converter::new(FUNDING_RATE_SCALE);
         Self {
             instant,
+            state_instant: instant,
             id,
             name: info.name.clone(),
             symbol: info.symbol.clone(),
@@ -77,6 +90,7 @@ impl Perpetual {
             size_converter,
             leverage_converter,
             fee_converter,
+            funding_rate_converter,
             base_price: price_converter.from_unsigned(info.basePricePNS),
 
             maker_fee: fee_converter.from_unsigned(maker_fee), // Fees are per 100K
@@ -86,22 +100,28 @@ impl Perpetual {
             // Margins are in hundredths
             maintenance_margin: leverage_converter.from_unsigned(maintenance_margin),
 
-            // In the current revision of SC "mark" means "last"
-            last_price: price_converter.from_unsigned(info.markPNS),
+            last_price: price_converter.from_unsigned(info.lastPNS),
             last_price_block: None,
-            last_price_timestamp: info.markTimestamp.to(),
+            last_price_timestamp: info.lastTimestamp.to(),
 
-            // In this revision of SC "index" is used as mark price
-            mark_price: price_converter.from_unsigned(info.indexPNS),
+            mark_price: price_converter.from_unsigned(info.markPNS),
             mark_price_block: None,
-            mark_price_timestamp: info.indexTimestamp.to(),
+            mark_price_timestamp: info.markTimestamp.to(),
 
             oracle_price: price_converter.from_unsigned(info.oraclePNS),
             oracle_price_block: None,
             oracle_price_timestamp: info.oracleTimestampSec.to(),
 
+            prev_funding_rate: funding_rate_converter
+                .from_signed(I256::try_from(info.fundingRatePct100k).unwrap()),
+            next_funding_rate: None,
+            next_funding_payment: None,
+            next_funding_event_block: None,
             funding_start_block: info.fundingStartBlock.to(),
-            price_max_age: info.refPriceMaxAgeSec.to(),
+
+            oracle_feed_id: info.linkFeedId,
+            is_oracle_used: !info.ignOracle,
+            price_max_age_sec: info.refPriceMaxAgeSec.to(),
 
             orders: HashMap::new(),
             l2_book: L2Book::new(),
@@ -153,6 +173,11 @@ impl Perpetual {
     /// Converter of fees between internal fixed-point and decimal representations.
     pub fn fee_converter(&self) -> num::Converter {
         self.fee_converter
+    }
+
+    /// Converter of funding rates between internal fixed-point and decimal representations.
+    pub fn funding_rate_converter(&self) -> num::Converter {
+        self.funding_rate_converter
     }
 
     /// Maker fee, gets collected only on position opening/increasing.
@@ -210,7 +235,7 @@ impl Perpetual {
     /// Indicates that the mark price is obsolete and will not be accepted
     /// during the order/position settlement
     pub fn is_mark_price_obsolete(&self) -> bool {
-        self.mark_price_timestamp + self.price_max_age <= self.instant.block_timestamp()
+        self.mark_price_timestamp + self.price_max_age_sec <= self.instant.block_timestamp()
     }
 
     /// Oracle price of the contract.
@@ -232,13 +257,47 @@ impl Perpetual {
     /// Indicates that the oracle price is obsolete and will not be accepted
     /// during the order/position settlement
     pub fn is_oracle_price_obsolete(&self) -> bool {
-        self.oracle_price_timestamp + self.price_max_age <= self.instant.block_timestamp()
+        self.oracle_price_timestamp + self.price_max_age_sec <= self.instant.block_timestamp()
+    }
+
+    /// The funding rate applied at the previous funding event.
+    pub fn funding_rate(&self) -> D64 {
+        if let Some((next, bl)) = self.next_funding_rate.zip(self.next_funding_event_block)
+            && bl <= self.state_instant.block_number()
+        {
+            next
+        } else {
+            self.prev_funding_rate
+        }
+    }
+
+    /// If the next funding rate has been set.
+    pub fn has_next_funding_rate(&self) -> bool {
+        self.next_funding_rate.is_some()
+            && self
+                .next_funding_event_block
+                .is_some_and(|bl| bl > self.state_instant.block_number())
     }
 
     /// Starting block number of funding intervals.
     /// Use [`Exchange::funding_interval_blocks`] to get interval "duration" in blocks.
     pub fn funding_start_block(&self) -> u64 {
         self.funding_start_block
+    }
+
+    /// Feed ID of ChainLink DataStreams price oracle.
+    pub fn oracle_feed_id(&self) -> B256 {
+        self.oracle_feed_id
+    }
+
+    /// If perpetual contract relues on oracle prices.
+    pub fn is_oracle_used(&self) -> bool {
+        self.is_oracle_used
+    }
+
+    /// Max age in seconds for oracle/mark prices.
+    pub fn price_max_age_sec(&self) -> u64 {
+        self.price_max_age_sec
     }
 
     /// Active orders in the perpetual contract book.
@@ -258,6 +317,28 @@ impl Perpetual {
 
     pub(crate) fn base_price(&self) -> UD64 {
         self.base_price
+    }
+
+    pub(crate) fn update_state_instant(
+        &mut self,
+        instant: types::StateInstant,
+    ) -> Vec<StateEvents> {
+        self.state_instant = instant;
+        if let Some(payment) = self.next_funding_payment
+            && self
+                .next_funding_event_block
+                .is_some_and(|fe| fe == instant.block_number())
+        {
+            vec![StateEvents::perpetual(
+                self,
+                PerpetualEventType::FundingEvent {
+                    rate: self.funding_rate(),
+                    payment_per_unit: payment,
+                },
+            )]
+        } else {
+            vec![]
+        }
     }
 
     pub(crate) fn add_order(&mut self, order: Order) {
@@ -346,12 +427,51 @@ impl Perpetual {
         self.instant = instant;
     }
 
-    pub(crate) fn update_price_max_age(
+    pub(crate) fn update_funding(
         &mut self,
         instant: types::StateInstant,
-        price_max_age: u64,
+        funding_rate: D64,
+        funding_payment: D256,
+        block_num: u64,
     ) {
-        self.price_max_age = price_max_age;
+        if let Some(next) = self.next_funding_rate
+            && self
+                .next_funding_event_block
+                .expect("next_funding_event_block set")
+                < block_num
+        {
+            self.prev_funding_rate = next;
+        }
+        self.next_funding_rate = Some(funding_rate);
+        self.next_funding_payment = Some(funding_payment);
+        self.next_funding_event_block = Some(block_num);
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_oracle_feed_id(
+        &mut self,
+        instant: types::StateInstant,
+        oracle_feed_id: B256,
+    ) {
+        self.oracle_feed_id = oracle_feed_id;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_is_oracle_used(
+        &mut self,
+        instant: types::StateInstant,
+        is_oracle_used: bool,
+    ) {
+        self.is_oracle_used = is_oracle_used;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_price_max_age_sec(
+        &mut self,
+        instant: types::StateInstant,
+        price_max_age_sec: u64,
+    ) {
+        self.price_max_age_sec = price_max_age_sec;
         self.instant = instant;
     }
 

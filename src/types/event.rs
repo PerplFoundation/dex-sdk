@@ -42,6 +42,15 @@ impl<T> EventContext<T> {
         }
     }
 
+    pub(crate) fn empty(event: T) -> Self {
+        Self {
+            tx_hash: TxHash::ZERO,
+            tx_index: 0,
+            log_index: 0,
+            event,
+        }
+    }
+
     pub fn tx_hash(&self) -> TxHash {
         self.tx_hash
     }
