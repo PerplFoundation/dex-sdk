@@ -97,7 +97,7 @@ mod tests {
     use crate::{Chain, abi::dex::Exchange::ExchangeEvents};
 
     #[tokio::test]
-    #[ignore = "smart contract is not deployed yet"]
+    #[ignore = "update for new smart contract instance"]
     async fn test_stream_historical_blocks() {
         let provider = ProviderBuilder::new()
             .connect("https://testnet-rpc.monad.xyz")
@@ -105,7 +105,7 @@ mod tests {
             .unwrap();
 
         let testnet = Chain::testnet();
-        let from_block = 41753780;
+        let from_block = 48152700;
         let stream = raw(
             &testnet,
             provider,
@@ -115,7 +115,7 @@ mod tests {
         let block_results = stream.take(100).collect::<Vec<_>>().await;
 
         let block = block_results[0].as_ref().unwrap();
-        assert_eq!(block.instant().block_number(), 41753780);
+        assert_eq!(block.instant().block_number(), 48152700);
         assert_eq!(block.instant().block_timestamp(), 1759844205);
         assert_eq!(block.events().len(), 3);
         assert!(
@@ -140,7 +140,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "smart contract is not deployed yet"]
     async fn test_stream_recent_blocks() {
         let client = RpcClient::builder()
             .layer(RetryBackoffLayer::new(10, 100, 200))
