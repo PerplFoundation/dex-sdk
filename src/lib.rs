@@ -57,9 +57,9 @@ impl Chain {
     pub fn testnet() -> Self {
         Self {
             chain_id: 10143,
-            collateral_token: address!("0xDcfCC5d088923a3Bb3b12CC9DfD34810EAe24248"),
-            deployed_at_block: 41748298,
-            exchange: address!("0xce806f7E961eA0A4bF11F3424444245f09ffF20E"),
+            collateral_token: address!("0x38B16915e2e8B6b7076eF9A3999426dD9Fb8a788"),
+            deployed_at_block: 48147218,
+            exchange: address!("0x0541203c987Ea8fF88C9A64De9A5901C917fFfe4"),
             perpetuals: vec![16, 32, 48, 64],
         }
     }
