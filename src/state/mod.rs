@@ -340,6 +340,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                                             collateral_converter,
                                             perp.price_converter(),
                                             perp.size_converter(),
+                                            perp.maintenance_margin(),
                                         ),
                                     )
                                 })
