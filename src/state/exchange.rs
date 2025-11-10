@@ -22,6 +22,7 @@ pub struct Exchange {
     perpetuals: HashMap<types::PerpetualId, Perpetual>,
     accounts: HashMap<types::AccountId, Account>,
     is_halted: bool,
+    track_all_accounts: bool,
 }
 
 impl Exchange {
@@ -37,6 +38,7 @@ impl Exchange {
         perpetuals: HashMap<types::PerpetualId, Perpetual>,
         accounts: HashMap<types::AccountId, Account>,
         is_halted: bool,
+        track_all_accounts: bool,
     ) -> Self {
         Self {
             chain,
@@ -49,6 +51,7 @@ impl Exchange {
             perpetuals,
             accounts,
             is_halted,
+            track_all_accounts,
         }
     }
 
@@ -222,7 +225,21 @@ impl Exchange {
         };
 
         Ok(match event.event() {
-            ExchangeEvents::AccountCreated(_) => vec![], // TODO: support tracking of newly created accounts
+            ExchangeEvents::AccountCreated(e) => {
+                if self.track_all_accounts {
+                    self.accounts.insert(
+                        e.id.to(),
+                        Account::from_event(instant, e.id.to(), e.account),
+                    );
+                    vec![StateEvents::Account(AccountEvent {
+                        account_id: e.id.to(),
+                        request_id: None,
+                        r#type: AccountEventType::Created(e.id.to()),
+                    })]
+                } else {
+                    vec![]
+                }
+            }
             ExchangeEvents::AccountFreeze(e) => self
                 .account(e.accountId)
                 .map(|acc| {

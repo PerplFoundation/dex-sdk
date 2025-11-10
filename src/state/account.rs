@@ -37,6 +37,37 @@ impl Account {
         }
     }
 
+    pub(crate) fn from_event(
+        instant: types::StateInstant,
+        id: types::AccountId,
+        address: Address,
+    ) -> Self {
+        Self {
+            instant,
+            id,
+            address,
+            balance: UD128::ZERO,
+            locked_balance: UD128::ZERO,
+            frozen: false,
+            positions: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn from_position(instant: types::StateInstant, position: Position) -> Self {
+        let account_id = position.account_id();
+        let mut positions = HashMap::new();
+        positions.insert(position.perpetual_id(), position);
+        Self {
+            instant,
+            id: account_id,
+            address: Address::ZERO,
+            balance: UD128::ZERO,
+            locked_balance: UD128::ZERO,
+            frozen: false,
+            positions,
+        }
+    }
+
     /// Instant the account state is consistent with or was last updated at.
     pub fn instant(&self) -> types::StateInstant {
         self.instant
