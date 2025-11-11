@@ -152,6 +152,21 @@ impl Position {
         liquidation_price.max(D64::ZERO).unsigned_abs()
     }
 
+    /// Bankruptcy price of the position.
+    pub fn bankruptcy_price(&self) -> UD64 {
+        let side = if self.r#type.is_long() {
+            D256::ONE
+        } else {
+            D256::ONE.neg()
+        };
+        let bankruptcy_price = self.entry_price.to_signed()
+            - (side
+                * (self.deposit.to_signed().resize() + self.premium_pnl)
+                / self.size.to_signed().resize())
+            .resize();
+        bankruptcy_price.max(D64::ZERO).unsigned_abs()
+    }
+
     pub(crate) fn update_type(&mut self, instant: types::StateInstant, r#type: PositionType) {
         self.r#type = r#type;
         self.instant = instant;
@@ -422,5 +437,41 @@ mod tests {
 
         assert!(pos.apply_funding_payment(i1, dec256!(-5)));
         assert_eq!(pos.liquidation_price(), udec64!(100));
+    }
+
+    #[test]
+    fn test_bankruptcy_price() {
+        let (i0, i1) = (StateInstant::default(), StateInstant::new(1, 1));
+        let mm1 = udec64!(20);
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            udec64!(100),
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.bankruptcy_price(), udec64!(90));
+
+        assert!(pos.apply_funding_payment(i1, dec256!(5)));
+        assert_eq!(pos.bankruptcy_price(), udec64!(95));
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Short,
+            udec64!(100),
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.bankruptcy_price(), udec64!(110));
+
+        assert!(pos.apply_funding_payment(i1, dec256!(-5)));
+        assert_eq!(pos.bankruptcy_price(), udec64!(105));
     }
 }
