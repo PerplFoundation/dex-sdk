@@ -1548,14 +1548,22 @@ impl Exchange {
                             .collect()
                     }
                     PerpetualEventType::MaintenanceMarginFractionUpdated(maintenance_margin) => {
-                        // Applying new maintenance margin to all tracked positions,
-                        // without emitting additional events
-                        self.accounts.values_mut().for_each(|acc| {
-                            if let Some(pos) = acc.positions_mut().get_mut(&pe.perpetual_id) {
-                                pos.apply_maintenance_margin(instant, maintenance_margin);
-                            }
-                        });
-                        vec![]
+                        // Applying new maintenance margin to all tracked positions
+                        self.accounts
+                            .values_mut()
+                            .filter_map(|acc| {
+                                acc.positions_mut().get_mut(&pe.perpetual_id).map(|pos| {
+                                    pos.apply_maintenance_margin(instant, maintenance_margin);
+                                    StateEvents::position(
+                                        pos,
+                                        &None,
+                                        PositionEventType::MaintenanceMarginUpdated(
+                                            pos.maintenance_margin_requirement(),
+                                        ),
+                                    )
+                                })
+                            })
+                            .collect()
                     }
                     _ => vec![],
                 }

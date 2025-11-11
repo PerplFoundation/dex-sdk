@@ -296,7 +296,7 @@ pub struct PositionEvent {
 /// Type of position event with corresponding details.
 #[derive(Clone, Copy, Debug)]
 pub enum PositionEventType {
-    // Position closed
+    /// Position closed.
     Closed {
         r#type: position::PositionType,
         entry_price: UD64,
@@ -306,7 +306,7 @@ pub enum PositionEventType {
         premium_pnl: D256,
     },
 
-    // Position decreased
+    /// Position decreased.
     Decreased {
         prev_size: UD64,
         new_size: UD64,
@@ -315,7 +315,7 @@ pub enum PositionEventType {
         premium_pnl: D256,
     },
 
-    // Position deleveraged
+    /// Position deleveraged.
     Deleveraged {
         force_close: bool,
         r#type: position::PositionType,
@@ -331,7 +331,7 @@ pub enum PositionEventType {
     /// Position deposit(collateral) updated.
     DepositUpdated(UD128),
 
-    // Position increased
+    /// Position increased.
     Increased {
         entry_price: UD64,
         prev_size: UD64,
@@ -339,7 +339,7 @@ pub enum PositionEventType {
         deposit: UD128,
     },
 
-    // Position inverted
+    /// Position inverted.
     Inverted {
         r#type: position::PositionType,
         entry_price: UD64,
@@ -350,7 +350,7 @@ pub enum PositionEventType {
         premium_pnl: D256,
     },
 
-    // Position liquidated
+    /// Position liquidated.
     Liquidated {
         r#type: position::PositionType,
         entry_price: UD64,
@@ -363,7 +363,11 @@ pub enum PositionEventType {
         premium_pnl: D256,
     },
 
-    // Position opened
+    /// Position maintenance margin requirement updated due
+    /// to updated maintenane margin fraction.
+    MaintenanceMarginUpdated(UD128),
+
+    /// Position opened.
     Opened {
         r#type: position::PositionType,
         entry_price: UD64,
@@ -371,14 +375,14 @@ pub enum PositionEventType {
         deposit: UD128,
     },
 
-    // Position unrealized PnL updated
+    /// Position unrealized PnL updated.
     UnrealizedPnLUpdated {
         pnl: D256,
         delta_pnl: D256,
         premium_pnl: D256,
     },
 
-    // Position unwound
+    /// Position unwound.
     Unwound {
         r#type: position::PositionType,
         entry_price: UD64,
