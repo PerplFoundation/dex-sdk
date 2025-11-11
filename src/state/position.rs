@@ -1,4 +1,4 @@
-use fastnum::{D256, UD64, UD128};
+use fastnum::{D64, D256, UD64, UD128};
 
 use super::num;
 use crate::{abi::dex::Exchange::PositionInfo, types};
@@ -22,6 +22,7 @@ pub struct Position {
     deposit: UD128,    // SC allocates 80 bits
     delta_pnl: D256,   // SC calculations and ABI use 256 bits
     premium_pnl: D256, // SC calculations and ABI use 256 bits
+    maintenance_margin_requirement: UD128,
 }
 
 impl Position {
@@ -32,21 +33,27 @@ impl Position {
         collateral_converter: num::Converter,
         price_converter: num::Converter,
         size_converter: num::Converter,
+        maintenance_margin: UD64,
     ) -> Self {
+        let entry_price = price_converter.from_unsigned(info.pricePNS);
+        let size = size_converter.from_unsigned(info.lotLNS);
         Self {
             instant,
             funding_instant: instant,
             perpetual_id,
             account_id: info.accountId.to(),
             r#type: info.positionType.into(),
-            entry_price: price_converter.from_unsigned(info.pricePNS),
-            size: size_converter.from_unsigned(info.lotLNS),
+            entry_price,
+            size,
             deposit: collateral_converter.from_unsigned(info.depositCNS),
             delta_pnl: collateral_converter.from_signed(info.deltaPnlCNS),
             premium_pnl: collateral_converter.from_signed(info.premiumPnlCNS),
+            maintenance_margin_requirement: entry_price.resize() * size.resize()
+                / maintenance_margin.resize(),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn opened(
         instant: types::StateInstant,
         perpetual_id: types::PerpetualId,
@@ -55,6 +62,7 @@ impl Position {
         entry_price: UD64,
         size: UD64,
         deposit: UD128,
+        maintenance_margin: UD64,
     ) -> Self {
         Self {
             instant,
@@ -67,6 +75,8 @@ impl Position {
             deposit,
             delta_pnl: D256::ZERO,
             premium_pnl: D256::ZERO,
+            maintenance_margin_requirement: entry_price.resize() * size.resize()
+                / maintenance_margin.resize(),
         }
     }
 
@@ -118,6 +128,28 @@ impl Position {
     /// Unrealized PnL of the position.
     pub fn pnl(&self) -> D256 {
         self.delta_pnl + self.premium_pnl
+    }
+
+    /// Maintenance margin requirement of the position.
+    pub fn maintenance_margin_requirement(&self) -> UD128 {
+        self.maintenance_margin_requirement
+    }
+
+    /// Liquidation price of the position.
+    pub fn liquidation_price(&self) -> UD64 {
+        let side = if self.r#type.is_long() {
+            D256::ONE
+        } else {
+            D256::ONE.neg()
+        };
+        let liquidation_price = self.entry_price.to_signed()
+            + (side
+                * (self.maintenance_margin_requirement.to_signed().resize()
+                    - self.deposit.to_signed().resize()
+                    - self.premium_pnl)
+                / self.size.to_signed().resize())
+            .resize();
+        liquidation_price.max(D64::ZERO).unsigned_abs()
     }
 
     pub(crate) fn update_type(&mut self, instant: types::StateInstant, r#type: PositionType) {
@@ -184,6 +216,16 @@ impl Position {
         self.funding_instant = instant;
         true
     }
+
+    pub(crate) fn apply_maintenance_margin(
+        &mut self,
+        instant: types::StateInstant,
+        maintenance_margin: UD64,
+    ) {
+        self.maintenance_margin_requirement =
+            self.entry_price.resize() * self.size.resize() / maintenance_margin.resize();
+        self.instant = instant;
+    }
 }
 
 impl PositionType {
@@ -208,7 +250,7 @@ impl From<u8> for PositionType {
 
 #[cfg(test)]
 mod tests {
-    use fastnum::{dec256, udec64};
+    use fastnum::{dec256, udec64, udec128};
 
     use crate::types::StateInstant;
 
@@ -224,6 +266,7 @@ mod tests {
             udec64!(100),
             udec64!(10),
             UD128::ZERO,
+            UD64::ONE,
         );
 
         pos.apply_mark_price(StateInstant::default(), udec64!(150));
@@ -240,6 +283,7 @@ mod tests {
             udec64!(100),
             udec64!(10),
             UD128::ZERO,
+            UD64::ONE,
         );
         pos.apply_mark_price(StateInstant::default(), udec64!(150));
         assert_eq!(pos.delta_pnl(), dec256!(-500));
@@ -263,6 +307,7 @@ mod tests {
             udec64!(100),
             udec64!(10),
             UD128::ZERO,
+            UD64::ONE,
         );
 
         assert!(pos.apply_funding_payment(i1, dec256!(5)));
@@ -281,6 +326,7 @@ mod tests {
             udec64!(100),
             udec64!(10),
             UD128::ZERO,
+            UD64::ONE,
         );
 
         pos.apply_funding_payment(i1, dec256!(5));
@@ -288,5 +334,93 @@ mod tests {
 
         pos.apply_funding_payment(i2, dec256!(-10));
         assert_eq!(pos.premium_pnl(), dec256!(-50));
+    }
+
+    #[test]
+    fn test_maintenance_margin_requirement() {
+        let i0 = StateInstant::default();
+        let (mm1, mm2) = (udec64!(20), udec64!(10));
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            udec64!(100),
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.maintenance_margin_requirement(), udec128!(50));
+
+        pos.update_entry_price(i0, udec64!(80));
+        pos.apply_maintenance_margin(i0, mm1);
+        assert_eq!(pos.maintenance_margin_requirement(), udec128!(40));
+
+        pos.update_size(i0, udec64!(20));
+        pos.apply_maintenance_margin(i0, mm1);
+        assert_eq!(pos.maintenance_margin_requirement(), udec128!(80));
+
+        pos.apply_maintenance_margin(i0, mm2);
+        assert_eq!(pos.maintenance_margin_requirement(), udec128!(160));
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Short,
+            udec64!(100),
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.maintenance_margin_requirement(), udec128!(50));
+
+        pos.update_entry_price(i0, udec64!(80));
+        pos.apply_maintenance_margin(i0, mm1);
+        assert_eq!(pos.maintenance_margin_requirement(), udec128!(40));
+
+        pos.update_size(i0, udec64!(20));
+        pos.apply_maintenance_margin(i0, mm1);
+        assert_eq!(pos.maintenance_margin_requirement(), udec128!(80));
+
+        pos.apply_maintenance_margin(i0, mm2);
+        assert_eq!(pos.maintenance_margin_requirement(), udec128!(160));
+    }
+
+    #[test]
+    fn test_liquidation_price() {
+        let (i0, i1) = (StateInstant::default(), StateInstant::new(1, 1));
+        let mm1 = udec64!(20);
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            udec64!(100),
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.liquidation_price(), udec64!(95));
+
+        assert!(pos.apply_funding_payment(i1, dec256!(5)));
+        assert_eq!(pos.liquidation_price(), udec64!(100));
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Short,
+            udec64!(100),
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.liquidation_price(), udec64!(105));
+
+        assert!(pos.apply_funding_payment(i1, dec256!(-5)));
+        assert_eq!(pos.liquidation_price(), udec64!(100));
     }
 }

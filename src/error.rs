@@ -105,7 +105,8 @@ impl<E: Display, R: SolInterface> From<transports::RpcError<E>> for ProviderErro
                     Self::OutOfGas
                 } else if ((resp.code == -32600 || resp.code == -32601 || resp.code == -32602)
                     && (msg.contains("invalid") || msg.contains("not found")))
-                    || (resp.code == -32603 && msg.contains("block by number"))
+                    || (resp.code == -32603
+                        && (msg.contains("block by number") || msg.contains("getting block")))
                 {
                     Self::InvalidRequest(msg)
                 } else if resp.code == 3 && msg.contains("reverted") {

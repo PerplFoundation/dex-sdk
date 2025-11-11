@@ -47,6 +47,9 @@ pub struct AccountEvent {
 /// Type of account event with corresponding details.
 #[derive(Clone, Copy, Debug)]
 pub enum AccountEventType {
+    /// New account created.
+    Created(types::AccountId),
+
     /// Account frozen/unfrozen.
     Frozen(bool),
 

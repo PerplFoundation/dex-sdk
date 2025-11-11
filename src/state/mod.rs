@@ -30,7 +30,7 @@ use alloy::{
     primitives::{Address, U256},
     providers::Provider,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map};
 
 // Public re-exports
 pub use account::*;
@@ -46,6 +46,11 @@ pub use position::*;
 /// plus some buffer.
 const DEFAULT_ORDERS_PER_BATCH: usize = 3000;
 
+/// Default number of positions to fetch via single call.
+/// Assuming Monad's 8100 gas per storage slot access and 30M gas limit of `eth_call`,
+/// plus some buffer.
+const DEFAULT_POSITIONS_PER_BATCH: usize = 3000;
+
 /// Builds a consistent snapshot of the exchange state
 /// that can be then kept up-to-date by the data from [`crate::stream::raw`].
 pub struct SnapshotBuilder<P> {
@@ -55,7 +60,9 @@ pub struct SnapshotBuilder<P> {
     block_id: BlockId,
     perpetuals: Vec<types::PerpetualId>,
     accounts: Vec<Address>,
+    all_positions: bool,
     orders_per_batch: usize,
+    positions_per_batch: usize,
 }
 
 impl<P: Provider + Clone> SnapshotBuilder<P> {
@@ -69,7 +76,9 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             block_id: BlockId::Number(alloy::eips::BlockNumberOrTag::Latest),
             perpetuals: chain.perpetuals.clone(),
             accounts: vec![],
+            all_positions: false,
             orders_per_batch: DEFAULT_ORDERS_PER_BATCH,
+            positions_per_batch: DEFAULT_POSITIONS_PER_BATCH,
         }
     }
 
@@ -89,15 +98,46 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
 
     /// Sets the list of addresses to fetch the state of exchange accounts for.
     /// Assumes accounts already exist, snapshot creation will fail otherwise.
+    ///
+    /// # Panics
+    ///
+    /// If [`Self::with_all_positions`] was called before.
     pub fn with_accounts(mut self, accounts: Vec<Address>) -> Self {
+        assert!(
+            !self.all_positions,
+            "simultaneous tracking of all positions and specific accounts is not supported"
+        );
         self.accounts = accounts;
         self
     }
 
-    /// Sets the number of orders to fetch in a single batch via multicall (default: 3000),
-    /// according to node/provider gas and response size limits.
+    /// Forces to fetch all available positions, along with corresponding
+    /// accounts without state snapshot.
+    /// Mutually exclusive with [`Self::with_accounts`].
+    ///
+    /// # Panics
+    ///
+    /// If [`Self::with_accounts`] was called before.
+    pub fn with_all_positions(mut self) -> Self {
+        assert!(
+            self.accounts.is_empty(),
+            "simultaneous tracking of all positions and specific accounts is not supported"
+        );
+        self.all_positions = true;
+        self
+    }
+
+    /// Sets the number of orders to fetch in a single batch via multicall (default: 3000).
+    /// Use if default does not fit node/provider gas and response size limits.
     pub fn with_orders_per_batch(mut self, orders_per_batch: usize) -> Self {
         self.orders_per_batch = orders_per_batch;
+        self
+    }
+
+    /// Sets the number of positions to fetch in a single batch (default: 3000).
+    /// Use if default does not fit node/provider gas and response size limits.
+    pub fn with_positions_per_batch(mut self, positions_per_batch: usize) -> Self {
+        self.positions_per_batch = positions_per_batch;
         self
     }
 
@@ -107,17 +147,36 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         let instant = self.normalize_block().await?;
 
         // Global exchange parameters and state
-        let (exchange_info, funding_interval, min_post, min_settle, recycle_fee, is_halted) =
-            self.exchange_info().await?;
+        let (
+            exchange_info,
+            funding_interval,
+            min_post,
+            min_settle,
+            recycle_fee,
+            is_halted,
+            num_of_accounts,
+        ) = self.exchange_info().await?;
         let collateral_converter = num::Converter::new(exchange_info.collateralDecimals.to());
 
         // Perpetual contracts parameters, state and active orders
         let perpetuals = self.perpetuals(instant).await?;
 
-        // Accounts parameters, state and open positions
-        let accounts = self
-            .accounts(instant, &perpetuals, collateral_converter)
-            .await?;
+        let accounts = if !self.accounts.is_empty() {
+            // Accounts parameters, state and open positions if specific accounts requested
+            self.accounts(instant, &perpetuals, collateral_converter)
+                .await?
+        } else if self.all_positions {
+            // All positions with corresponding accounts without parameters and balance snapshot
+            self.position_accounts(
+                instant,
+                &perpetuals,
+                num_of_accounts.to(),
+                collateral_converter,
+            )
+            .await?
+        } else {
+            HashMap::new()
+        };
 
         Ok(Exchange::new(
             self.chain.clone(),
@@ -130,6 +189,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             perpetuals,
             accounts,
             is_halted,
+            self.all_positions,
         ))
     }
 
@@ -152,7 +212,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
 
     async fn exchange_info(
         &self,
-    ) -> Result<(getExchangeInfoReturn, U256, U256, U256, U256, bool), DexError> {
+    ) -> Result<(getExchangeInfoReturn, U256, U256, U256, U256, bool, U256), DexError> {
         let (
             exchange_info_call,
             funding_interval_call,
@@ -160,6 +220,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             min_settle_call,
             recycle_fee_call,
             is_halted_call,
+            num_of_accounts_call,
         ) = (
             self.instance.getExchangeInfo().block(self.block_id),
             self.instance.getFundingInterval().block(self.block_id),
@@ -167,6 +228,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             self.instance.getMinimumSettleCNS().block(self.block_id),
             self.instance.getRecycleFeeCNS().block(self.block_id),
             self.instance.isHalted().block(self.block_id),
+            self.instance.numberOfAccounts(),
         );
         futures::try_join!(
             exchange_info_call.call().into_future(),
@@ -175,6 +237,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             min_settle_call.call().into_future(),
             recycle_fee_call.call().into_future(),
             is_halted_call.call().into_future(),
+            num_of_accounts_call.call().into_future(),
         )
         .map_err(DexError::from)
     }
@@ -340,6 +403,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                                             collateral_converter,
                                             perp.price_converter(),
                                             perp.size_converter(),
+                                            perp.maintenance_margin(),
                                         ),
                                     )
                                 })
@@ -350,5 +414,56 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                 )
             })
             .collect())
+    }
+
+    async fn position_accounts(
+        &self,
+        instant: types::StateInstant,
+        perpetuals: &HashMap<types::PerpetualId, perpetual::Perpetual>,
+        num_accounts: usize,
+        collateral_converter: num::Converter,
+    ) -> Result<HashMap<types::AccountId, Account>, DexError> {
+        let mut accounts: HashMap<types::AccountId, Account> = HashMap::new();
+
+        for (perp_id, perp) in perpetuals {
+            let futs =
+                (0..(num_accounts / self.positions_per_batch) + 1).map(|batch_idx| async move {
+                    self.instance
+                        .getPositions(
+                            U256::from(*perp_id),
+                            U256::from(batch_idx * self.positions_per_batch),
+                            U256::from(self.positions_per_batch),
+                        )
+                        .block(self.block_id)
+                        .call()
+                        .await
+                });
+            let results = futures::future::try_join_all(futs).await?;
+            for res in results {
+                for pos in res.positions {
+                    if !pos.accountId.is_zero() {
+                        let position = Position::new(
+                            instant,
+                            *perp_id,
+                            &pos,
+                            collateral_converter,
+                            perp.price_converter(),
+                            perp.size_converter(),
+                            perp.maintenance_margin(),
+                        );
+                        match accounts.entry(pos.accountId.to()) {
+                            hash_map::Entry::Occupied(mut e) => {
+                                e.get_mut().positions_mut().insert(*perp_id, position);
+                            }
+                            hash_map::Entry::Vacant(e) => {
+                                e.insert(Account::from_position(instant, position));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(accounts)
     }
 }

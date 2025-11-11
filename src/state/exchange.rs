@@ -22,6 +22,7 @@ pub struct Exchange {
     perpetuals: HashMap<types::PerpetualId, Perpetual>,
     accounts: HashMap<types::AccountId, Account>,
     is_halted: bool,
+    track_all_accounts: bool,
 }
 
 impl Exchange {
@@ -37,6 +38,7 @@ impl Exchange {
         perpetuals: HashMap<types::PerpetualId, Perpetual>,
         accounts: HashMap<types::AccountId, Account>,
         is_halted: bool,
+        track_all_accounts: bool,
     ) -> Self {
         Self {
             chain,
@@ -49,6 +51,7 @@ impl Exchange {
             perpetuals,
             accounts,
             is_halted,
+            track_all_accounts,
         }
     }
 
@@ -222,7 +225,21 @@ impl Exchange {
         };
 
         Ok(match event.event() {
-            ExchangeEvents::AccountCreated(_) => vec![], // TODO: support tracking of newly created accounts
+            ExchangeEvents::AccountCreated(e) => {
+                if self.track_all_accounts {
+                    self.accounts.insert(
+                        e.id.to(),
+                        Account::from_event(instant, e.id.to(), e.account),
+                    );
+                    vec![StateEvents::Account(AccountEvent {
+                        account_id: e.id.to(),
+                        request_id: None,
+                        r#type: AccountEventType::Created(e.id.to()),
+                    })]
+                } else {
+                    vec![]
+                }
+            }
             ExchangeEvents::AccountFreeze(e) => self
                 .account(e.accountId)
                 .map(|acc| {
@@ -1047,6 +1064,7 @@ impl Exchange {
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
                     pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
                             pos,
@@ -1081,6 +1099,7 @@ impl Exchange {
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
                     pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
                             pos,
@@ -1135,6 +1154,7 @@ impl Exchange {
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.update_delta_pnl(instant, D256::ZERO);
                     pos.update_premium_pnl(instant, D256::ZERO);
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
 
                     chain!(
                         Some(StateEvents::position(
@@ -1174,6 +1194,7 @@ impl Exchange {
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
                     pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
                     if pos.r#type() == PositionType::Long {
                         perp.update_open_interest(instant, UD64::ZERO, pos.size());
                     } else {
@@ -1209,6 +1230,7 @@ impl Exchange {
                     pos.update_deposit(instant, cc.from_unsigned(e.posDepositCNS));
                     pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
                     pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
                             pos,
@@ -1271,6 +1293,7 @@ impl Exchange {
                         perp.price_converter().from_unsigned(e.pricePNS),
                         perp.size_converter().from_unsigned(e.lotLNS),
                         cc.from_unsigned(e.depositCNS),
+                        perp.maintenance_margin(),
                     );
                     let events = chain!(
                         Some(StateEvents::position(
@@ -1523,6 +1546,16 @@ impl Exchange {
                                     })
                             })
                             .collect()
+                    }
+                    PerpetualEventType::MaintenanceMarginFractionUpdated(maintenance_margin) => {
+                        // Applying new maintenance margin to all tracked positions,
+                        // without emitting additional events
+                        self.accounts.values_mut().for_each(|acc| {
+                            if let Some(pos) = acc.positions_mut().get_mut(&pe.perpetual_id) {
+                                pos.apply_maintenance_margin(instant, maintenance_margin);
+                            }
+                        });
+                        vec![]
                     }
                     _ => vec![],
                 }
