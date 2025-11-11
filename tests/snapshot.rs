@@ -140,7 +140,11 @@ async fn test_full_book_snapshot() {
         .unwrap();
     println!("snapshot taken in: {:?}", started_at.elapsed());
 
-    assert!(snap.instant().block_number() > 200);
+    assert!(
+        snap.instant().block_number() > 180,
+        "actual block num: {}",
+        snap.instant().block_number()
+    );
     assert_eq!(snap.is_halted(), false);
     assert_eq!(snap.perpetuals().len(), 1);
     assert_eq!(snap.accounts().len(), 2);

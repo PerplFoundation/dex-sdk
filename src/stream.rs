@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use alloy::{providers::Provider, rpc::types::Filter, sol_types::SolEventInterface};
+use alloy::{eips::BlockId, providers::Provider, rpc::types::Filter, sol_types::SolEventInterface};
 use futures::{Stream, stream};
 
 use crate::{Chain, abi::dex::Exchange::ExchangeEvents, error::DexError, types};
@@ -41,33 +41,34 @@ where
             loop {
                 // Anvil node, and maybe some RPC providers, produce empty response instead of
                 // error in case the block in the filter does not exist yet,
-                // so adding aditional check against the tip of the chain
-                let result =
-                    futures::try_join!(provider.get_block_number(), provider.get_logs(&filter))
-                        .map_err(DexError::from)
-                        .and_then(|(head_block_num, logs)| {
-                            if head_block_num < block_num {
-                                return Err(DexError::InvalidRequest(
-                                    "block is not available yet".to_string(),
-                                ));
-                            }
-                            let mut events = Vec::with_capacity(logs.len());
-                            let block_ts = logs.first().and_then(|l| l.block_timestamp);
-                            for log in &logs {
-                                events.push(RawEvent::new(
-                                    log.transaction_hash.unwrap_or_default(),
-                                    log.transaction_index.unwrap_or_default(),
-                                    log.log_index.unwrap_or_default(),
-                                    ExchangeEvents::decode_log(&log.inner)
-                                        .map_err(DexError::from)?
-                                        .data,
-                                ));
-                            }
-                            Ok(RawBlockEvents::new(
-                                types::StateInstant::new(block_num, block_ts.unwrap_or_default()),
-                                events,
-                            ))
-                        });
+                // so checking the block presence explicitly
+                let result = futures::try_join!(
+                    provider.get_block(BlockId::number(block_num)).into_future(),
+                    provider.get_logs(&filter)
+                )
+                .map_err(DexError::from)
+                .and_then(|(block, logs)| {
+                    let block_header = block
+                        .ok_or(DexError::InvalidRequest(
+                            "block is not available yet".to_string(),
+                        ))?
+                        .header;
+                    let mut events = Vec::with_capacity(logs.len());
+                    for log in &logs {
+                        events.push(RawEvent::new(
+                            log.transaction_hash.unwrap_or_default(),
+                            log.transaction_index.unwrap_or_default(),
+                            log.log_index.unwrap_or_default(),
+                            ExchangeEvents::decode_log(&log.inner)
+                                .map_err(DexError::from)?
+                                .data,
+                        ));
+                    }
+                    Ok(RawBlockEvents::new(
+                        types::StateInstant::new(block_num, block_header.timestamp),
+                        events,
+                    ))
+                });
                 if result.is_ok() {
                     block_num += 1;
                     return Some((result, (provider, block_num)));
