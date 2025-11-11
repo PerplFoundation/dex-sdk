@@ -1584,7 +1584,18 @@ impl Exchange {
         Ok(self.accounts.contains_key(&c.account_id).then_some(c))
     }
 
+    fn ensure_account(&mut self, id: U256) {
+        let id = id.to::<types::AccountId>();
+        if self.track_all_accounts && !self.accounts.contains_key(&id) {
+            self.accounts.insert(
+                id,
+                Account::from_event(types::StateInstant::default(), id, Address::ZERO),
+            );
+        }
+    }
+
     fn account(&mut self, id: U256) -> Option<&mut Account> {
+        self.ensure_account(id);
         self.accounts.get_mut(&id.to::<types::AccountId>())
     }
 
@@ -1617,6 +1628,7 @@ impl Exchange {
         acc_id: U256,
         perp_id: U256,
     ) -> Option<(&mut Account, &mut Perpetual)> {
+        self.ensure_account(acc_id);
         self.accounts
             .get_mut(&acc_id.to::<types::AccountId>())
             .zip(self.perpetuals.get_mut(&perp_id.to::<types::PerpetualId>()))
@@ -1627,6 +1639,7 @@ impl Exchange {
         acc_id: U256,
         perp_id: U256,
     ) -> Result<Option<(&mut Position, &mut Perpetual)>, DexError> {
+        self.ensure_account(acc_id);
         let acc_id = acc_id.to::<types::AccountId>();
         let perp_id = perp_id.to::<types::PerpetualId>();
         Ok(if let Some(acc) = self.accounts.get_mut(&acc_id) {
