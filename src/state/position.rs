@@ -160,8 +160,7 @@ impl Position {
             D256::ONE.neg()
         };
         let bankruptcy_price = self.entry_price.to_signed()
-            - (side
-                * (self.deposit.to_signed().resize() + self.premium_pnl)
+            - (side * (self.deposit.to_signed().resize() + self.premium_pnl)
                 / self.size.to_signed().resize())
             .resize();
         bankruptcy_price.max(D64::ZERO).unsigned_abs()

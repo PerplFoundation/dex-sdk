@@ -112,7 +112,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
     }
 
     /// Forces to fetch all available positions, along with corresponding
-    /// accounts without state snapshot.
+    /// accounts, but without account state snapshot.
     /// Mutually exclusive with [`Self::with_accounts`].
     ///
     /// # Panics

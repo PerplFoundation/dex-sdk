@@ -10,9 +10,9 @@ Perpetual DEX SDK
 ## Documentation
 
 ```
-cargo doc --open
+cargo doc --no-deps --open
 ```
 
 ## Usage
 
-TODO
+See [AionexTech/dex-sdk-examples](https://github.com/AionexTech/dex-sdk-examples) for some usage examples.

@@ -17,7 +17,7 @@ use crate::{abi::dex, num};
 ///
 /// Exchange does not support concept of client order IDs and does not store any
 /// externally-provided state with orders on-chain, but each order request emits
-/// provided [`request_id`] with it, which gets indexed and stored with the order,
+/// provided [`Order::request_id`] with it, which gets indexed and stored with the order,
 /// but with the limitation that this data is available only from events, not
 /// with the original snapshot.
 ///
