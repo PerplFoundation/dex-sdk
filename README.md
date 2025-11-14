@@ -15,4 +15,4 @@ cargo doc --no-deps --open
 
 ## Usage
 
-See [AionexTech/dex-sdk-examples](https://github.com/AionexTech/dex-sdk-examples) for some usage examples.
+See [PerplFoundation/dex-sdk-examples](https://github.com/PerplFoundation/dex-sdk-examples) for some usage examples.
