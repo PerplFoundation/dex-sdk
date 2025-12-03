@@ -30,6 +30,7 @@ use alloy::{
     primitives::{Address, U256},
     providers::Provider,
 };
+use itertools::Itertools;
 use std::collections::{HashMap, hash_map};
 
 // Public re-exports
@@ -424,34 +425,36 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         collateral_converter: num::Converter,
     ) -> Result<HashMap<types::AccountId, Account>, DexError> {
         let mut accounts: HashMap<types::AccountId, Account> = HashMap::new();
-
         for (perp_id, perp) in perpetuals {
-            let futs =
-                (0..(num_accounts / self.positions_per_batch) + 1).map(|batch_idx| async move {
-                    self.instance
-                        .getPositions(
-                            U256::from(*perp_id),
-                            U256::from(batch_idx * self.positions_per_batch),
-                            U256::from(self.positions_per_batch),
-                        )
-                        .block(self.block_id)
-                        .call()
-                        .await
-                });
-            let results = futures::future::try_join_all(futs).await?;
-            for res in results {
-                for pos in res.positions {
-                    if !pos.accountId.is_zero() {
+            let pid = U256::from(*perp_id);
+            let account_id_chunks = (1..num_accounts + 1).chunks(self.positions_per_batch);
+            let pos_batch_futs = account_id_chunks.into_iter().map(|chunk| {
+                let multicall = self
+                    .provider
+                    .multicall()
+                    .block(self.block_id)
+                    .dynamic()
+                    .extend(chunk.map(|aid| self.instance.getPosition(pid, U256::from(aid))));
+                async move { multicall.aggregate().await }
+            });
+
+            futures::future::try_join_all(pos_batch_futs)
+                .await
+                .map_err(DexError::from)?
+                .into_iter()
+                .flatten()
+                .for_each(|pos| {
+                    if !pos.positionInfo.accountId.is_zero() {
                         let position = Position::new(
                             instant,
                             *perp_id,
-                            &pos,
+                            &pos.positionInfo,
                             collateral_converter,
                             perp.price_converter(),
                             perp.size_converter(),
                             perp.maintenance_margin(),
                         );
-                        match accounts.entry(pos.accountId.to()) {
+                        match accounts.entry(pos.positionInfo.accountId.to()) {
                             hash_map::Entry::Occupied(mut e) => {
                                 e.get_mut().positions_mut().insert(*perp_id, position);
                             }
@@ -460,8 +463,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                             }
                         }
                     }
-                }
-            }
+                });
         }
 
         Ok(accounts)

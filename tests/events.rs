@@ -55,7 +55,6 @@ async fn test_snapshot_and_events() {
     // Snapshot
     let snapshot = Arc::new(RwLock::new(
         state::SnapshotBuilder::new(&exchange.chain(), exchange.provider.clone())
-            //.with_accounts(vec![maker.address, taker.address])
             .with_all_positions()
             .build()
             .await

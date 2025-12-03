@@ -1062,8 +1062,11 @@ impl Exchange {
                     let prev_size = pos.size();
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
-                    pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
-                    pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
+                    pos.apply_mark_price(instant, perp.mark_price());
+                    pos.update_premium_pnl(
+                        instant,
+                        pos.premium_pnl().sub(cc.from_signed(e.fundingCNS)),
+                    );
                     pos.apply_maintenance_margin(instant, perp.maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
@@ -1097,8 +1100,11 @@ impl Exchange {
                     let prev_size = pos.size();
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
-                    pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
-                    pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
+                    pos.apply_mark_price(instant, perp.mark_price());
+                    pos.update_premium_pnl(
+                        instant,
+                        pos.premium_pnl().sub(cc.from_signed(e.fundingCNS)),
+                    );
                     pos.apply_maintenance_margin(instant, perp.maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
@@ -1152,7 +1158,7 @@ impl Exchange {
                     );
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
-                    pos.update_delta_pnl(instant, D256::ZERO);
+                    pos.apply_mark_price(instant, perp.mark_price());
                     pos.update_premium_pnl(instant, D256::ZERO);
                     pos.apply_maintenance_margin(instant, perp.maintenance_margin());
 
@@ -1184,6 +1190,8 @@ impl Exchange {
             }
             ExchangeEvents::PositionInverted(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
+                    let prev_type = pos.r#type();
+                    let prev_entry_price = pos.entry_price();
                     let prev_size = pos.size();
                     pos.update_type(instant, PositionType::from(e.positionType));
                     pos.update_entry_price(
@@ -1192,8 +1200,8 @@ impl Exchange {
                     );
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
-                    pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
-                    pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
+                    pos.apply_mark_price(instant, perp.mark_price());
+                    pos.update_premium_pnl(instant, D256::ZERO);
                     pos.apply_maintenance_margin(instant, perp.maintenance_margin());
                     if pos.r#type() == PositionType::Long {
                         perp.update_open_interest(instant, UD64::ZERO, pos.size());
@@ -1201,6 +1209,18 @@ impl Exchange {
                         perp.update_open_interest(instant, prev_size, UD64::ZERO);
                     }
                     vec![
+                        StateEvents::position(
+                            pos,
+                            ctx,
+                            PositionEventType::Closed {
+                                r#type: prev_type,
+                                entry_price: prev_entry_price,
+                                exit_price: pos.entry_price(),
+                                size: prev_size,
+                                delta_pnl: cc.from_signed(e.deltaPnlCNS),
+                                premium_pnl: cc.from_signed(e.fundingCNS),
+                            },
+                        ),
                         StateEvents::position(
                             pos,
                             ctx,
@@ -1228,8 +1248,11 @@ impl Exchange {
                     let prev_size = pos.size();
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.posLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.posDepositCNS));
-                    pos.update_delta_pnl(instant, cc.from_signed(e.deltaPnlCNS));
-                    pos.update_premium_pnl(instant, cc.from_signed(e.fundingCNS));
+                    pos.apply_mark_price(instant, perp.mark_price());
+                    pos.update_premium_pnl(
+                        instant,
+                        pos.premium_pnl().sub(cc.from_signed(e.fundingCNS)),
+                    );
                     pos.apply_maintenance_margin(instant, perp.maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
