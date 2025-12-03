@@ -185,12 +185,6 @@ impl Position {
         self.deposit = deposit;
         self.instant = instant;
     }
-
-    pub(crate) fn update_delta_pnl(&mut self, instant: types::StateInstant, delta_pnl: D256) {
-        self.delta_pnl = delta_pnl;
-        self.instant = instant;
-    }
-
     pub(crate) fn update_premium_pnl(&mut self, instant: types::StateInstant, premium_pnl: D256) {
         self.premium_pnl = premium_pnl;
         self.instant = instant;
