@@ -523,7 +523,7 @@ impl Exchange {
                 .into_iter()
                 .collect(),
             ExchangeEvents::IncreasePositionCollateral(e) => chain!(
-                self.position(e.perpId, e.accountId)?.map(|(pos, _)| {
+                self.position(e.accountId, e.perpId)?.map(|(pos, _)| {
                     pos.update_deposit(instant, cc.from_unsigned(e.positionDepositCNS));
                     StateEvents::position(
                         pos,
