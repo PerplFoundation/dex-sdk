@@ -342,14 +342,19 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .into_iter()
             .flatten()
             .for_each(|ord| {
-                perp.add_order(Order::new(
-                    instant,
-                    ord,
-                    base_price,
-                    price_converter,
-                    size_converter,
-                    leverage_converter,
-                ));
+                // Use Address::ZERO for snapshot orders - address can be looked up via account_id
+                // Real-time events will populate correct addresses
+                perp.add_order(
+                    Order::new(
+                        instant,
+                        ord,
+                        base_price,
+                        price_converter,
+                        size_converter,
+                        leverage_converter,
+                    ),
+                    alloy::primitives::Address::ZERO,
+                );
             });
 
         Ok(())

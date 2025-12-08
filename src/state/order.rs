@@ -136,6 +136,51 @@ impl Order {
         }
     }
 
+    /// Create an order for L3 testing with full control over block_number, order_id, account_id.
+    #[allow(unused)]
+    pub(crate) fn for_l3_testing(
+        r#type: types::OrderType,
+        price: UD64,
+        size: UD64,
+        block_number: u64,
+        order_id: types::OrderId,
+        account_id: types::AccountId,
+    ) -> Self {
+        Self {
+            instant: types::StateInstant::new(block_number, 0),
+            request_id: None,
+            order_id,
+            r#type,
+            account_id,
+            price,
+            size,
+            expiry_block: 0,
+            leverage: UD64::ZERO,
+            post_only: None,
+            fill_or_kill: None,
+            immediate_or_cancel: None,
+        }
+    }
+
+    /// Create a copy with updated size (for testing partial fills).
+    #[allow(unused)]
+    pub(crate) fn with_size(&self, size: UD64) -> Self {
+        Self {
+            instant: self.instant,
+            request_id: self.request_id,
+            order_id: self.order_id,
+            r#type: self.r#type,
+            account_id: self.account_id,
+            price: self.price,
+            size,
+            expiry_block: self.expiry_block,
+            leverage: self.leverage,
+            post_only: self.post_only,
+            fill_or_kill: self.fill_or_kill,
+            immediate_or_cancel: self.immediate_or_cancel,
+        }
+    }
+
     /// Instant the order state is consistent with or was last updated at.
     pub fn instant(&self) -> types::StateInstant {
         self.instant

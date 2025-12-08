@@ -651,56 +651,60 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::MakerOrderFilled(e) => chain!(
-                if let Some((perp, order)) = self.order(e.perpId, e.orderId)? {
-                    let fill_price = perp.price_converter().from_unsigned(e.pricePNS);
-                    let fill_size = perp.size_converter().from_unsigned(e.lotLNS);
-                    let fee = cc.from_unsigned(e.feeCNS);
-                    perp.update_last_price(instant, fill_price);
-                    vec![
-                        if order.size() > fill_size {
-                            let new_size = order.size() - fill_size;
-                            perp.update_order(order.updated(
-                                instant,
-                                ctx,
-                                None,
-                                Some(new_size),
-                                None,
-                            ))
-                            .expect("order exists");
+            ExchangeEvents::MakerOrderFilled(e) => {
+                // Get account address before borrowing perpetual mutably
+                let account_address = self
+                    .accounts
+                    .get(&e.accountId.to::<types::AccountId>())
+                    .map(|a| a.address())
+                    .unwrap_or(Address::ZERO);
+                chain!(
+                    if let Some((perp, order)) = self.order(e.perpId, e.orderId)? {
+                        let fill_price = perp.price_converter().from_unsigned(e.pricePNS);
+                        let fill_size = perp.size_converter().from_unsigned(e.lotLNS);
+                        let fee = cc.from_unsigned(e.feeCNS);
+                        perp.update_last_price(instant, fill_price);
+                        vec![
+                            if order.size() > fill_size {
+                                let new_size = order.size() - fill_size;
+                                perp.update_order(
+                                    order.updated(instant, ctx, None, Some(new_size), None),
+                                    account_address,
+                                )
+                                .expect("order exists");
+                                StateEvents::order(
+                                    perp,
+                                    &order,
+                                    ctx,
+                                    OrderEventType::Updated {
+                                        price: None,
+                                        size: Some(new_size),
+                                        expiry_block: None,
+                                    },
+                                )
+                            } else {
+                                perp.remove_order(order.order_id()).expect("order exists");
+                                StateEvents::order(perp, &order, ctx, OrderEventType::Removed)
+                            },
                             StateEvents::order(
                                 perp,
                                 &order,
                                 ctx,
-                                OrderEventType::Updated {
-                                    price: None,
-                                    size: Some(new_size),
-                                    expiry_block: None,
+                                OrderEventType::Filled {
+                                    fill_price,
+                                    fill_size,
+                                    fee,
+                                    is_maker: true,
                                 },
-                            )
-                        } else {
-                            perp.remove_order(order.order_id()).expect("order exists");
-                            StateEvents::order(perp, &order, ctx, OrderEventType::Removed)
-                        },
-                        StateEvents::order(
-                            perp,
-                            &order,
-                            ctx,
-                            OrderEventType::Filled {
-                                fill_price,
-                                fill_size,
-                                fee,
-                                is_maker: true,
-                            },
-                        ),
-                        StateEvents::perpetual(
-                            perp,
-                            PerpetualEventType::LastPriceUpdated(perp.last_price()),
-                        ),
-                    ]
-                } else {
-                    vec![]
-                },
+                            ),
+                            StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::LastPriceUpdated(perp.last_price()),
+                            ),
+                        ]
+                    } else {
+                        vec![]
+                    },
                 self.account(e.accountId).map(|acc| {
                     acc.update_locked_balance(instant, cc.from_unsigned(e.lockedBalanceCNS));
                     StateEvents::account(
@@ -714,7 +718,8 @@ impl Exchange {
                     StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
                 }),
             )
-            .collect(),
+            .collect()
+            }
             ExchangeEvents::MakerOrderSettlementFailed(e) => chain!(
                 if let Some(perp) = self.perpetual(e.perpId) {
                     let order = perp.remove_order(e.orderId.to())?;
@@ -884,6 +889,12 @@ impl Exchange {
             .collect(),
             ExchangeEvents::OrderChanged(e) => {
                 let c = must_ctx()?;
+                // Get account address before borrowing perpetual mutably
+                let account_address = self
+                    .accounts
+                    .get(&c.account_id)
+                    .map(|a| a.address())
+                    .unwrap_or(Address::ZERO);
                 chain!(
                     if let Some(perp) = self.perpetuals.get_mut(&c.perpetual_id) {
                         let order_id = c.order_id.unwrap_or_default();
@@ -917,7 +928,7 @@ impl Exchange {
                             size_update,
                             expiry_block_update,
                         );
-                        perp.update_order(updated)?;
+                        perp.update_order(updated, account_address)?;
                         Some(StateEvents::order(
                             perp,
                             &order,
@@ -962,6 +973,12 @@ impl Exchange {
             ExchangeEvents::OrderForwardingUpdated(_) => vec![],
             ExchangeEvents::OrderPlaced(e) => {
                 let c = must_ctx()?;
+                // Get account address before borrowing perpetual mutably
+                let account_address = self
+                    .accounts
+                    .get(&c.account_id)
+                    .map(|a| a.address())
+                    .unwrap_or(Address::ZERO);
                 chain!(
                     if let Some(perp) = self.perpetuals.get_mut(&c.perpetual_id) {
                         let order = Order::placed(
@@ -982,7 +999,7 @@ impl Exchange {
                             fill_or_kill: order.fill_or_kill().unwrap_or_default(),
                             immediate_or_cancel: order.immediate_or_cancel().unwrap_or_default(),
                         };
-                        perp.add_order(order);
+                        perp.add_order(order, account_address);
                         Some(StateEvents::order(perp, &order, ctx, event))
                     } else {
                         None
