@@ -353,9 +353,10 @@ impl Perpetual {
         }
     }
 
-    pub(crate) fn add_order(&mut self, order: Order) {
-        self.l2_book.add_order(&order);
+    pub(crate) fn add_order(&mut self, order: Order) -> Result<(), DexError> {
+        self.l2_book.add_order(&order)?;
         self.orders.insert(order.order_id(), order);
+        Ok(())
     }
 
     pub(crate) fn update_order(&mut self, order: Order) -> Result<(), DexError> {
@@ -364,11 +365,11 @@ impl Perpetual {
                 let prev = e.get();
                 if prev.price() != order.price() {
                     // Price changed: remove from old level, add to new level
-                    self.l2_book.remove_order(prev);
-                    self.l2_book.add_order(&order);
+                    self.l2_book.remove_order(prev)?;
+                    self.l2_book.add_order(&order)?;
                 } else {
                     // Same price: just update the order in place
-                    self.l2_book.update_order(&order, prev);
+                    self.l2_book.update_order(&order, prev)?;
                 }
                 e.insert(order);
                 Ok(())
@@ -380,7 +381,7 @@ impl Perpetual {
     pub(crate) fn remove_order(&mut self, order_id: types::OrderId) -> Result<Order, DexError> {
         match self.orders.entry(order_id) {
             Entry::Occupied(e) => {
-                self.l2_book.remove_order(e.get());
+                self.l2_book.remove_order(e.get())?;
                 Ok(e.remove())
             }
             Entry::Vacant(_) => Err(DexError::OrderNotFound(self.id, order_id)),

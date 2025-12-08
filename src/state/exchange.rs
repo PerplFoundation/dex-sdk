@@ -980,7 +980,7 @@ impl Exchange {
                             fill_or_kill: order.fill_or_kill().unwrap_or_default(),
                             immediate_or_cancel: order.immediate_or_cancel().unwrap_or_default(),
                         };
-                        perp.add_order(order);
+                        perp.add_order(order)?;
                         Some(StateEvents::order(perp, &order, ctx, event))
                     } else {
                         None

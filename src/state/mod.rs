@@ -341,7 +341,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .map_err(DexError::from)?
             .into_iter()
             .flatten()
-            .for_each(|ord| {
+            .try_for_each(|ord| {
                 perp.add_order(Order::new(
                     instant,
                     ord,
@@ -349,10 +349,8 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                     price_converter,
                     size_converter,
                     leverage_converter,
-                ));
-            });
-
-        Ok(())
+                ))
+            })
     }
 
     async fn accounts(

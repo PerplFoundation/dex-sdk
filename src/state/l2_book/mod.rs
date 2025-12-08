@@ -3,12 +3,14 @@
 //! This module provides the order book data structure that tracks orders
 //! at each price level with FIFO time-priority ordering.
 
+mod error;
 mod level;
 mod order;
 
 #[cfg(test)]
 mod tests;
 
+pub use error::{L2BookError, L2BookResult};
 pub use level::L3Level;
 pub use order::{L3Order, L3OrderKey};
 
@@ -127,7 +129,37 @@ impl L2Book {
     // === Mutation methods ===
 
     /// Add an order to the book.
-    pub(crate) fn add_order(&mut self, order: &Order) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The order already exists in the book
+    /// - The order has zero size
+    /// - The order has zero price
+    pub(crate) fn add_order(&mut self, order: &Order) -> L2BookResult<()> {
+        // Validate order
+        if order.size() == UD64::ZERO {
+            return Err(L2BookError::InvalidOrderSize {
+                order_id: order.order_id(),
+                size: order.size(),
+            });
+        }
+        if order.price() == UD64::ZERO {
+            return Err(L2BookError::InvalidOrderPrice {
+                order_id: order.order_id(),
+                price: order.price(),
+            });
+        }
+
+        // Check if order already exists
+        if let Some(&(existing_price, existing_block)) = self.order_index.get(&order.order_id()) {
+            return Err(L2BookError::OrderAlreadyExists {
+                order_id: order.order_id(),
+                existing_price,
+                existing_block,
+            });
+        }
+
         let l3_order = L3Order::new(*order);
         let key = l3_order.key();
 
@@ -157,58 +189,133 @@ impl L2Book {
                 }
             },
         }
+
+        Ok(())
     }
 
     /// Update an order's size (same price level).
-    pub(crate) fn update_order(&mut self, order: &Order, _prev_order: &Order) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The order doesn't exist in the book
+    /// - The order is not found at its expected price level (internal inconsistency)
+    /// - The new size is zero
+    pub(crate) fn update_order(&mut self, order: &Order, _prev_order: &Order) -> L2BookResult<()> {
+        // Validate new size
+        if order.size() == UD64::ZERO {
+            return Err(L2BookError::InvalidOrderSize {
+                order_id: order.order_id(),
+                size: order.size(),
+            });
+        }
+
         // Look up the order's position via the index
-        let Some(&(indexed_price, block_number)) = self.order_index.get(&order.order_id()) else {
-            return; // Order not found
-        };
+        let &(indexed_price, block_number) =
+            self.order_index.get(&order.order_id()).ok_or_else(|| {
+                L2BookError::OrderNotFound {
+                    order_id: order.order_id(),
+                }
+            })?;
 
         let key = (block_number, order.order_id());
+        let side = order.r#type().side();
 
-        match order.r#type().side() {
+        match side {
             types::OrderSide::Ask => {
-                if let Some(level) = self.asks.get_mut(&indexed_price) {
-                    level.update_order(&key, *order);
-                }
+                let level = self.asks.get_mut(&indexed_price).ok_or_else(|| {
+                    L2BookError::OrderNotAtExpectedLevel {
+                        order_id: order.order_id(),
+                        expected_price: indexed_price,
+                        side,
+                    }
+                })?;
+                level.update_order(&key, *order).ok_or_else(|| {
+                    L2BookError::OrderNotAtExpectedLevel {
+                        order_id: order.order_id(),
+                        expected_price: indexed_price,
+                        side,
+                    }
+                })?;
             }
             types::OrderSide::Bid => {
-                if let Some(level) = self.bids.get_mut(&Reverse(indexed_price)) {
-                    level.update_order(&key, *order);
-                }
+                let level =
+                    self.bids
+                        .get_mut(&Reverse(indexed_price))
+                        .ok_or_else(|| L2BookError::OrderNotAtExpectedLevel {
+                            order_id: order.order_id(),
+                            expected_price: indexed_price,
+                            side,
+                        })?;
+                level.update_order(&key, *order).ok_or_else(|| {
+                    L2BookError::OrderNotAtExpectedLevel {
+                        order_id: order.order_id(),
+                        expected_price: indexed_price,
+                        side,
+                    }
+                })?;
             }
         }
+
+        Ok(())
     }
 
     /// Remove an order from the book.
-    pub(crate) fn remove_order(&mut self, order: &Order) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The order doesn't exist in the book
+    /// - The order is not found at its expected price level (internal inconsistency)
+    pub(crate) fn remove_order(&mut self, order: &Order) -> L2BookResult<()> {
         // Look up and remove from index
-        let Some((indexed_price, block_number)) = self.order_index.remove(&order.order_id()) else {
-            return; // Order not found
-        };
+        let (indexed_price, block_number) =
+            self.order_index
+                .remove(&order.order_id())
+                .ok_or_else(|| L2BookError::OrderNotFound {
+                    order_id: order.order_id(),
+                })?;
 
         let key = (block_number, order.order_id());
+        let side = order.r#type().side();
 
-        match order.r#type().side() {
+        match side {
             types::OrderSide::Ask => {
-                if let btree_map::Entry::Occupied(mut o) = self.asks.entry(indexed_price) {
-                    o.get_mut().remove_order(&key);
-                    if o.get().is_empty() {
-                        o.remove();
-                    }
+                let btree_map::Entry::Occupied(mut o) = self.asks.entry(indexed_price) else {
+                    // Re-insert into index since we failed to remove
+                    self.order_index
+                        .insert(order.order_id(), (indexed_price, block_number));
+                    return Err(L2BookError::OrderNotAtExpectedLevel {
+                        order_id: order.order_id(),
+                        expected_price: indexed_price,
+                        side,
+                    });
+                };
+                o.get_mut().remove_order(&key);
+                if o.get().is_empty() {
+                    o.remove();
                 }
             }
             types::OrderSide::Bid => {
-                if let btree_map::Entry::Occupied(mut o) = self.bids.entry(Reverse(indexed_price)) {
-                    o.get_mut().remove_order(&key);
-                    if o.get().is_empty() {
-                        o.remove();
-                    }
+                let btree_map::Entry::Occupied(mut o) = self.bids.entry(Reverse(indexed_price))
+                else {
+                    // Re-insert into index since we failed to remove
+                    self.order_index
+                        .insert(order.order_id(), (indexed_price, block_number));
+                    return Err(L2BookError::OrderNotAtExpectedLevel {
+                        order_id: order.order_id(),
+                        expected_price: indexed_price,
+                        side,
+                    });
+                };
+                o.get_mut().remove_order(&key);
+                if o.get().is_empty() {
+                    o.remove();
                 }
             }
         }
+
+        Ok(())
     }
 
     fn impact<'a>(
