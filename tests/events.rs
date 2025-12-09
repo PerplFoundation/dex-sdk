@@ -80,9 +80,9 @@ async fn test_snapshot_and_events() {
         assert_eq!(perp.funding_start_block(), 8571);
         assert_eq!(perp.open_interest(), udec128!(0.1));
 
-        assert_eq!(perp.orders().len(), 1);
+        assert_eq!(perp.total_orders(), 1);
 
-        let order = perp.orders().get(&1).unwrap();
+        let order = perp.get_order(1).unwrap();
         assert_eq!(order.r#type(), types::OrderType::OpenShort);
         assert_eq!(order.price(), udec64!(100000));
         assert_eq!(order.size(), udec64!(0.9));
@@ -226,9 +226,9 @@ async fn test_snapshot_and_events() {
         assert_eq!(perp.last_price(), udec64!(100100));
         assert_eq!(perp.open_interest(), udec128!(0));
 
-        assert_eq!(perp.orders().len(), 1);
+        assert_eq!(perp.total_orders(), 1);
 
-        let order = perp.orders().get(&1).unwrap();
+        let order = perp.get_order(1).unwrap();
         assert_eq!(order.r#type(), types::OrderType::OpenLong);
         assert_eq!(order.price(), udec64!(100100));
         assert_eq!(order.size(), udec64!(0.8));

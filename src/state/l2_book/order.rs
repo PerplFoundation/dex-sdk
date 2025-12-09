@@ -1,22 +1,36 @@
-//! L3 order representation.
+//! L3 order representation with intrusive linked list pointers.
+
+use slotmap::new_key_type;
 
 use crate::{state::Order, types};
 use fastnum::UD64;
 
-/// Key for L3 order time-priority ordering within a price level.
-/// Tuple of (block_number, order_id) provides FIFO ordering.
-pub type L3OrderKey = (u64, types::OrderId);
+new_key_type! {
+    /// Handle to an order in the slotmap arena.
+    pub struct OrderSlot;
+}
 
-/// Individual order in the L3 book.
+/// Individual order in the L3 book with linked list pointers.
+///
+/// Each order belongs to a doubly-linked list at its price level,
+/// enabling O(1) insertion/removal and natural FIFO ordering.
 #[derive(Clone, Debug)]
 pub struct L3Order {
     order: Order,
+    /// Previous order in queue (toward head). None if this is the head.
+    prev: Option<OrderSlot>,
+    /// Next order in queue (toward tail). None if this is the tail.
+    next: Option<OrderSlot>,
 }
 
 impl L3Order {
-    /// Create a new L3 order.
+    /// Create a new L3 order (initially unlinked).
     pub fn new(order: Order) -> Self {
-        Self { order }
+        Self {
+            order,
+            prev: None,
+            next: None,
+        }
     }
 
     /// The underlying order.
@@ -49,13 +63,28 @@ impl L3Order {
         self.order.r#type()
     }
 
-    /// The L3 ordering key for this order.
-    pub(crate) fn key(&self) -> L3OrderKey {
-        (self.order.instant().block_number(), self.order.order_id())
+    /// Previous order in the FIFO queue (toward head).
+    pub(crate) fn prev(&self) -> Option<OrderSlot> {
+        self.prev
     }
 
-    /// Update the underlying order (for size changes).
+    /// Next order in the FIFO queue (toward tail).
+    pub(crate) fn next(&self) -> Option<OrderSlot> {
+        self.next
+    }
+
+    /// Update the underlying order data (for size changes).
     pub(crate) fn update_order(&mut self, order: Order) {
         self.order = order;
+    }
+
+    /// Set the previous order pointer.
+    pub(crate) fn set_prev(&mut self, prev: Option<OrderSlot>) {
+        self.prev = prev;
+    }
+
+    /// Set the next order pointer.
+    pub(crate) fn set_next(&mut self, next: Option<OrderSlot>) {
+        self.next = next;
     }
 }

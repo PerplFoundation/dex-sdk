@@ -164,12 +164,12 @@ async fn test_full_book_snapshot() {
     assert_eq!(perp.funding_start_block(), 8571);
     assert_eq!(perp.open_interest(), udec128!(0.09));
 
-    assert_eq!(perp.orders().len(), 65424);
-    assert!(
-        perp.orders()
-            .values()
-            .all(|o| o.account_id() == maker.id && o.size() == udec64!(0.001))
-    );
+    assert_eq!(perp.total_orders(), 65424);
+    assert!(perp
+        .l2_book()
+        .all_orders()
+        .values()
+        .all(|o| o.account_id() == maker.id && o.size() == udec64!(0.001)));
 
     assert_eq!(
         perp.l2_book().best_ask(),

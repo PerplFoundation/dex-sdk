@@ -886,9 +886,8 @@ impl Exchange {
                     if let Some(perp) = self.perpetuals.get_mut(&c.perpetual_id) {
                         let order_id = c.order_id.unwrap_or_default();
                         let order = perp
-                            .orders()
-                            .get(&order_id)
-                            .cloned()
+                            .get_order(order_id)
+                            .copied()
                             .ok_or(DexError::OrderNotFound(perp.id(), order_id))?;
                         let new_price = perp.price_converter().from_unsigned(e.pricePNS);
                         let new_size = perp.size_converter().from_unsigned(e.lotLNS);
@@ -1678,9 +1677,8 @@ impl Exchange {
         Ok(
             if let Some(perp) = self.perpetuals.get_mut(&perp_id.to::<types::PerpetualId>()) {
                 let ord = perp
-                    .orders()
-                    .get(&ord_id)
-                    .cloned()
+                    .get_order(ord_id)
+                    .copied()
                     .ok_or(DexError::OrderNotFound(perp.id(), ord_id))?;
                 Some((perp, ord))
             } else {

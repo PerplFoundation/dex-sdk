@@ -336,21 +336,26 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             perp.size_converter(),
             perp.leverage_converter(),
         );
-        futures::future::try_join_all(order_batch_futs)
+
+        // Collect all orders first, then add via snapshot method to preserve FIFO ordering
+        let orders: Vec<Order> = futures::future::try_join_all(order_batch_futs)
             .await
             .map_err(DexError::from)?
             .into_iter()
             .flatten()
-            .try_for_each(|ord| {
-                perp.add_order(Order::new(
+            .map(|ord| {
+                Order::new(
                     instant,
                     ord,
                     base_price,
                     price_converter,
                     size_converter,
                     leverage_converter,
-                ))
+                )
             })
+            .collect();
+
+        perp.add_orders_from_snapshot(orders)
     }
 
     async fn accounts(

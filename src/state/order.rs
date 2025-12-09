@@ -43,6 +43,10 @@ pub struct Order {
     post_only: Option<bool>,
     fill_or_kill: Option<bool>,
     immediate_or_cancel: Option<bool>,
+    // Linked list pointers for FIFO ordering at each price level.
+    // Available from snapshot, None for newly placed orders (until refreshed).
+    prev_order_id: Option<types::OrderId>,
+    next_order_id: Option<types::OrderId>,
 }
 
 impl Order {
@@ -54,6 +58,18 @@ impl Order {
         size_converter: num::Converter,
         leverage_converter: num::Converter,
     ) -> Self {
+        // Convert 0 to None for linked list pointers (0 means no link)
+        let prev_order_id = if order.prevOrderId == 0 {
+            None
+        } else {
+            Some(order.prevOrderId)
+        };
+        let next_order_id = if order.nextOrderId == 0 {
+            None
+        } else {
+            Some(order.nextOrderId)
+        };
+
         Self {
             instant,
             request_id: None,
@@ -67,6 +83,8 @@ impl Order {
             post_only: None,
             fill_or_kill: None,
             immediate_or_cancel: None,
+            prev_order_id,
+            next_order_id,
         }
     }
 
@@ -91,6 +109,9 @@ impl Order {
             post_only: Some(ctx.post_only),
             fill_or_kill: Some(ctx.fill_or_kill),
             immediate_or_cancel: Some(ctx.immediate_or_cancel),
+            // New orders don't have linked list info from events
+            prev_order_id: None,
+            next_order_id: None,
         }
     }
 
@@ -115,6 +136,10 @@ impl Order {
             post_only: self.post_only,
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
+            // Preserve linked list info (may be stale after update, but we maintain
+            // ordering separately in L3Level via sequence numbers)
+            prev_order_id: self.prev_order_id,
+            next_order_id: self.next_order_id,
         }
     }
 
@@ -133,6 +158,8 @@ impl Order {
             post_only: None,
             fill_or_kill: None,
             immediate_or_cancel: None,
+            prev_order_id: None,
+            next_order_id: None,
         }
     }
 
@@ -159,6 +186,38 @@ impl Order {
             post_only: None,
             fill_or_kill: None,
             immediate_or_cancel: None,
+            prev_order_id: None,
+            next_order_id: None,
+        }
+    }
+
+    /// Create an order for L3 testing with linked list pointers (for snapshot reconstruction tests).
+    #[allow(unused, clippy::too_many_arguments)]
+    pub(crate) fn for_l3_testing_with_links(
+        r#type: types::OrderType,
+        price: UD64,
+        size: UD64,
+        block_number: u64,
+        order_id: types::OrderId,
+        account_id: types::AccountId,
+        prev_order_id: Option<types::OrderId>,
+        next_order_id: Option<types::OrderId>,
+    ) -> Self {
+        Self {
+            instant: types::StateInstant::new(block_number, 0),
+            request_id: None,
+            order_id,
+            r#type,
+            account_id,
+            price,
+            size,
+            expiry_block: 0,
+            leverage: UD64::ZERO,
+            post_only: None,
+            fill_or_kill: None,
+            immediate_or_cancel: None,
+            prev_order_id,
+            next_order_id,
         }
     }
 
@@ -178,6 +237,54 @@ impl Order {
             post_only: self.post_only,
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
+            prev_order_id: self.prev_order_id,
+            next_order_id: self.next_order_id,
+        }
+    }
+
+    /// Create a copy with updated price (for testing price changes).
+    #[allow(unused)]
+    pub(crate) fn with_price(&self, price: UD64) -> Self {
+        Self {
+            instant: self.instant,
+            request_id: self.request_id,
+            order_id: self.order_id,
+            r#type: self.r#type,
+            account_id: self.account_id,
+            price,
+            size: self.size,
+            expiry_block: self.expiry_block,
+            leverage: self.leverage,
+            post_only: self.post_only,
+            fill_or_kill: self.fill_or_kill,
+            immediate_or_cancel: self.immediate_or_cancel,
+            prev_order_id: self.prev_order_id,
+            next_order_id: self.next_order_id,
+        }
+    }
+
+    /// Create a copy with linked list pointers (for testing snapshot reconstruction).
+    #[allow(unused)]
+    pub(crate) fn with_links(
+        &self,
+        prev_order_id: Option<types::OrderId>,
+        next_order_id: Option<types::OrderId>,
+    ) -> Self {
+        Self {
+            instant: self.instant,
+            request_id: self.request_id,
+            order_id: self.order_id,
+            r#type: self.r#type,
+            account_id: self.account_id,
+            price: self.price,
+            size: self.size,
+            expiry_block: self.expiry_block,
+            leverage: self.leverage,
+            post_only: self.post_only,
+            fill_or_kill: self.fill_or_kill,
+            immediate_or_cancel: self.immediate_or_cancel,
+            prev_order_id,
+            next_order_id,
         }
     }
 
@@ -243,5 +350,17 @@ impl Order {
     /// Available only from real-time events, not from the initial snapshot.
     pub fn immediate_or_cancel(&self) -> Option<bool> {
         self.immediate_or_cancel
+    }
+
+    /// Previous order ID in the FIFO queue at this price level.
+    /// Available from snapshot, None for newly placed orders or if this is the first order.
+    pub fn prev_order_id(&self) -> Option<types::OrderId> {
+        self.prev_order_id
+    }
+
+    /// Next order ID in the FIFO queue at this price level.
+    /// Available from snapshot, None for newly placed orders or if this is the last order.
+    pub fn next_order_id(&self) -> Option<types::OrderId> {
+        self.next_order_id
     }
 }
