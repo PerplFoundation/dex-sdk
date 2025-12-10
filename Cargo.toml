@@ -21,6 +21,7 @@ alloy-sol-types = { version = "1.4.1", default-features = false, features = [
   "more-tuple-impls",
 ] }
 dashmap = { version = "6.1.0" }
+derive_more = { version = "2.1.0", default-features = false, features = [ "debug" ]}
 fastnum = { version = "0.7.2" }
 futures = { version = "0.3.31" }
 itertools = { version = "0.14.0" }

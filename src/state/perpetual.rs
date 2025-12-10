@@ -13,7 +13,7 @@ const LEVERAGE_SCALE: u8 = 2;
 ///
 /// Provides the current state of contract parameters, market data and
 /// order book.
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct Perpetual {
     instant: types::StateInstant,
     state_instant: types::StateInstant,
@@ -27,27 +27,38 @@ pub struct Perpetual {
     leverage_converter: num::Converter,
     fee_converter: num::Converter,
     funding_rate_converter: num::Converter,
+    #[debug("{base_price}")]
     base_price: UD64, // SC allocates 32 bits
 
-    maker_fee: UD64,          // SC allocates 16 bits
-    taker_fee: UD64,          // SC allocates 16 bits
-    initial_margin: UD64,     // SC allocates 16 bits
+    #[debug("{maker_fee}")]
+    maker_fee: UD64, // SC allocates 16 bits
+    #[debug("{taker_fee}")]
+    taker_fee: UD64, // SC allocates 16 bits
+    #[debug("{initial_margin}")]
+    initial_margin: UD64, // SC allocates 16 bits
+    #[debug("{maintenance_margin}")]
     maintenance_margin: UD64, // SC allocates 16 bits
 
+    #[debug("{last_price}")]
     last_price: UD64, // SC allocates 32 bits
     last_price_block: Option<u64>,
     last_price_timestamp: u64,
 
+    #[debug("{mark_price}")]
     mark_price: UD64, // SC allocates 32 bits
     mark_price_block: Option<u64>,
     mark_price_timestamp: u64,
 
+    #[debug("{oracle_price}")]
     oracle_price: UD64, // SC allocates 32 bits
     oracle_price_block: Option<u64>,
     oracle_price_timestamp: u64,
 
-    prev_funding_rate: D64,             // SC allocates 16 bits of precision
-    next_funding_rate: Option<D64>,     // SC allocates 16 bits of precision
+    #[debug("{prev_funding_rate}")]
+    prev_funding_rate: D64, // SC allocates 16 bits of precision
+    #[debug("{:?}", next_funding_rate.map(|v| format!("{v}")))]
+    next_funding_rate: Option<D64>, // SC allocates 16 bits of precision
+    #[debug("{:?}", next_funding_payment.map(|v| format!("{v}")))]
     next_funding_payment: Option<D256>, // SC allocates 48 bits of precision
     next_funding_event_block: Option<u64>,
     funding_start_block: u64,
@@ -59,6 +70,7 @@ pub struct Perpetual {
     orders: HashMap<types::OrderId, Order>,
     l2_book: L2Book,
 
+    #[debug("{open_interest}")]
     open_interest: UD128,
 }
 

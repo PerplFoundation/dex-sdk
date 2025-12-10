@@ -7,12 +7,14 @@ use alloy::primitives::{Address, U256};
 use fastnum::UD128;
 
 /// Exchange account.
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct Account {
     instant: types::StateInstant,
     id: types::AccountId,
     address: Address,
-    balance: UD128,        // SC allocates 80 bits
+    #[debug("{balance}")]
+    balance: UD128, // SC allocates 80 bits
+    #[debug("{locked_balance}")]
     locked_balance: UD128, // SC allocates 80 bits
     frozen: bool,
     positions: HashMap<types::PerpetualId, Position>,

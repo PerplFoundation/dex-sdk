@@ -26,16 +26,19 @@ use crate::{abi::dex, num};
 /// This wrapper provides automatic conversion from exchnage fixed numeric types to
 /// decimal numbers.
 ///
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, derive_more::Debug)]
 pub struct Order {
     instant: types::StateInstant,
     request_id: Option<types::RequestId>,
     order_id: types::OrderId,
     r#type: types::OrderType,
     account_id: types::AccountId,
+    #[debug("{price}")]
     price: UD64, // SC allocates 24 bits + base price
-    size: UD64,  // SC allocates 40 bits
+    #[debug("{size}")]
+    size: UD64, // SC allocates 40 bits
     expiry_block: u64,
+    #[debug("{leverage}")]
     leverage: UD64,
     post_only: Option<bool>,
     fill_or_kill: Option<bool>,

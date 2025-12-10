@@ -10,14 +10,17 @@ pub type StateBlockEvents = types::BlockEvents<types::EventContext<Vec<StateEven
 /// [`super::SnapshotBuilder`] can be used to create the snapshot at
 /// specified/latest block, which can then be kept up to date by
 /// calling [`Self::apply_events`] with events from [`crate::stream::raw`].
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct Exchange {
     chain: Chain,
     instant: types::StateInstant,
     collateral_converter: num::Converter,
     funding_interval_blocks: u32,
+    #[debug("{min_post}")]
     min_post: UD128,
+    #[debug("{min_settle}")]
     min_settle: UD128,
+    #[debug("{recycle_fee}")]
     recycle_fee: UD128,
     perpetuals: HashMap<types::PerpetualId, Perpetual>,
     accounts: HashMap<types::AccountId, Account>,

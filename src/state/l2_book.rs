@@ -8,8 +8,9 @@ use fastnum::{UD64, UD128};
 use itertools::{FoldWhile, Itertools};
 
 /// Price level of L2 order book.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, derive_more::Debug, Default)]
 pub struct L2Level {
+    #[debug("{size}")]
     size: UD64,
     num_orders: u32,
 }
@@ -17,9 +18,11 @@ pub struct L2Level {
 /// BTreeMap-based L2 order book.
 ///
 /// Tracks the book state by order updates and provides minimal statistics computation.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, derive_more::Debug, Default)]
 pub struct L2Book {
+    #[debug("{:?}",  asks.iter().map(|(k, v)| format!("{k}: {v:?}")).collect::<Vec<_>>())]
     asks: BTreeMap<UD64, L2Level>,
+    #[debug("{:?}", bids.iter().map(|(k, v)| format!("{}: {v:?}", k.0)).collect::<Vec<_>>())]
     bids: BTreeMap<Reverse<UD64>, L2Level>,
 }
 

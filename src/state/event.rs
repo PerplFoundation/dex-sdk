@@ -10,7 +10,7 @@ use crate::{abi::dex::Exchange::OrderRequest, types};
 /// This is a subset of [`crate::abi::dex::Exchange::ExchangeEvents`] covering
 /// all state mutations and order request error responses handled by SDK,
 /// with numeric system conversions applied.
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub enum StateEvents {
     /// Account state updated.
     Account(AccountEvent),
@@ -32,7 +32,7 @@ pub enum StateEvents {
 }
 
 /// Account state mutation event.
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct AccountEvent {
     /// ID of the affected account.
     pub account_id: types::AccountId,
@@ -45,7 +45,7 @@ pub struct AccountEvent {
 }
 
 /// Type of account event with corresponding details.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, derive_more::Debug)]
 pub enum AccountEventType {
     /// New account created.
     Created(types::AccountId),
@@ -54,14 +54,14 @@ pub enum AccountEventType {
     Frozen(bool),
 
     /// Account balance updated.
-    BalanceUpdated(UD128),
+    BalanceUpdated(#[debug("{_0}")] UD128),
 
     /// Account locked balance updated.
-    LockedBalanceUpdated(UD128),
+    LockedBalanceUpdated(#[debug("{_0}")] UD128),
 }
 
 /// Order request processing error with corresponding reason
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct OrderError {
     /// ID of the perpetual contract of the order.
     pub perpetual_id: types::PerpetualId,
@@ -80,13 +80,13 @@ pub struct OrderError {
 }
 
 /// Type of order request failure with corresponding details.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, derive_more::Debug)]
 pub enum OrderErrorType {
     /// Account is frozen.
     AccountFrozen,
 
     /// Required amount exceeds available balance.
-    AmountExceedsAvailableBalance(UD128, UD128),
+    AmountExceedsAvailableBalance(#[debug("{_0}")] UD128, #[debug("{_1}")] UD128),
 
     /// Existing close orders mismatch the actual position type and
     /// need to be cancelled before issuing new close orders.
@@ -159,23 +159,23 @@ pub enum OrderErrorType {
     WrongAccountForOrder,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub enum ExchangeEvent {
     /// Exchange halted/unhalted.
     Halted(bool),
 
     /// Minimal posting amount updated.
-    MinPostUpdated(UD128),
+    MinPostUpdated(#[debug("{_0}")] UD128),
 
     /// Minimal settlement amount updated.
-    MinSettleUpdated(UD128),
+    MinSettleUpdated(#[debug("{_0}")] UD128),
 
     /// Recycling fee updated.
-    RecycleFeeUpdated(UD128),
+    RecycleFeeUpdated(#[debug("{_0}")] UD128),
 }
 
 /// Order book state mutation event.
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct OrderEvent {
     /// ID of the perpetual contract of the order.
     pub perpetual_id: types::PerpetualId,
@@ -194,14 +194,17 @@ pub struct OrderEvent {
 }
 
 /// Type of order event with corresponding details.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, derive_more::Debug)]
 pub enum OrderEventType {
     /// Order filled.
     /// For maker orders this event is paired with [`OrderEventType::Updated`] or
     /// [`OrderEventType::Removed`].
     Filled {
+        #[debug("{fill_price}")]
         fill_price: UD64,
+        #[debug("{fill_size}")]
         fill_size: UD64,
+        #[debug("{fee}")]
         fee: UD64, // Precision of SC calculations is limited to 5 decimals.
         is_maker: bool,
     },
@@ -209,9 +212,12 @@ pub enum OrderEventType {
     /// Order placed to the book.
     Placed {
         r#type: types::OrderType,
+        #[debug("{price}")]
         price: UD64,
+        #[debug("{size}")]
         size: UD64,
         expiry_block: u64,
+        #[debug("{leverage}")]
         leverage: UD64,
         post_only: bool,
         fill_or_kill: bool,
@@ -223,14 +229,16 @@ pub enum OrderEventType {
 
     /// Order in the book updated.
     Updated {
+        #[debug("{:?}", price.map(|v| format!("{v}")))]
         price: Option<UD64>,
+        #[debug("{:?}", size.map(|v| format!("{v}")))]
         size: Option<UD64>,
         expiry_block: Option<u64>,
     },
 }
 
 /// Perpetual contract state or configuration mutation event.
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct PerpetualEvent {
     /// ID of the affected perpetual contract.
     pub perpetual_id: types::PerpetualId,
@@ -240,44 +248,49 @@ pub struct PerpetualEvent {
 }
 
 /// Type of perpetual event with corresponding details.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, derive_more::Debug)]
 pub enum PerpetualEventType {
     /// Funding event occured and rate updated.
-    FundingEvent { rate: D64, payment_per_unit: D256 },
+    FundingEvent {
+        #[debug("{rate}")]
+        rate: D64,
+        #[debug("{payment_per_unit}")]
+        payment_per_unit: D256,
+    },
 
     /// Initial margin requirement updated.
-    InitialMarginFractionUpdated(UD64),
+    InitialMarginFractionUpdated(#[debug("{_0}")] UD64),
 
     /// Last price updated.
-    LastPriceUpdated(UD64),
+    LastPriceUpdated(#[debug("{_0}")] UD64),
 
     /// Maintenance margin requirement updated.
-    MaintenanceMarginFractionUpdated(UD64),
+    MaintenanceMarginFractionUpdated(#[debug("{_0}")] UD64),
 
     /// Mark price updated.
-    MarkPriceUpdated(UD64),
+    MarkPriceUpdated(#[debug("{_0}")] UD64),
 
     /// PMaker fee updated.
-    MakerFeeUpdated(UD64),
+    MakerFeeUpdated(#[debug("{_0}")] UD64),
 
     /// Open interest updated.
-    OpenInterestUpdated(UD128),
+    OpenInterestUpdated(#[debug("{_0}")] UD128),
 
     /// Oracle configuration updated.
     OracleConfigurationUpdated { is_used: bool, feed_id: B256 },
 
     /// Oracle price updated.
-    OraclePriceUpdated(UD64),
+    OraclePriceUpdated(#[debug("{_0}")] UD64),
 
     /// Perpetual contract paused/unpaused.
     Paused(bool),
 
     /// Taker fee updated.
-    TakerFeeUpdated(UD64),
+    TakerFeeUpdated(#[debug("{_0}")] UD64),
 }
 
 /// Position state mutation event.
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct PositionEvent {
     /// ID of the perpetual contract of the position.
     pub perpetual_id: types::PerpetualId,
@@ -294,24 +307,34 @@ pub struct PositionEvent {
 }
 
 /// Type of position event with corresponding details.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, derive_more::Debug)]
 pub enum PositionEventType {
     /// Position closed.
     Closed {
         r#type: position::PositionType,
+        #[debug("{entry_price}")]
         entry_price: UD64,
+        #[debug("{exit_price}")]
         exit_price: UD64,
+        #[debug("{size}")]
         size: UD64,
+        #[debug("{delta_pnl}")]
         delta_pnl: D256,
+        #[debug("{premium_pnl}")]
         premium_pnl: D256,
     },
 
     /// Position decreased.
     Decreased {
+        #[debug("{prev_size}")]
         prev_size: UD64,
+        #[debug("{new_size}")]
         new_size: UD64,
+        #[debug("{deposit}")]
         deposit: UD128,
+        #[debug("{delta_pnl}")]
         delta_pnl: D256,
+        #[debug("{premium_pnl}")]
         premium_pnl: D256,
     },
 
@@ -319,76 +342,112 @@ pub enum PositionEventType {
     Deleveraged {
         force_close: bool,
         r#type: position::PositionType,
+        #[debug("{entry_price}")]
         entry_price: UD64,
+        #[debug("{exit_price}")]
         exit_price: UD64,
+        #[debug("{prev_size}")]
         prev_size: UD64,
+        #[debug("{new_size}")]
         new_size: UD64,
+        #[debug("{deposit}")]
         deposit: UD128,
+        #[debug("{delta_pnl}")]
         delta_pnl: D256,
+        #[debug("{premium_pnl}")]
         premium_pnl: D256,
     },
 
     /// Position deposit(collateral) updated.
-    DepositUpdated(UD128),
+    DepositUpdated(#[debug("{_0}")] UD128),
 
     /// Position increased.
     Increased {
+        #[debug("{entry_price}")]
         entry_price: UD64,
+        #[debug("{prev_size}")]
         prev_size: UD64,
+        #[debug("{new_size}")]
         new_size: UD64,
+        #[debug("{deposit}")]
         deposit: UD128,
     },
 
     /// Position inverted.
     Inverted {
         r#type: position::PositionType,
+        #[debug("{entry_price}")]
         entry_price: UD64,
+        #[debug("{prev_size}")]
         prev_size: UD64,
+        #[debug("{new_size}")]
         new_size: UD64,
+        #[debug("{deposit}")]
         deposit: UD128,
+        #[debug("{delta_pnl}")]
         delta_pnl: D256,
+        #[debug("{premium_pnl}")]
         premium_pnl: D256,
     },
 
     /// Position liquidated.
     Liquidated {
         r#type: position::PositionType,
+        #[debug("{entry_price}")]
         entry_price: UD64,
+        #[debug("{exit_price}")]
         exit_price: UD64,
+        #[debug("{prev_size}")]
         prev_size: UD64,
+        #[debug("{liquidated_size}")]
         liquidated_size: UD64,
+        #[debug("{new_size}")]
         new_size: UD64,
+        #[debug("{deposit}")]
         deposit: UD128,
+        #[debug("{delta_pnl}")]
         delta_pnl: D256,
+        #[debug("{premium_pnl}")]
         premium_pnl: D256,
     },
 
     /// Position maintenance margin requirement updated due
     /// to updated maintenane margin fraction.
-    MaintenanceMarginUpdated(UD128),
+    MaintenanceMarginUpdated(#[debug("{_0}")] UD128),
 
     /// Position opened.
     Opened {
         r#type: position::PositionType,
+        #[debug("{entry_price}")]
         entry_price: UD64,
+        #[debug("{size}")]
         size: UD64,
+        #[debug("{deposit}")]
         deposit: UD128,
     },
 
     /// Position unrealized PnL updated.
     UnrealizedPnLUpdated {
+        #[debug("{pnl}")]
         pnl: D256,
+        #[debug("{delta_pnl}")]
         delta_pnl: D256,
+        #[debug("{premium_pnl}")]
         premium_pnl: D256,
     },
 
     /// Position unwound.
     Unwound {
         r#type: position::PositionType,
+        #[debug("{entry_price}")]
         entry_price: UD64,
+        #[debug("{exit_price}")]
         exit_price: UD64,
+        #[debug("{size}")]
         size: UD64,
+        #[debug("{fair_market_value}")]
         fair_market_value: D256,
+        #[debug("{payment}")]
         payment: UD128,
     },
 }

@@ -34,19 +34,22 @@ pub enum RequestType {
 }
 
 /// Request to post/modify an order.
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct OrderRequest {
     request_id: RequestId,
     perp_id: PerpetualId,
     r#type: RequestType,
     order_id: Option<OrderId>,
+    #[debug("{price}")]
     price: UD64,
+    #[debug("{size}")]
     size: UD64,
     expiry_block: Option<u64>,
     post_only: bool,
     fill_or_kill: bool,
     immediate_or_cancel: bool,
     max_matches: Option<u32>,
+    #[debug("{leverage}")]
     leverage: UD64,
     last_exec_block: Option<u64>,
     amount: Option<UD128>,

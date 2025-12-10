@@ -10,18 +10,24 @@ pub enum PositionType {
 }
 
 /// Open perpetual contract position.
-#[derive(Clone, Debug)]
+#[derive(Clone, derive_more::Debug)]
 pub struct Position {
     instant: types::StateInstant,
     funding_instant: types::StateInstant,
     perpetual_id: types::PerpetualId,
     account_id: types::AccountId,
     r#type: PositionType,
+    #[debug("{entry_price}")]
     entry_price: UD64, // SC allocates 32 bits
-    size: UD64,        // SC allocates 40 bits
-    deposit: UD128,    // SC allocates 80 bits
-    delta_pnl: D256,   // SC calculations and ABI use 256 bits
+    #[debug("{size}")]
+    size: UD64, // SC allocates 40 bits
+    #[debug("{deposit}")]
+    deposit: UD128, // SC allocates 80 bits
+    #[debug("{delta_pnl}")]
+    delta_pnl: D256, // SC calculations and ABI use 256 bits
+    #[debug("{premium_pnl}")]
     premium_pnl: D256, // SC calculations and ABI use 256 bits
+    #[debug("{maintenance_margin_requirement}")]
     maintenance_margin_requirement: UD128,
 }
 

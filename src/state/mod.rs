@@ -444,7 +444,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                 .into_iter()
                 .flatten()
                 .for_each(|pos| {
-                    if !pos.positionInfo.accountId.is_zero() {
+                    if !pos.positionInfo.lotLNS.is_zero() {
                         let position = Position::new(
                             instant,
                             *perp_id,
