@@ -1,9 +1,21 @@
 //! Tests for the L2/L3 order book.
 
+use std::num::NonZeroU16;
+
 use fastnum::udec64;
 
 use super::*;
 use crate::state::Order;
+
+/// Helper to create OrderId from u16 literal in tests.
+fn oid(n: u16) -> types::OrderId {
+    NonZeroU16::new(n).expect("test order id must be non-zero")
+}
+
+/// Helper to create Option<OrderId> from u16 literal in tests.
+fn ooid(n: u16) -> Option<types::OrderId> {
+    NonZeroU16::new(n)
+}
 
 // ============================================================================
 // TEST DSL MACROS
@@ -18,7 +30,7 @@ macro_rules! ask {
             udec64!($price),
             udec64!($size),
             $block,
-            $oid,
+            oid($oid),
             $aid,
         )
     };
@@ -33,7 +45,7 @@ macro_rules! bid {
             udec64!($price),
             udec64!($size),
             $block,
-            $oid,
+            oid($oid),
             $aid,
         )
     };
@@ -84,7 +96,7 @@ macro_rules! assert_best_bid {
 macro_rules! assert_order {
     ($book:expr, $oid:expr => { price: $price:expr, size: $size:expr, account_id: $aid:expr }) => {
         let order = $book
-            .get_order($oid)
+            .get_order(oid($oid))
             .expect(&format!("order {} exists", $oid));
         assert_eq!(order.price(), udec64!($price), "order {} price", $oid);
         assert_eq!(order.size(), udec64!($size), "order {} size", $oid);
@@ -97,12 +109,12 @@ macro_rules! assert_fifo {
     ($book:expr, ask @ $price:expr => [$($oid:expr),*]) => {
         let level = $book.ask_level(udec64!($price)).expect("ask level exists");
         let order_ids: Vec<_> = $book.level_orders(level).map(|o| o.order_id()).collect();
-        assert_eq!(order_ids, vec![$($oid),*], "ask@{} FIFO order", $price);
+        assert_eq!(order_ids, vec![$(oid($oid)),*], "ask@{} FIFO order", $price);
     };
     ($book:expr, bid @ $price:expr => [$($oid:expr),*]) => {
         let level = $book.bid_level(udec64!($price)).expect("bid level exists");
         let order_ids: Vec<_> = $book.level_orders(level).map(|o| o.order_id()).collect();
-        assert_eq!(order_ids, vec![$($oid),*], "bid@{} FIFO order", $price);
+        assert_eq!(order_ids, vec![$(oid($oid)),*], "bid@{} FIFO order", $price);
     };
 }
 
@@ -238,7 +250,7 @@ fn l2_book_ask_orders_iterator() {
 
     let order_ids: Vec<_> = book.ask_orders().map(|o| o.order_id()).collect();
     // Price 100 first, then price 110 (insertion order within price level: 1, 3)
-    assert_eq!(order_ids, vec![2, 1, 3]);
+    assert_eq!(order_ids, vec![oid(2), oid(1), oid(3)]);
 }
 
 #[test]
@@ -251,7 +263,7 @@ fn l2_book_bid_orders_iterator() {
 
     let order_ids: Vec<_> = book.bid_orders().map(|o| o.order_id()).collect();
     // Price 100 first, then price 90 (insertion order: 1, 3)
-    assert_eq!(order_ids, vec![2, 1, 3]);
+    assert_eq!(order_ids, vec![oid(2), oid(1), oid(3)]);
 }
 
 #[test]
@@ -301,8 +313,8 @@ fn l2_book_remove_order() {
     book.remove_order_by_id(order1.order_id()).unwrap();
 
     assert_level!(book, ask @ 100 => (3.0, 1));
-    assert!(book.get_order(1).is_none());
-    assert!(book.get_order(2).is_some());
+    assert!(book.get_order(oid(1)).is_none());
+    assert!(book.get_order(oid(2)).is_some());
 }
 
 #[test]
@@ -379,7 +391,7 @@ fn l2_book_empty_book_operations() {
     assert_best_bid!(book, none);
     assert!(book.ask_impact(udec64!(1.0)).is_none());
     assert!(book.bid_impact(udec64!(1.0)).is_none());
-    assert!(book.get_order(1).is_none());
+    assert!(book.get_order(oid(1)).is_none());
     assert_eq!(book.total_orders(), 0);
 }
 
@@ -407,8 +419,8 @@ fn l2_book_account_id_stored() {
     book.add_order(&ask!(100, 1.0, 1, 1, 10)).unwrap(); // account_id = 10
     book.add_order(&ask!(100, 2.0, 2, 2, 20)).unwrap(); // account_id = 20
 
-    let order1 = book.get_order(1).unwrap();
-    let order2 = book.get_order(2).unwrap();
+    let order1 = book.get_order(oid(1)).unwrap();
+    let order2 = book.get_order(oid(2)).unwrap();
     assert_eq!(order1.account_id(), 10);
     assert_eq!(order2.account_id(), 20);
 }
@@ -418,10 +430,10 @@ fn l2_book_remove_nonexistent() {
     // Removing nonexistent order returns an error.
     let mut book = OrderBook::new();
 
-    let result = book.remove_order_by_id(99);
+    let result = book.remove_order_by_id(oid(99));
     assert!(matches!(
         result,
-        Err(OrderBookError::OrderNotFound { order_id: 99 })
+        Err(OrderBookError::OrderNotFound { order_id }) if order_id == oid(99)
     ));
     assert_eq!(book.total_orders(), 0);
 }
@@ -435,7 +447,7 @@ fn l2_book_update_nonexistent() {
     let result = book.update_order(&order.with_size(udec64!(0.5)), &order);
     assert!(matches!(
         result,
-        Err(OrderBookError::OrderNotFound { order_id: 99 })
+        Err(OrderBookError::OrderNotFound { order_id }) if order_id == oid(99)
     ));
     assert_eq!(book.total_orders(), 0);
 }
@@ -456,10 +468,10 @@ fn l2_book_error_add_duplicate_order() {
     assert!(matches!(
         result,
         Err(OrderBookError::OrderAlreadyExists {
-            order_id: 42,
+            order_id,
             existing_price,
             ..
-        }) if existing_price == udec64!(100)
+        }) if order_id == oid(42) && existing_price == udec64!(100)
     ));
     assert_eq!(book.total_orders(), 1);
 }
@@ -473,7 +485,7 @@ fn l2_book_error_add_zero_size() {
     let result = book.add_order(&order);
     assert!(matches!(
         result,
-        Err(OrderBookError::InvalidOrderSize { order_id: 1, size }) if size == udec64!(0)
+        Err(OrderBookError::InvalidOrderSize { order_id, size }) if order_id == oid(1) && size == udec64!(0)
     ));
     assert_eq!(book.total_orders(), 0);
 }
@@ -487,7 +499,7 @@ fn l2_book_error_add_zero_price() {
     let result = book.add_order(&order);
     assert!(matches!(
         result,
-        Err(OrderBookError::InvalidOrderPrice { order_id: 1, price }) if price == udec64!(0)
+        Err(OrderBookError::InvalidOrderPrice { order_id, price }) if order_id == oid(1) && price == udec64!(0)
     ));
     assert_eq!(book.total_orders(), 0);
 }
@@ -504,7 +516,7 @@ fn l2_book_error_update_to_zero_size() {
 
     assert!(matches!(
         result,
-        Err(OrderBookError::InvalidOrderSize { order_id: 1, size }) if size == udec64!(0)
+        Err(OrderBookError::InvalidOrderSize { order_id, size }) if order_id == oid(1) && size == udec64!(0)
     ));
     // Order should still exist with original size
     assert_order!(book, 1 => { price: 100, size: 1.0, account_id: 1 });
@@ -588,10 +600,10 @@ fn scenario_multi_level_book() {
 
     // L3 iteration order
     let ask_ids: Vec<_> = book.ask_orders().map(|o| o.order_id()).collect();
-    assert_eq!(ask_ids, vec![1, 2, 3]); // price order: 100, 110, 120
+    assert_eq!(ask_ids, vec![oid(1), oid(2), oid(3)]); // price order: 100, 110, 120
 
     let bid_ids: Vec<_> = book.bid_orders().map(|o| o.order_id()).collect();
-    assert_eq!(bid_ids, vec![4, 5, 6]); // price order: 90, 80, 70
+    assert_eq!(bid_ids, vec![oid(4), oid(5), oid(6)]); // price order: 90, 80, 70
 }
 
 #[test]
@@ -677,30 +689,30 @@ fn snapshot_multiple_orders_same_level() {
         udec64!(100),
         udec64!(1.0),
         1,
+        oid(1),
         1,
-        1,
-        None,    // prev
-        Some(2), // next
+        None,     // prev
+        ooid(2),  // next
     );
     let order2 = Order::for_l3_testing_with_links(
         types::OrderType::OpenShort,
         udec64!(100),
         udec64!(2.0),
         2,
+        oid(2),
         2,
-        2,
-        Some(1), // prev
-        Some(3), // next
+        ooid(1),  // prev
+        ooid(3),  // next
     );
     let order3 = Order::for_l3_testing_with_links(
         types::OrderType::OpenShort,
         udec64!(100),
         udec64!(3.0),
         3,
+        oid(3),
         3,
-        3,
-        Some(2), // prev
-        None,    // next
+        ooid(2),  // prev
+        None,     // next
     );
 
     // Add in shuffled order - linked list should still be reconstructed correctly
@@ -760,8 +772,8 @@ fn linked_list_head_tail_multiple_orders() {
     let tail = level.tail().unwrap();
 
     // Head should be order 1, tail should be order 3
-    assert_eq!(head, 1);
-    assert_eq!(tail, 3);
+    assert_eq!(head, oid(1));
+    assert_eq!(tail, oid(3));
 
     // Head has no prev, tail has no next
     let head_order = book.get_order(head).unwrap();
@@ -777,11 +789,11 @@ fn linked_list_remove_head() {
     book.add_order(&ask!(100, 1.0, 1, 1, 1)).unwrap();
     book.add_order(&ask!(100, 2.0, 2, 2, 2)).unwrap();
 
-    book.remove_order_by_id(1).unwrap();
+    book.remove_order_by_id(oid(1)).unwrap();
 
     let level = book.ask_level(udec64!(100)).unwrap();
     let head = level.head().unwrap();
-    assert_eq!(head, 2);
+    assert_eq!(head, oid(2));
     let head_order = book.get_order(head).unwrap();
     assert!(head_order.prev().is_none()); // New head has no prev
 }
@@ -793,11 +805,11 @@ fn linked_list_remove_tail() {
     book.add_order(&ask!(100, 1.0, 1, 1, 1)).unwrap();
     book.add_order(&ask!(100, 2.0, 2, 2, 2)).unwrap();
 
-    book.remove_order_by_id(2).unwrap();
+    book.remove_order_by_id(oid(2)).unwrap();
 
     let level = book.ask_level(udec64!(100)).unwrap();
     let tail = level.tail().unwrap();
-    assert_eq!(tail, 1);
+    assert_eq!(tail, oid(1));
     let tail_order = book.get_order(tail).unwrap();
     assert!(tail_order.next().is_none()); // New tail has no next
 }
@@ -810,7 +822,7 @@ fn linked_list_remove_middle() {
     book.add_order(&ask!(100, 2.0, 2, 2, 2)).unwrap();
     book.add_order(&ask!(100, 3.0, 3, 3, 3)).unwrap();
 
-    book.remove_order_by_id(2).unwrap();
+    book.remove_order_by_id(oid(2)).unwrap();
 
     // FIFO should now be [1, 3]
     assert_fifo!(book, ask @ 100 => [1, 3]);
@@ -819,8 +831,8 @@ fn linked_list_remove_middle() {
     let level = book.ask_level(udec64!(100)).unwrap();
     let head = level.head().unwrap();
     let tail = level.tail().unwrap();
-    assert_eq!(head, 1);
-    assert_eq!(tail, 3);
+    assert_eq!(head, oid(1));
+    assert_eq!(tail, oid(3));
 
     let head_order = book.get_order(head).unwrap();
     let tail_order = book.get_order(tail).unwrap();
@@ -879,7 +891,7 @@ fn snapshot_orphaned_orders_no_links() {
         udec64!(100),
         udec64!(1.0),
         1,
-        1,
+        oid(1),
         1,
         None, // no prev
         None, // no next
@@ -889,7 +901,7 @@ fn snapshot_orphaned_orders_no_links() {
         udec64!(100),
         udec64!(2.0),
         2,
-        2,
+        oid(2),
         2,
         None, // no prev
         None, // no next
@@ -924,8 +936,8 @@ fn interleaved_ask_bid_operations() {
     assert_fifo!(book, bid @ 90 => [2, 4]);
 
     // Remove from both sides
-    book.remove_order_by_id(1).unwrap();
-    book.remove_order_by_id(2).unwrap();
+    book.remove_order_by_id(oid(1)).unwrap();
+    book.remove_order_by_id(oid(2)).unwrap();
 
     assert_level!(book, ask @ 100 => (2.0, 1));
     assert_level!(book, bid @ 90 => (2.5, 1));
@@ -942,7 +954,7 @@ fn move_nonexistent_order() {
     let result = book.move_to_back(&order, &order);
     assert!(matches!(
         result,
-        Err(OrderBookError::OrderNotFound { order_id: 99 })
+        Err(OrderBookError::OrderNotFound { order_id }) if order_id == oid(99)
     ));
 }
 
@@ -980,7 +992,7 @@ fn level_not_found_on_remove_order() {
     book.force_remove_level(types::OrderSide::Ask, udec64!(100));
 
     // Try to remove the order - should fail with LevelNotFound
-    let result = book.remove_order_by_id(1);
+    let result = book.remove_order_by_id(oid(1));
     assert!(matches!(
         result,
         Err(OrderBookError::LevelNotFound { price, side })

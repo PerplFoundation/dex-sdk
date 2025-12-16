@@ -8,7 +8,7 @@ use alloy::{
     transports,
 };
 
-use crate::{abi::errors::Exchange::ExchangeErrors, state::OrderBookError, types};
+use crate::{abi::errors::Exchange::ExchangeErrors, state::{OrderBookError, OrderParseError}, types};
 
 pub type DexError = ProviderError<ExchangeErrors>;
 
@@ -61,6 +61,9 @@ pub enum ProviderError<R> {
 
     #[error("order book error: {0}")]
     OrderBook(#[from] OrderBookError),
+
+    #[error("order parse error: {0}")]
+    OrderParse(#[from] OrderParseError),
 }
 
 impl<R: SolInterface> From<contract::Error> for ProviderError<R> {

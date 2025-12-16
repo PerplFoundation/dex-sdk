@@ -120,7 +120,7 @@ impl OrderRequest {
             orderDescId: U256::from(self.request_id),
             perpId: U256::from(self.perp_id),
             orderType: self.r#type as u8,
-            orderId: U256::from(self.order_id.unwrap_or_default()),
+            orderId: U256::from(self.order_id.map(|id| id.get()).unwrap_or(0)),
             pricePNS: price_converter.to_unsigned(self.price),
             lotLNS: size_converter.to_unsigned(self.size),
             expiryBlock: U256::from(self.expiry_block.unwrap_or_default()),

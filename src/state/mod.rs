@@ -309,9 +309,14 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .enumerate()
             .flat_map(|(leaf, bitmap)| {
                 // Skip the first bit of the first leaf slot (_NULL_ORDER_ID)
+                // All remaining IDs are guaranteed non-zero since we start at bit 1
                 ((if leaf == 0 { 1 } else { 0 })..U256::BITS)
                     .filter(move |bit| bitmap.bit(*bit))
-                    .map(move |bit| (leaf * U256::BITS + bit) as types::OrderId)
+                    .map(move |bit| {
+                        let id = (leaf * U256::BITS + bit) as u16;
+                        // Safety: we skip bit 0 of leaf 0, so id is always >= 1
+                        std::num::NonZeroU16::new(id).expect("order id from bitmap cannot be 0")
+                    })
             })
             .collect::<Vec<_>>();
 
@@ -324,7 +329,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                 .extend(
                     chunk
                         .iter()
-                        .map(|oid| self.instance.getOrder(pid, U256::from(*oid))),
+                        .map(|oid| self.instance.getOrder(pid, U256::from(oid.get()))),
                 );
             async move { multicall.aggregate().await }
         });
@@ -353,7 +358,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                     leverage_converter,
                 )
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         perp.add_orders_from_snapshot(orders)
     }

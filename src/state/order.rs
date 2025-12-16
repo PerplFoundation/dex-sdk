@@ -1,7 +1,18 @@
+use std::num::NonZeroU16;
+
 use fastnum::UD64;
+use thiserror::Error;
 
 use super::{event, types};
 use crate::{abi::dex, num};
+
+/// Error creating an Order from exchange data.
+#[derive(Debug, Clone, Error)]
+pub enum OrderParseError {
+    /// Order has invalid ID 0 (which is reserved as NULL_ORDER_ID on the exchange).
+    #[error("order has invalid id 0")]
+    ZeroOrderId,
+}
 
 /// Active order in the perpetual contract order book.
 ///
@@ -57,23 +68,19 @@ impl Order {
         price_converter: num::Converter,
         size_converter: num::Converter,
         leverage_converter: num::Converter,
-    ) -> Self {
-        // Convert 0 to None for linked list pointers (0 means no link)
-        let prev_order_id = if order.prevOrderId == 0 {
-            None
-        } else {
-            Some(order.prevOrderId)
-        };
-        let next_order_id = if order.nextOrderId == 0 {
-            None
-        } else {
-            Some(order.nextOrderId)
-        };
+    ) -> Result<Self, OrderParseError> {
+        // Exchange uses 0 as NULL_ORDER_ID - a valid order must have non-zero ID
+        let order_id = NonZeroU16::new(order.orderId).ok_or(OrderParseError::ZeroOrderId)?;
 
-        Self {
+        // Convert 0 to None for linked list pointers (0 means no link)
+        // Since we checked orderId != 0 above, NonZeroU16::new() here is safe
+        let prev_order_id = NonZeroU16::new(order.prevOrderId);
+        let next_order_id = NonZeroU16::new(order.nextOrderId);
+
+        Ok(Self {
             instant,
             request_id: None,
-            order_id: order.orderId,
+            order_id,
             r#type: order.orderType.into(),
             account_id: order.accountId,
             price: base_price + price_converter.from_unsigned(order.priceONS.to()),
@@ -85,7 +92,7 @@ impl Order {
             immediate_or_cancel: None,
             prev_order_id,
             next_order_id,
-        }
+        })
     }
 
     pub(crate) fn placed(
@@ -148,7 +155,7 @@ impl Order {
         Self {
             instant: types::StateInstant::new(0, 0),
             request_id: None,
-            order_id: 0,
+            order_id: NonZeroU16::MIN,
             r#type,
             account_id: 0,
             price,

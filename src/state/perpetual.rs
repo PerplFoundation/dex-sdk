@@ -561,6 +561,11 @@ impl Perpetual {
 mod tests {
     use super::*;
     use fastnum::udec64;
+    use std::num::NonZeroU16;
+
+    fn oid(n: u16) -> types::OrderId {
+        NonZeroU16::new(n).expect("test order id must be non-zero")
+    }
 
     #[test]
     fn update_order_expired_order_renewal_moves_to_back() {
@@ -574,7 +579,7 @@ mod tests {
             udec64!(100),                // price
             udec64!(1.0),                // size
             50,                          // block_number
-            1,                           // order_id
+            oid(1),                      // order_id
             101,                         // account_id
         )
         .with_expiry_block(100);
@@ -584,7 +589,7 @@ mod tests {
             udec64!(100),
             udec64!(2.0),
             50,
-            2,
+            oid(2),
             102,
         );
 
@@ -594,7 +599,7 @@ mod tests {
 
         // Verify initial FIFO order
         let orders: Vec<_> = perp.l2_book.ask_orders().map(|o| o.order_id()).collect();
-        assert_eq!(orders, vec![1, 2], "Initial FIFO should be [1, 2]");
+        assert_eq!(orders, vec![oid(1), oid(2)], "Initial FIFO should be [1, 2]");
 
         // Now simulate time passing: we're at block 150 (order 1 is expired at block 100)
         // Update order 1 with a new expiry (block 200)
@@ -603,7 +608,7 @@ mod tests {
             udec64!(100),
             udec64!(1.0),
             150, // current block
-            1,
+            oid(1),
             101,
         )
         .with_expiry_block(200); // new expiry
@@ -614,7 +619,7 @@ mod tests {
         let orders: Vec<_> = perp.l2_book.ask_orders().map(|o| o.order_id()).collect();
         assert_eq!(
             orders,
-            vec![2, 1],
+            vec![oid(2), oid(1)],
             "After expiry renewal, FIFO should be [2, 1]"
         );
     }
@@ -630,7 +635,7 @@ mod tests {
             udec64!(100),
             udec64!(1.0),
             50,
-            1,
+            oid(1),
             101,
         )
         .with_expiry_block(100);
@@ -640,7 +645,7 @@ mod tests {
             udec64!(100),
             udec64!(2.0),
             50,
-            2,
+            oid(2),
             102,
         );
 
@@ -653,7 +658,7 @@ mod tests {
             udec64!(100),
             udec64!(1.0),
             80, // current block < expiry_block(100)
-            1,
+            oid(1),
             101,
         )
         .with_expiry_block(200);
@@ -662,6 +667,6 @@ mod tests {
 
         // Order 1 should keep its position: FIFO is [1, 2]
         let orders: Vec<_> = perp.l2_book.ask_orders().map(|o| o.order_id()).collect();
-        assert_eq!(orders, vec![1, 2], "Non-expired order should keep position");
+        assert_eq!(orders, vec![oid(1), oid(2)], "Non-expired order should keep position");
     }
 }
