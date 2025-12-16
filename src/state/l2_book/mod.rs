@@ -391,15 +391,30 @@ impl OrderBook {
                 });
             }
 
+            // Validate that referenced orders exist in this snapshot
+            if let Some(prev_id) = order.prev_order_id() {
+                if !order_ids.contains(&prev_id) {
+                    return Err(OrderBookError::DanglingOrderReference {
+                        order_id,
+                        referenced_id: prev_id,
+                        pointer: "prev",
+                    });
+                }
+            }
+            if let Some(next_id) = order.next_order_id() {
+                if !order_ids.contains(&next_id) {
+                    return Err(OrderBookError::DanglingOrderReference {
+                        order_id,
+                        referenced_id: next_id,
+                        pointer: "next",
+                    });
+                }
+            }
+
             // Create BookOrder with prev/next pointing directly to OrderIds
             let mut l3_order = BookOrder::new(*order);
-
-            // Only set prev/next if the referenced order exists in this snapshot
-            let prev_id = order.prev_order_id().filter(|id| order_ids.contains(id));
-            let next_id = order.next_order_id().filter(|id| order_ids.contains(id));
-
-            l3_order.set_prev(prev_id);
-            l3_order.set_next(next_id);
+            l3_order.set_prev(order.prev_order_id());
+            l3_order.set_next(order.next_order_id());
 
             self.orders.insert(order_id, l3_order);
         }

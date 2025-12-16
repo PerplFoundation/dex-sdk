@@ -43,6 +43,15 @@ pub enum OrderBookError {
     /// Expected price level not found. This indicates internal inconsistency.
     #[error("level not found at price {price} ({side:?} side)")]
     LevelNotFound { price: UD64, side: OrderSide },
+
+    /// Order references another order that doesn't exist in the snapshot.
+    /// This indicates data inconsistency.
+    #[error("order {order_id} has dangling {pointer} reference to non-existent order {referenced_id}")]
+    DanglingOrderReference {
+        order_id: OrderId,
+        referenced_id: OrderId,
+        pointer: &'static str,
+    },
 }
 
 /// Result type for OrderBook operations.
