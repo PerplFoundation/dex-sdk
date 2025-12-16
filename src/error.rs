@@ -8,7 +8,7 @@ use alloy::{
     transports,
 };
 
-use crate::{abi::errors::Exchange::ExchangeErrors, state::L2BookError, types};
+use crate::{abi::errors::Exchange::ExchangeErrors, state::OrderBookError, types};
 
 pub type DexError = ProviderError<ExchangeErrors>;
 
@@ -59,8 +59,8 @@ pub enum ProviderError<R> {
     #[error("position not found, acc: {0}, perp: {1}")]
     PositionNotFound(types::AccountId, types::PerpetualId),
 
-    #[error("l2 book error: {0}")]
-    L2Book(#[from] L2BookError),
+    #[error("order book error: {0}")]
+    OrderBook(#[from] OrderBookError),
 }
 
 impl<R: SolInterface> From<contract::Error> for ProviderError<R> {

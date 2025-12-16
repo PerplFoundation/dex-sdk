@@ -4,12 +4,12 @@ use fastnum::UD64;
 
 use super::order::OrderSlot;
 
-/// L3 price level containing orders in a doubly-linked list (FIFO order).
+/// Price level containing orders in a doubly-linked list (FIFO order).
 ///
 /// The level stores head/tail pointers to the linked list and maintains
 /// cached aggregates for O(1) access to total size and order count.
 #[derive(Clone, Debug, Default)]
-pub struct L3Level {
+pub struct BookLevel {
     /// First order in the FIFO queue (oldest).
     head: Option<OrderSlot>,
     /// Last order in the FIFO queue (newest).
@@ -20,8 +20,8 @@ pub struct L3Level {
     cached_count: u32,
 }
 
-impl L3Level {
-    /// Create a new empty L3 level.
+impl BookLevel {
+    /// Create a new empty book level.
     pub fn new() -> Self {
         Self::default()
     }

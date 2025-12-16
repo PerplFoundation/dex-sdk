@@ -137,7 +137,7 @@ impl Order {
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
             // Preserve linked list info (may be stale after update, but we maintain
-            // ordering separately in L3Level via sequence numbers)
+            // ordering separately in BookLevel via sequence numbers)
             prev_order_id: self.prev_order_id,
             next_order_id: self.next_order_id,
         }

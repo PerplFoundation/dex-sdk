@@ -1,4 +1,4 @@
-//! L3 order representation with intrusive linked list pointers.
+//! Book order representation with intrusive linked list pointers.
 
 use slotmap::new_key_type;
 
@@ -10,12 +10,12 @@ new_key_type! {
     pub struct OrderSlot;
 }
 
-/// Individual order in the L3 book with linked list pointers.
+/// Individual order in the book with linked list pointers.
 ///
 /// Each order belongs to a doubly-linked list at its price level,
 /// enabling O(1) insertion/removal and natural FIFO ordering.
 #[derive(Clone, Debug)]
-pub struct L3Order {
+pub struct BookOrder {
     order: Order,
     /// Previous order in queue (toward head). None if this is the head.
     prev: Option<OrderSlot>,
@@ -23,8 +23,8 @@ pub struct L3Order {
     next: Option<OrderSlot>,
 }
 
-impl L3Order {
-    /// Create a new L3 order (initially unlinked).
+impl BookOrder {
+    /// Create a new book order (initially unlinked).
     pub fn new(order: Order) -> Self {
         Self {
             order,

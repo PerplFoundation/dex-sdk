@@ -10,7 +10,7 @@ use alloy::{
 use clap::{Parser, ValueEnum};
 use dex_sdk::{
     Chain,
-    state::{L2Book, L3Order, Perpetual, SnapshotBuilder},
+    state::{OrderBook, BookOrder, Perpetual, SnapshotBuilder},
     stream,
     types::{OrderType, PerpetualId, StateInstant},
 };
@@ -69,7 +69,7 @@ fn order_type_symbol(ot: OrderType) -> &'static str {
     }
 }
 
-fn print_order_compact(order: &L3Order) -> String {
+fn print_order_compact(order: &BookOrder) -> String {
     format!(
         "[#{:<5} acc:{:<6} sz:{:<12} {}]",
         order.order_id(),
@@ -79,7 +79,7 @@ fn print_order_compact(order: &L3Order) -> String {
     )
 }
 
-fn print_order_detailed(order: &L3Order, current_block: u64) {
+fn print_order_detailed(order: &BookOrder, current_block: u64) {
     let o = order.order();
     let expiry_str = if o.expiry_block() == 0 {
         "never".to_string()
@@ -100,7 +100,7 @@ fn print_order_detailed(order: &L3Order, current_block: u64) {
     );
 }
 
-fn print_l2_book(book: &L2Book, depth: usize) {
+fn print_l2_book(book: &OrderBook, depth: usize) {
     println!("\n{:=^80}", " ORDER BOOK (L2) ");
 
     // Print asks (reversed so lowest ask is closest to spread)
@@ -158,7 +158,7 @@ fn print_l2_book(book: &L2Book, depth: usize) {
     print_summary(book);
 }
 
-fn print_l3_book(book: &L2Book, depth: usize, orders_per_level: usize, current_block: u64) {
+fn print_l3_book(book: &OrderBook, depth: usize, orders_per_level: usize, current_block: u64) {
     println!("\n{:=^100}", " ORDER BOOK (L3) ");
 
     // Print asks (reversed so lowest ask is closest to spread)
@@ -248,7 +248,7 @@ fn print_l3_book(book: &L2Book, depth: usize, orders_per_level: usize, current_b
     print_summary(book);
 }
 
-fn print_compact_book(book: &L2Book, depth: usize, orders_per_level: usize) {
+fn print_compact_book(book: &OrderBook, depth: usize, orders_per_level: usize) {
     println!("\n{:=^120}", " ORDER BOOK (Compact L3) ");
 
     // Print asks
@@ -338,7 +338,7 @@ fn print_compact_book(book: &L2Book, depth: usize, orders_per_level: usize) {
     print_summary(book);
 }
 
-fn print_spread(book: &L2Book) {
+fn print_spread(book: &OrderBook) {
     let best_bid = book.best_bid();
     let best_ask = book.best_ask();
     if let (Some((bid_price, bid_size)), Some((ask_price, ask_size))) = (best_bid, best_ask) {
@@ -357,7 +357,7 @@ fn print_spread(book: &L2Book) {
     }
 }
 
-fn print_summary(book: &L2Book) {
+fn print_summary(book: &OrderBook) {
     println!("{:=^100}", "");
 
     // Calculate total sizes
@@ -385,7 +385,7 @@ fn print_summary(book: &L2Book) {
     }
 }
 
-fn print_book(book: &L2Book, mode: DisplayMode, depth: usize, orders_per_level: usize, current_block: u64) {
+fn print_book(book: &OrderBook, mode: DisplayMode, depth: usize, orders_per_level: usize, current_block: u64) {
     match mode {
         DisplayMode::L2 => print_l2_book(book, depth),
         DisplayMode::L3 => print_l3_book(book, depth, orders_per_level, current_block),

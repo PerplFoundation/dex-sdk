@@ -7,9 +7,9 @@ use fastnum::UD64;
 use super::order::OrderSlot;
 use crate::types::{OrderId, OrderSide};
 
-/// Error type for L2/L3 order book operations.
+/// Error type for order book operations.
 #[derive(Debug, Clone, PartialEq)]
-pub enum L2BookError {
+pub enum OrderBookError {
     /// Attempted to add an order that already exists in the book.
     OrderAlreadyExists {
         order_id: OrderId,
@@ -41,10 +41,10 @@ pub enum L2BookError {
     InvalidOrderPrice { order_id: OrderId, price: UD64 },
 }
 
-impl fmt::Display for L2BookError {
+impl fmt::Display for OrderBookError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            L2BookError::OrderAlreadyExists {
+            OrderBookError::OrderAlreadyExists {
                 order_id,
                 existing_price,
                 existing_slot,
@@ -53,10 +53,10 @@ impl fmt::Display for L2BookError {
                 "order {} already exists at price {} (slot {:?})",
                 order_id, existing_price, existing_slot
             ),
-            L2BookError::OrderNotFound { order_id } => {
+            OrderBookError::OrderNotFound { order_id } => {
                 write!(f, "order {} not found in book", order_id)
             }
-            L2BookError::OrderNotAtExpectedLevel {
+            OrderBookError::OrderNotAtExpectedLevel {
                 order_id,
                 expected_price,
                 side,
@@ -70,20 +70,20 @@ impl fmt::Display for L2BookError {
                 },
                 expected_price
             ),
-            L2BookError::OrderIdMismatch { expected, actual } => {
+            OrderBookError::OrderIdMismatch { expected, actual } => {
                 write!(f, "order ID mismatch: expected {}, got {}", expected, actual)
             }
-            L2BookError::InvalidOrderSize { order_id, size } => {
+            OrderBookError::InvalidOrderSize { order_id, size } => {
                 write!(f, "order {} has invalid size: {}", order_id, size)
             }
-            L2BookError::InvalidOrderPrice { order_id, price } => {
+            OrderBookError::InvalidOrderPrice { order_id, price } => {
                 write!(f, "order {} has invalid price: {}", order_id, price)
             }
         }
     }
 }
 
-impl std::error::Error for L2BookError {}
+impl std::error::Error for OrderBookError {}
 
-/// Result type for L2Book operations.
-pub type L2BookResult<T> = Result<T, L2BookError>;
+/// Result type for OrderBook operations.
+pub type OrderBookResult<T> = Result<T, OrderBookError>;
