@@ -382,6 +382,12 @@ impl Perpetual {
         } else if order.size() > prev.size() {
             // Size INCREASED at same price: move to back of queue (loses priority)
             self.l2_book.move_to_back(&order, &prev)?;
+        } else if prev.expiry_block() > 0
+            && prev.expiry_block() < order.instant().block_number()
+            && prev.expiry_block() != order.expiry_block()
+        {
+            // Expired order got new expiry: move to back of queue (loses priority)
+            self.l2_book.move_to_back(&order, &prev)?;
         } else {
             // Size decreased or unchanged: keep queue position
             self.l2_book.update_order(&order, &prev)?;
@@ -506,5 +512,152 @@ impl Perpetual {
         self.open_interest -= prev_size.resize();
         self.open_interest += new_size.resize();
         self.instant = instant;
+    }
+
+    /// Create a minimal Perpetual for testing purposes.
+    #[cfg(test)]
+    pub(crate) fn for_testing(id: types::PerpetualId) -> Self {
+        Self {
+            instant: types::StateInstant::new(0, 0),
+            state_instant: types::StateInstant::new(0, 0),
+            id,
+            name: "TEST".to_string(),
+            symbol: "TEST".to_string(),
+            is_paused: false,
+            price_converter: num::Converter::new(0),
+            size_converter: num::Converter::new(0),
+            leverage_converter: num::Converter::new(2),
+            fee_converter: num::Converter::new(5),
+            funding_rate_converter: num::Converter::new(5),
+            base_price: UD64::ZERO,
+            maker_fee: UD64::ZERO,
+            taker_fee: UD64::ZERO,
+            initial_margin: UD64::ZERO,
+            maintenance_margin: UD64::ZERO,
+            last_price: UD64::ZERO,
+            last_price_block: None,
+            last_price_timestamp: 0,
+            mark_price: UD64::ZERO,
+            mark_price_block: None,
+            mark_price_timestamp: 0,
+            oracle_price: UD64::ZERO,
+            oracle_price_block: None,
+            oracle_price_timestamp: 0,
+            prev_funding_rate: D64::ZERO,
+            next_funding_rate: None,
+            next_funding_payment: None,
+            next_funding_event_block: None,
+            funding_start_block: 0,
+            oracle_feed_id: B256::ZERO,
+            is_oracle_used: false,
+            price_max_age_sec: 0,
+            l2_book: OrderBook::new(),
+            open_interest: UD128::ZERO,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fastnum::udec64;
+
+    #[test]
+    fn update_order_expired_order_renewal_moves_to_back() {
+        let mut perp = Perpetual::for_testing(1);
+
+        // Create two orders at the same price
+        // Order 1: expires at block 100
+        // Order 2: no expiry
+        let order1 = Order::for_l3_testing(
+            types::OrderType::OpenShort, // Ask
+            udec64!(100),                // price
+            udec64!(1.0),                // size
+            50,                          // block_number
+            1,                           // order_id
+            101,                         // account_id
+        )
+        .with_expiry_block(100);
+
+        let order2 = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(2.0),
+            50,
+            2,
+            102,
+        );
+
+        // Add orders: FIFO is [1, 2]
+        perp.add_order(order1).unwrap();
+        perp.add_order(order2).unwrap();
+
+        // Verify initial FIFO order
+        let orders: Vec<_> = perp.l2_book.ask_orders().map(|o| o.order_id()).collect();
+        assert_eq!(orders, vec![1, 2], "Initial FIFO should be [1, 2]");
+
+        // Now simulate time passing: we're at block 150 (order 1 is expired at block 100)
+        // Update order 1 with a new expiry (block 200)
+        let order1_renewed = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(1.0),
+            150, // current block
+            1,
+            101,
+        )
+        .with_expiry_block(200); // new expiry
+
+        perp.update_order(order1_renewed).unwrap();
+
+        // Order 1 should have moved to back: FIFO is [2, 1]
+        let orders: Vec<_> = perp.l2_book.ask_orders().map(|o| o.order_id()).collect();
+        assert_eq!(orders, vec![2, 1], "After expiry renewal, FIFO should be [2, 1]");
+    }
+
+    #[test]
+    fn update_order_non_expired_order_keeps_position() {
+        let mut perp = Perpetual::for_testing(1);
+
+        // Create two orders at the same price
+        // Order 1: expires at block 100
+        let order1 = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(1.0),
+            50,
+            1,
+            101,
+        )
+        .with_expiry_block(100);
+
+        let order2 = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(2.0),
+            50,
+            2,
+            102,
+        );
+
+        perp.add_order(order1).unwrap();
+        perp.add_order(order2).unwrap();
+
+        // Update order 1 at block 80 (NOT expired yet) with new expiry
+        let order1_updated = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(1.0),
+            80, // current block < expiry_block(100)
+            1,
+            101,
+        )
+        .with_expiry_block(200);
+
+        perp.update_order(order1_updated).unwrap();
+
+        // Order 1 should keep its position: FIFO is [1, 2]
+        let orders: Vec<_> = perp.l2_book.ask_orders().map(|o| o.order_id()).collect();
+        assert_eq!(orders, vec![1, 2], "Non-expired order should keep position");
     }
 }

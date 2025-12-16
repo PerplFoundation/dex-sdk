@@ -263,6 +263,27 @@ impl Order {
         }
     }
 
+    /// Create a copy with updated expiry block (for testing expiry changes).
+    #[allow(unused)]
+    pub(crate) fn with_expiry_block(&self, expiry_block: u64) -> Self {
+        Self {
+            instant: self.instant,
+            request_id: self.request_id,
+            order_id: self.order_id,
+            r#type: self.r#type,
+            account_id: self.account_id,
+            price: self.price,
+            size: self.size,
+            expiry_block,
+            leverage: self.leverage,
+            post_only: self.post_only,
+            fill_or_kill: self.fill_or_kill,
+            immediate_or_cancel: self.immediate_or_cancel,
+            prev_order_id: self.prev_order_id,
+            next_order_id: self.next_order_id,
+        }
+    }
+
     /// Create a copy with linked list pointers (for testing snapshot reconstruction).
     #[allow(unused)]
     pub(crate) fn with_links(
