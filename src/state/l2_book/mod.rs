@@ -67,16 +67,12 @@ impl OrderBook {
 
     /// Best ask price/size.
     pub fn best_ask(&self) -> Option<(UD64, UD64)> {
-        self.asks
-            .first_key_value()
-            .map(|(k, v)| (*k, v.size()))
+        self.asks.first_key_value().map(|(k, v)| (*k, v.size()))
     }
 
     /// Best bid price/size.
     pub fn best_bid(&self) -> Option<(UD64, UD64)> {
-        self.bids
-            .first_key_value()
-            .map(|(k, v)| (k.0, v.size()))
+        self.bids.first_key_value().map(|(k, v)| (k.0, v.size()))
     }
 
     /// Ask impact price for the requested size, along with the fillable size and size-averaged price.
@@ -114,12 +110,16 @@ impl OrderBook {
 
     /// Iterator over all L3 orders on the ask side in price-time priority.
     pub fn ask_orders(&self) -> impl Iterator<Item = &BookOrder> {
-        self.asks.values().flat_map(|level| self.level_orders(level))
+        self.asks
+            .values()
+            .flat_map(|level| self.level_orders(level))
     }
 
     /// Iterator over all L3 orders on the bid side in price-time priority.
     pub fn bid_orders(&self) -> impl Iterator<Item = &BookOrder> {
-        self.bids.values().flat_map(|level| self.level_orders(level))
+        self.bids
+            .values()
+            .flat_map(|level| self.level_orders(level))
     }
 
     /// Iterator over orders at a specific level (follows the linked list).
@@ -207,7 +207,11 @@ impl OrderBook {
     /// Returns an error if:
     /// - The order doesn't exist in the book
     /// - The new size is zero
-    pub(crate) fn update_order(&mut self, order: &Order, _prev_order: &Order) -> OrderBookResult<()> {
+    pub(crate) fn update_order(
+        &mut self,
+        order: &Order,
+        _prev_order: &Order,
+    ) -> OrderBookResult<()> {
         // Validate new size
         if order.size() == UD64::ZERO {
             return Err(OrderBookError::InvalidOrderSize {
@@ -223,11 +227,12 @@ impl OrderBook {
             }
         })?;
 
-        let l3_order = self.orders.get_mut(slot).ok_or_else(|| {
-            OrderBookError::OrderNotFound {
+        let l3_order = self
+            .orders
+            .get_mut(slot)
+            .ok_or_else(|| OrderBookError::OrderNotFound {
                 order_id: order.order_id(),
-            }
-        })?;
+            })?;
 
         let old_size = l3_order.size();
         let price = l3_order.price();
@@ -253,7 +258,10 @@ impl OrderBook {
     ///
     /// Returns an error if:
     /// - The order doesn't exist in the book
-    pub(crate) fn remove_order_by_id(&mut self, order_id: types::OrderId) -> OrderBookResult<Order> {
+    pub(crate) fn remove_order_by_id(
+        &mut self,
+        order_id: types::OrderId,
+    ) -> OrderBookResult<Order> {
         // Find and remove from index
         let slot = self
             .order_index
@@ -308,7 +316,11 @@ impl OrderBook {
     ///
     /// Returns an error if:
     /// - The order doesn't exist in the book
-    pub(crate) fn move_to_back(&mut self, order: &Order, _prev_order: &Order) -> OrderBookResult<()> {
+    pub(crate) fn move_to_back(
+        &mut self,
+        order: &Order,
+        _prev_order: &Order,
+    ) -> OrderBookResult<()> {
         // Find the order
         let &slot = self.order_index.get(&order.order_id()).ok_or_else(|| {
             OrderBookError::OrderNotFound {
@@ -316,11 +328,12 @@ impl OrderBook {
             }
         })?;
 
-        let l3_order = self.orders.get(slot).ok_or_else(|| {
-            OrderBookError::OrderNotFound {
+        let l3_order = self
+            .orders
+            .get(slot)
+            .ok_or_else(|| OrderBookError::OrderNotFound {
                 order_id: order.order_id(),
-            }
-        })?;
+            })?;
 
         let prev_slot = l3_order.prev();
         let next_slot = l3_order.next();

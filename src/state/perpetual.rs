@@ -612,7 +612,11 @@ mod tests {
 
         // Order 1 should have moved to back: FIFO is [2, 1]
         let orders: Vec<_> = perp.l2_book.ask_orders().map(|o| o.order_id()).collect();
-        assert_eq!(orders, vec![2, 1], "After expiry renewal, FIFO should be [2, 1]");
+        assert_eq!(
+            orders,
+            vec![2, 1],
+            "After expiry renewal, FIFO should be [2, 1]"
+        );
     }
 
     #[test]

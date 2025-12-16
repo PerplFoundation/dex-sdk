@@ -3,14 +3,12 @@
 use std::time::Duration;
 
 use alloy::{
-    providers::ProviderBuilder,
-    rpc::client::RpcClient,
-    transports::layers::RetryBackoffLayer,
+    providers::ProviderBuilder, rpc::client::RpcClient, transports::layers::RetryBackoffLayer,
 };
 use clap::{Parser, ValueEnum};
 use dex_sdk::{
     Chain,
-    state::{OrderBook, BookOrder, Perpetual, SnapshotBuilder},
+    state::{BookOrder, OrderBook, Perpetual, SnapshotBuilder},
     stream,
     types::{OrderType, PerpetualId, StateInstant},
 };
@@ -86,7 +84,11 @@ fn print_order_detailed(order: &BookOrder, current_block: u64) {
     } else if o.expiry_block() <= current_block {
         format!("{} (EXPIRED)", o.expiry_block())
     } else {
-        format!("{} (+{})", o.expiry_block(), o.expiry_block() - current_block)
+        format!(
+            "{} (+{})",
+            o.expiry_block(),
+            o.expiry_block() - current_block
+        )
     };
 
     println!(
@@ -105,7 +107,11 @@ fn print_l2_book(book: &OrderBook, depth: usize) {
 
     // Print asks (reversed so lowest ask is closest to spread)
     let asks: Vec<_> = book.asks().iter().collect();
-    let ask_count = if depth == 0 { asks.len() } else { depth.min(asks.len()) };
+    let ask_count = if depth == 0 {
+        asks.len()
+    } else {
+        depth.min(asks.len())
+    };
 
     println!("{:^80}", "ASKS");
     println!("{:-^80}", "");
@@ -133,7 +139,11 @@ fn print_l2_book(book: &OrderBook, depth: usize) {
 
     // Print bids
     let bids: Vec<_> = book.bids().iter().collect();
-    let bid_count = if depth == 0 { bids.len() } else { depth.min(bids.len()) };
+    let bid_count = if depth == 0 {
+        bids.len()
+    } else {
+        depth.min(bids.len())
+    };
 
     println!("{:^80}", "BIDS");
     println!("{:-^80}", "");
@@ -163,7 +173,11 @@ fn print_l3_book(book: &OrderBook, depth: usize, orders_per_level: usize, curren
 
     // Print asks (reversed so lowest ask is closest to spread)
     let asks: Vec<_> = book.asks().iter().collect();
-    let ask_count = if depth == 0 { asks.len() } else { depth.min(asks.len()) };
+    let ask_count = if depth == 0 {
+        asks.len()
+    } else {
+        depth.min(asks.len())
+    };
 
     println!("{:^100}", "ASKS");
     println!("{:-^100}", "");
@@ -178,10 +192,7 @@ fn print_l3_book(book: &OrderBook, depth: usize, orders_per_level: usize, curren
         );
 
         // Get orders at this level via the book's ask_orders iterator filtered by price
-        let level_orders: Vec<_> = book
-            .ask_orders()
-            .filter(|o| o.price() == **price)
-            .collect();
+        let level_orders: Vec<_> = book.ask_orders().filter(|o| o.price() == **price).collect();
 
         let show_count = if orders_per_level == 0 {
             level_orders.len()
@@ -207,7 +218,11 @@ fn print_l3_book(book: &OrderBook, depth: usize, orders_per_level: usize, curren
 
     // Print bids
     let bids: Vec<_> = book.bids().iter().collect();
-    let bid_count = if depth == 0 { bids.len() } else { depth.min(bids.len()) };
+    let bid_count = if depth == 0 {
+        bids.len()
+    } else {
+        depth.min(bids.len())
+    };
 
     println!("{:^100}", "BIDS");
     println!("{:-^100}", "");
@@ -221,10 +236,7 @@ fn print_l3_book(book: &OrderBook, depth: usize, orders_per_level: usize, curren
         );
 
         // Get orders at this level
-        let level_orders: Vec<_> = book
-            .bid_orders()
-            .filter(|o| o.price() == price.0)
-            .collect();
+        let level_orders: Vec<_> = book.bid_orders().filter(|o| o.price() == price.0).collect();
 
         let show_count = if orders_per_level == 0 {
             level_orders.len()
@@ -253,17 +265,18 @@ fn print_compact_book(book: &OrderBook, depth: usize, orders_per_level: usize) {
 
     // Print asks
     let asks: Vec<_> = book.asks().iter().collect();
-    let ask_count = if depth == 0 { asks.len() } else { depth.min(asks.len()) };
+    let ask_count = if depth == 0 {
+        asks.len()
+    } else {
+        depth.min(asks.len())
+    };
 
     println!("{:^120}", "ASKS");
     println!("{:-^120}", "");
 
     let ask_slice: Vec<_> = asks.iter().take(ask_count).collect();
     for (price, level) in ask_slice.iter().rev() {
-        let level_orders: Vec<_> = book
-            .ask_orders()
-            .filter(|o| o.price() == **price)
-            .collect();
+        let level_orders: Vec<_> = book.ask_orders().filter(|o| o.price() == **price).collect();
 
         let show_count = if orders_per_level == 0 {
             level_orders.len()
@@ -297,16 +310,17 @@ fn print_compact_book(book: &OrderBook, depth: usize, orders_per_level: usize) {
 
     // Print bids
     let bids: Vec<_> = book.bids().iter().collect();
-    let bid_count = if depth == 0 { bids.len() } else { depth.min(bids.len()) };
+    let bid_count = if depth == 0 {
+        bids.len()
+    } else {
+        depth.min(bids.len())
+    };
 
     println!("{:^120}", "BIDS");
     println!("{:-^120}", "");
 
     for (price, level) in bids.iter().take(bid_count) {
-        let level_orders: Vec<_> = book
-            .bid_orders()
-            .filter(|o| o.price() == price.0)
-            .collect();
+        let level_orders: Vec<_> = book.bid_orders().filter(|o| o.price() == price.0).collect();
 
         let show_count = if orders_per_level == 0 {
             level_orders.len()
@@ -378,14 +392,17 @@ fn print_summary(book: &OrderBook) {
         let total = total_ask_size + total_bid_size;
         let bid_pct = (total_bid_size / total) * fastnum::udec64!(100);
         let ask_pct = (total_ask_size / total) * fastnum::udec64!(100);
-        println!(
-            "Imbalance: {:.1}% bids / {:.1}% asks",
-            bid_pct, ask_pct
-        );
+        println!("Imbalance: {:.1}% bids / {:.1}% asks", bid_pct, ask_pct);
     }
 }
 
-fn print_book(book: &OrderBook, mode: DisplayMode, depth: usize, orders_per_level: usize, current_block: u64) {
+fn print_book(
+    book: &OrderBook,
+    mode: DisplayMode,
+    depth: usize,
+    orders_per_level: usize,
+    current_block: u64,
+) {
     match mode {
         DisplayMode::L2 => print_l2_book(book, depth),
         DisplayMode::L3 => print_l3_book(book, depth, orders_per_level, current_block),
@@ -488,16 +505,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Apply events to update state
                 match exchange.apply_events(&block_events) {
                     Ok(Some(state_events)) => {
-                        let state_event_count: usize = state_events
-                            .events()
-                            .iter()
-                            .map(|e| e.event().len())
-                            .sum();
+                        let state_event_count: usize =
+                            state_events.events().iter().map(|e| e.event().len()).sum();
 
                         if state_event_count > 0 {
                             println!(
                                 "\n{:=^80}",
-                                format!(" BLOCK {} | {} raw -> {} state events ", block_num, event_count, state_event_count)
+                                format!(
+                                    " BLOCK {} | {} raw -> {} state events ",
+                                    block_num, event_count, state_event_count
+                                )
                             );
 
                             // Print updated book

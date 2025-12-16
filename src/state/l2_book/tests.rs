@@ -83,7 +83,9 @@ macro_rules! assert_best_bid {
 /// Assert order exists in book with expected properties.
 macro_rules! assert_order {
     ($book:expr, $oid:expr => { price: $price:expr, size: $size:expr, account_id: $aid:expr }) => {
-        let order = $book.get_order($oid).expect(&format!("order {} exists", $oid));
+        let order = $book
+            .get_order($oid)
+            .expect(&format!("order {} exists", $oid));
         assert_eq!(order.price(), udec64!($price), "order {} price", $oid);
         assert_eq!(order.size(), udec64!($size), "order {} size", $oid);
         assert_eq!(order.account_id(), $aid, "order {} account_id", $oid);
@@ -417,7 +419,10 @@ fn l2_book_remove_nonexistent() {
     let mut book = OrderBook::new();
 
     let result = book.remove_order_by_id(99);
-    assert!(matches!(result, Err(OrderBookError::OrderNotFound { order_id: 99 })));
+    assert!(matches!(
+        result,
+        Err(OrderBookError::OrderNotFound { order_id: 99 })
+    ));
     assert_eq!(book.total_orders(), 0);
 }
 
@@ -428,7 +433,10 @@ fn l2_book_update_nonexistent() {
     let order = ask!(100, 1.0, 1, 99, 1);
 
     let result = book.update_order(&order.with_size(udec64!(0.5)), &order);
-    assert!(matches!(result, Err(OrderBookError::OrderNotFound { order_id: 99 })));
+    assert!(matches!(
+        result,
+        Err(OrderBookError::OrderNotFound { order_id: 99 })
+    ));
     assert_eq!(book.total_orders(), 0);
 }
 
@@ -696,7 +704,8 @@ fn snapshot_multiple_orders_same_level() {
     );
 
     // Add in shuffled order - linked list should still be reconstructed correctly
-    book.add_orders_from_snapshot(&[order2, order3, order1]).unwrap();
+    book.add_orders_from_snapshot(&[order2, order3, order1])
+        .unwrap();
 
     assert_eq!(book.total_orders(), 3);
     assert_level!(book, ask @ 100 => (6.0, 3));
@@ -931,7 +940,10 @@ fn move_nonexistent_order() {
     let order = ask!(100, 1.0, 1, 99, 1); // order_id = 99, not in book
 
     let result = book.move_to_back(&order, &order);
-    assert!(matches!(result, Err(OrderBookError::OrderNotFound { order_id: 99 })));
+    assert!(matches!(
+        result,
+        Err(OrderBookError::OrderNotFound { order_id: 99 })
+    ));
 }
 
 // ============================================================================
