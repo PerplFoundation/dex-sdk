@@ -28,7 +28,7 @@ pub struct StateInstant {
 }
 
 impl StateInstant {
-    pub(crate) fn new(block_number: u64, block_timestamp: u64) -> Self {
+    pub fn new(block_number: u64, block_timestamp: u64) -> Self {
         Self {
             block_number,
             block_timestamp,
