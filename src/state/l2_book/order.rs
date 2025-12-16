@@ -1,14 +1,7 @@
 //! Book order representation with intrusive linked list pointers.
 
-use slotmap::new_key_type;
-
 use crate::{state::Order, types};
 use fastnum::UD64;
-
-new_key_type! {
-    /// Handle to an order in the slotmap arena.
-    pub struct OrderSlot;
-}
 
 /// Individual order in the book with linked list pointers.
 ///
@@ -18,9 +11,9 @@ new_key_type! {
 pub struct BookOrder {
     order: Order,
     /// Previous order in queue (toward head). None if this is the head.
-    prev: Option<OrderSlot>,
+    prev: Option<types::OrderId>,
     /// Next order in queue (toward tail). None if this is the tail.
-    next: Option<OrderSlot>,
+    next: Option<types::OrderId>,
 }
 
 impl BookOrder {
@@ -64,12 +57,12 @@ impl BookOrder {
     }
 
     /// Previous order in the FIFO queue (toward head).
-    pub(crate) fn prev(&self) -> Option<OrderSlot> {
+    pub(crate) fn prev(&self) -> Option<types::OrderId> {
         self.prev
     }
 
     /// Next order in the FIFO queue (toward tail).
-    pub(crate) fn next(&self) -> Option<OrderSlot> {
+    pub(crate) fn next(&self) -> Option<types::OrderId> {
         self.next
     }
 
@@ -79,12 +72,12 @@ impl BookOrder {
     }
 
     /// Set the previous order pointer.
-    pub(crate) fn set_prev(&mut self, prev: Option<OrderSlot>) {
+    pub(crate) fn set_prev(&mut self, prev: Option<types::OrderId>) {
         self.prev = prev;
     }
 
     /// Set the next order pointer.
-    pub(crate) fn set_next(&mut self, next: Option<OrderSlot>) {
+    pub(crate) fn set_next(&mut self, next: Option<types::OrderId>) {
         self.next = next;
     }
 }

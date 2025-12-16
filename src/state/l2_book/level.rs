@@ -2,7 +2,7 @@
 
 use fastnum::UD64;
 
-use super::order::OrderSlot;
+use crate::types;
 
 /// Price level containing orders in a doubly-linked list (FIFO order).
 ///
@@ -11,9 +11,9 @@ use super::order::OrderSlot;
 #[derive(Clone, Debug, Default)]
 pub struct BookLevel {
     /// First order in the FIFO queue (oldest).
-    head: Option<OrderSlot>,
+    head: Option<types::OrderId>,
     /// Last order in the FIFO queue (newest).
-    tail: Option<OrderSlot>,
+    tail: Option<types::OrderId>,
     /// Cached aggregate: total size at this level.
     cached_size: UD64,
     /// Cached aggregate: number of orders at this level.
@@ -36,13 +36,13 @@ impl BookLevel {
         self.cached_count
     }
 
-    /// First (oldest) order slot at this level.
-    pub(crate) fn head(&self) -> Option<OrderSlot> {
+    /// First (oldest) order ID at this level.
+    pub(crate) fn head(&self) -> Option<types::OrderId> {
         self.head
     }
 
-    /// Last (newest) order slot at this level.
-    pub(crate) fn tail(&self) -> Option<OrderSlot> {
+    /// Last (newest) order ID at this level.
+    pub(crate) fn tail(&self) -> Option<types::OrderId> {
         self.tail
     }
 
@@ -52,12 +52,12 @@ impl BookLevel {
     }
 
     /// Set the head pointer.
-    pub(crate) fn set_head(&mut self, head: Option<OrderSlot>) {
+    pub(crate) fn set_head(&mut self, head: Option<types::OrderId>) {
         self.head = head;
     }
 
     /// Set the tail pointer.
-    pub(crate) fn set_tail(&mut self, tail: Option<OrderSlot>) {
+    pub(crate) fn set_tail(&mut self, tail: Option<types::OrderId>) {
         self.tail = tail;
     }
 

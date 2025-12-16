@@ -1,13 +1,7 @@
-//! Order book implementation using slotmap arena and intrusive linked lists.
+//! Order book implementation with intrusive linked lists.
 //!
 //! This module provides the order book data structure that tracks orders
 //! at each price level with FIFO time-priority ordering using doubly-linked lists.
-//!
-//! # Safety
-//!
-//! `OrderSlot` handles are internal to each book and must not be used across books.
-//! The slot-exposing methods (`all_orders`, `level_orders`) are `pub(crate)` to prevent
-//! accidental cross-book slot usage from outside the crate.
 
 mod error;
 mod level;
@@ -19,7 +13,6 @@ mod tests;
 pub use error::{OrderBookError, OrderBookResult};
 pub use level::BookLevel;
 pub use order::BookOrder;
-pub(crate) use order::OrderSlot;
 
 use std::{
     cmp::Reverse,
@@ -28,20 +21,17 @@ use std::{
 
 use fastnum::{UD64, UD128};
 use itertools::{FoldWhile, Itertools};
-use slotmap::SlotMap;
 
 use crate::{state::Order, types};
 
-/// Slotmap-based L2/L3 order book with intrusive linked lists.
+/// L2/L3 order book with intrusive linked lists.
 ///
-/// Orders are stored in a slotmap arena, with each price level maintaining
-/// a doubly-linked list of orders in FIFO (time-priority) order.
+/// Orders are stored in a HashMap keyed by OrderId, with each price level
+/// maintaining a doubly-linked list of orders in FIFO (time-priority) order.
 #[derive(Clone, Debug, Default)]
 pub struct OrderBook {
-    /// Arena storage for all orders.
-    orders: SlotMap<OrderSlot, BookOrder>,
-    /// Reverse index: order_id -> slot for O(1) lookups.
-    order_index: HashMap<types::OrderId, OrderSlot>,
+    /// Storage for all orders, keyed by OrderId.
+    orders: HashMap<types::OrderId, BookOrder>,
     /// Ask levels sorted by price (ascending, best ask first).
     asks: BTreeMap<UD64, BookLevel>,
     /// Bid levels sorted by price (descending, best bid first).
@@ -97,10 +87,9 @@ impl OrderBook {
         self.bids.get(&Reverse(price))
     }
 
-    /// Get a specific order by ID (O(1) via reverse index).
+    /// Get a specific order by ID (O(1) via HashMap lookup).
     pub fn get_order(&self, order_id: types::OrderId) -> Option<&BookOrder> {
-        let slot = self.order_index.get(&order_id)?;
-        self.orders.get(*slot)
+        self.orders.get(&order_id)
     }
 
     /// Get the underlying Order by ID.
@@ -123,8 +112,6 @@ impl OrderBook {
     }
 
     /// Iterator over orders at a specific level (follows the linked list).
-    ///
-    /// Note: This exposes internal OrderSlot handles. Use within crate only.
     pub(crate) fn level_orders<'a>(&'a self, level: &'a BookLevel) -> LevelOrdersIter<'a> {
         LevelOrdersIter {
             orders: &self.orders,
@@ -134,13 +121,11 @@ impl OrderBook {
 
     /// Total number of orders in the book.
     pub fn total_orders(&self) -> usize {
-        self.order_index.len()
+        self.orders.len()
     }
 
-    /// Access to all orders in the arena.
-    ///
-    /// Note: This exposes internal OrderSlot handles. Use within crate only.
-    pub(crate) fn all_orders(&self) -> &SlotMap<OrderSlot, BookOrder> {
+    /// Access to all orders in the book.
+    pub(crate) fn all_orders(&self) -> &HashMap<types::OrderId, BookOrder> {
         &self.orders
     }
 
@@ -154,29 +139,28 @@ impl OrderBook {
     /// - The order already exists in the book
     /// - The order has zero size
     /// - The order has zero price
-    pub(crate) fn add_order(&mut self, order: &Order) -> OrderBookResult<OrderSlot> {
+    pub(crate) fn add_order(&mut self, order: &Order) -> OrderBookResult<()> {
+        let order_id = order.order_id();
+
         // Validate order
         if order.size() == UD64::ZERO {
             return Err(OrderBookError::InvalidOrderSize {
-                order_id: order.order_id(),
+                order_id,
                 size: order.size(),
             });
         }
         if order.price() == UD64::ZERO {
             return Err(OrderBookError::InvalidOrderPrice {
-                order_id: order.order_id(),
+                order_id,
                 price: order.price(),
             });
         }
 
         // Check if order already exists
-        if let Some(&existing_slot) = self.order_index.get(&order.order_id())
-            && let Some(existing) = self.orders.get(existing_slot)
-        {
+        if let Some(existing) = self.orders.get(&order_id) {
             return Err(OrderBookError::OrderAlreadyExists {
-                order_id: order.order_id(),
+                order_id,
                 existing_price: existing.price(),
-                existing_slot,
             });
         }
 
@@ -188,16 +172,13 @@ impl OrderBook {
         let mut l3_order = BookOrder::new(*order);
         l3_order.set_prev(old_tail);
 
-        // Insert into slotmap
-        let slot = self.orders.insert(l3_order);
+        // Insert into hashmap
+        self.orders.insert(order_id, l3_order);
 
         // Link at tail
-        self.link_at_tail(side, order.price(), old_tail, slot, order.size());
+        self.link_at_tail(side, order.price(), old_tail, order_id, order.size());
 
-        // Update reverse index
-        self.order_index.insert(order.order_id(), slot);
-
-        Ok(slot)
+        Ok(())
     }
 
     /// Update an order's size (same price level, keeps queue position).
@@ -212,27 +193,21 @@ impl OrderBook {
         order: &Order,
         _prev_order: &Order,
     ) -> OrderBookResult<()> {
+        let order_id = order.order_id();
+
         // Validate new size
         if order.size() == UD64::ZERO {
             return Err(OrderBookError::InvalidOrderSize {
-                order_id: order.order_id(),
+                order_id,
                 size: order.size(),
             });
         }
 
         // Find the order
-        let &slot = self.order_index.get(&order.order_id()).ok_or_else(|| {
-            OrderBookError::OrderNotFound {
-                order_id: order.order_id(),
-            }
-        })?;
-
         let l3_order = self
             .orders
-            .get_mut(slot)
-            .ok_or_else(|| OrderBookError::OrderNotFound {
-                order_id: order.order_id(),
-            })?;
+            .get_mut(&order_id)
+            .ok_or(OrderBookError::OrderNotFound { order_id })?;
 
         let old_size = l3_order.size();
         let price = l3_order.price();
@@ -262,36 +237,30 @@ impl OrderBook {
         &mut self,
         order_id: types::OrderId,
     ) -> OrderBookResult<Order> {
-        // Find and remove from index
-        let slot = self
-            .order_index
-            .remove(&order_id)
-            .ok_or(OrderBookError::OrderNotFound { order_id })?;
-
         // Get order info before removal
         let l3_order = self
             .orders
-            .get(slot)
+            .get(&order_id)
             .ok_or(OrderBookError::OrderNotFound { order_id })?;
 
-        let prev_slot = l3_order.prev();
-        let next_slot = l3_order.next();
+        let prev_id = l3_order.prev();
+        let next_id = l3_order.next();
         let price = l3_order.price();
         let size = l3_order.size();
         let side = l3_order.r#type().side();
 
         // Unlink from list
-        self.unlink_node(prev_slot, next_slot);
+        self.unlink_node(prev_id, next_id);
 
         // Update level head/tail and check if empty
         let level = self
             .get_level_mut(side, price)
             .ok_or(OrderBookError::LevelNotFound { price, side })?;
-        if level.head() == Some(slot) {
-            level.set_head(next_slot);
+        if level.head() == Some(order_id) {
+            level.set_head(next_id);
         }
-        if level.tail() == Some(slot) {
-            level.set_tail(prev_slot);
+        if level.tail() == Some(order_id) {
+            level.set_tail(prev_id);
         }
         level.sub_size(size);
         let should_remove_level = level.is_empty();
@@ -301,10 +270,10 @@ impl OrderBook {
             self.remove_level(side, price);
         }
 
-        // Remove from slotmap and return the order
+        // Remove from hashmap and return the order
         let removed = self
             .orders
-            .remove(slot)
+            .remove(&order_id)
             .ok_or(OrderBookError::OrderNotFound { order_id })?;
 
         Ok(*removed.order())
@@ -321,22 +290,16 @@ impl OrderBook {
         order: &Order,
         _prev_order: &Order,
     ) -> OrderBookResult<()> {
-        // Find the order
-        let &slot = self.order_index.get(&order.order_id()).ok_or_else(|| {
-            OrderBookError::OrderNotFound {
-                order_id: order.order_id(),
-            }
-        })?;
+        let order_id = order.order_id();
 
+        // Find the order
         let l3_order = self
             .orders
-            .get(slot)
-            .ok_or_else(|| OrderBookError::OrderNotFound {
-                order_id: order.order_id(),
-            })?;
+            .get(&order_id)
+            .ok_or(OrderBookError::OrderNotFound { order_id })?;
 
-        let prev_slot = l3_order.prev();
-        let next_slot = l3_order.next();
+        let prev_id = l3_order.prev();
+        let next_id = l3_order.next();
         let price = l3_order.price();
         let old_size = l3_order.size();
         let side = l3_order.r#type().side();
@@ -346,11 +309,11 @@ impl OrderBook {
             .get_level(side, price)
             .ok_or(OrderBookError::LevelNotFound { price, side })?
             .tail()
-            == Some(slot);
+            == Some(order_id);
 
         if is_at_tail {
             // Already at back, just update order data
-            if let Some(l3_order) = self.orders.get_mut(slot) {
+            if let Some(l3_order) = self.orders.get_mut(&order_id) {
                 l3_order.update_order(*order);
             }
             let level = self
@@ -361,28 +324,28 @@ impl OrderBook {
         }
 
         // Unlink from current position
-        self.unlink_node(prev_slot, next_slot);
+        self.unlink_node(prev_id, next_id);
 
         // Update level head if we were the head
         let level = self
             .get_level_mut(side, price)
             .ok_or(OrderBookError::LevelNotFound { price, side })?;
-        if level.head() == Some(slot) {
-            level.set_head(next_slot);
+        if level.head() == Some(order_id) {
+            level.set_head(next_id);
         }
 
         // Get old tail before updating
         let old_tail = level.tail();
 
         // Update old tail's next pointer
-        if let Some(old_tail_slot) = old_tail {
-            if let Some(old_tail_order) = self.orders.get_mut(old_tail_slot) {
-                old_tail_order.set_next(Some(slot));
+        if let Some(old_tail_id) = old_tail {
+            if let Some(old_tail_order) = self.orders.get_mut(&old_tail_id) {
+                old_tail_order.set_next(Some(order_id));
             }
         }
 
         // Update this order's links and data
-        if let Some(l3_order) = self.orders.get_mut(slot) {
+        if let Some(l3_order) = self.orders.get_mut(&order_id) {
             l3_order.set_prev(old_tail);
             l3_order.set_next(None);
             l3_order.update_order(*order);
@@ -392,7 +355,7 @@ impl OrderBook {
         let level = self
             .get_level_mut(side, price)
             .ok_or(OrderBookError::LevelNotFound { price, side })?;
-        level.set_tail(Some(slot));
+        level.set_tail(Some(order_id));
         level.update_size(old_size, order.size());
 
         Ok(())
@@ -407,79 +370,70 @@ impl OrderBook {
     ///
     /// Returns an error if any order has invalid size or price.
     pub(crate) fn add_orders_from_snapshot(&mut self, orders: &[Order]) -> OrderBookResult<()> {
-        // First pass: insert all orders into slotmap and build OrderId -> OrderSlot map
-        let mut order_id_to_slot: HashMap<types::OrderId, OrderSlot> = HashMap::new();
+        // Collect order IDs for validation
+        let order_ids: std::collections::HashSet<types::OrderId> =
+            orders.iter().map(|o| o.order_id()).collect();
 
+        // First pass: insert all orders and set prev/next pointers directly
         for order in orders {
+            let order_id = order.order_id();
+
             if order.size() == UD64::ZERO {
                 return Err(OrderBookError::InvalidOrderSize {
-                    order_id: order.order_id(),
+                    order_id,
                     size: order.size(),
                 });
             }
             if order.price() == UD64::ZERO {
                 return Err(OrderBookError::InvalidOrderPrice {
-                    order_id: order.order_id(),
+                    order_id,
                     price: order.price(),
                 });
             }
 
-            let l3_order = BookOrder::new(*order);
-            let slot = self.orders.insert(l3_order);
-            order_id_to_slot.insert(order.order_id(), slot);
-            self.order_index.insert(order.order_id(), slot);
+            // Create BookOrder with prev/next pointing directly to OrderIds
+            let mut l3_order = BookOrder::new(*order);
+
+            // Only set prev/next if the referenced order exists in this snapshot
+            let prev_id = order.prev_order_id().filter(|id| order_ids.contains(id));
+            let next_id = order.next_order_id().filter(|id| order_ids.contains(id));
+
+            l3_order.set_prev(prev_id);
+            l3_order.set_next(next_id);
+
+            self.orders.insert(order_id, l3_order);
         }
 
-        // Second pass: set prev/next pointers using the order's linked list info
-        for order in orders {
-            let slot = order_id_to_slot[&order.order_id()];
-
-            // Convert prev_order_id to prev slot
-            let prev_slot = order
-                .prev_order_id()
-                .and_then(|prev_id| order_id_to_slot.get(&prev_id).copied());
-
-            // Convert next_order_id to next slot
-            let next_slot = order
-                .next_order_id()
-                .and_then(|next_id| order_id_to_slot.get(&next_id).copied());
-
-            if let Some(l3_order) = self.orders.get_mut(slot) {
-                l3_order.set_prev(prev_slot);
-                l3_order.set_next(next_slot);
-            }
-        }
-
-        // Third pass: build levels with head/tail and cached aggregates
+        // Second pass: build levels with head/tail and cached aggregates
         // Group orders by (price, side)
-        let mut level_orders: HashMap<(UD64, types::OrderSide), Vec<OrderSlot>> = HashMap::new();
+        let mut level_orders: HashMap<(UD64, types::OrderSide), Vec<types::OrderId>> =
+            HashMap::new();
         for order in orders {
-            let slot = order_id_to_slot[&order.order_id()];
             let key = (order.price(), order.r#type().side());
-            level_orders.entry(key).or_default().push(slot);
+            level_orders.entry(key).or_default().push(order.order_id());
         }
 
-        for ((price, side), slots) in level_orders {
+        for ((price, side), order_ids) in level_orders {
             // Find head (order with no prev in this level)
-            let head = slots.iter().find(|&&slot| {
+            let head = order_ids.iter().find(|&&id| {
                 self.orders
-                    .get(slot)
-                    .is_some_and(|o| o.prev().is_none_or(|p| !slots.contains(&p)))
+                    .get(&id)
+                    .is_some_and(|o| o.prev().is_none_or(|p| !order_ids.contains(&p)))
             });
 
             // Find tail (order with no next in this level)
-            let tail = slots.iter().find(|&&slot| {
+            let tail = order_ids.iter().find(|&&id| {
                 self.orders
-                    .get(slot)
-                    .is_some_and(|o| o.next().is_none_or(|n| !slots.contains(&n)))
+                    .get(&id)
+                    .is_some_and(|o| o.next().is_none_or(|n| !order_ids.contains(&n)))
             });
 
             // Build level with head/tail and cached aggregates
             let mut level = BookLevel::new();
             level.set_head(head.copied());
             level.set_tail(tail.copied());
-            for &slot in &slots {
-                if let Some(order) = self.orders.get(slot) {
+            for &id in &order_ids {
+                if let Some(order) = self.orders.get(&id) {
                     level.add_size(order.size());
                 }
             }
@@ -542,45 +496,45 @@ impl OrderBook {
     }
 
     /// Unlink a node from the doubly-linked list by updating its neighbors.
-    fn unlink_node(&mut self, prev_slot: Option<OrderSlot>, next_slot: Option<OrderSlot>) {
+    fn unlink_node(&mut self, prev_id: Option<types::OrderId>, next_id: Option<types::OrderId>) {
         // Update prev's next pointer
-        if let Some(prev) = prev_slot {
-            if let Some(prev_order) = self.orders.get_mut(prev) {
-                prev_order.set_next(next_slot);
+        if let Some(prev) = prev_id {
+            if let Some(prev_order) = self.orders.get_mut(&prev) {
+                prev_order.set_next(next_id);
             }
         }
 
         // Update next's prev pointer
-        if let Some(next) = next_slot {
-            if let Some(next_order) = self.orders.get_mut(next) {
-                next_order.set_prev(prev_slot);
+        if let Some(next) = next_id {
+            if let Some(next_order) = self.orders.get_mut(&next) {
+                next_order.set_prev(prev_id);
             }
         }
     }
 
-    /// Link a new slot at the tail of a level.
+    /// Link a new order at the tail of a level.
     /// Takes old_tail to avoid borrowing level while mutating orders.
     fn link_at_tail(
         &mut self,
         side: types::OrderSide,
         price: UD64,
-        old_tail: Option<OrderSlot>,
-        slot: OrderSlot,
+        old_tail: Option<types::OrderId>,
+        order_id: types::OrderId,
         size: UD64,
     ) {
         // Update old tail's next pointer
-        if let Some(old_tail_slot) = old_tail {
-            if let Some(old_tail_order) = self.orders.get_mut(old_tail_slot) {
-                old_tail_order.set_next(Some(slot));
+        if let Some(old_tail_id) = old_tail {
+            if let Some(old_tail_order) = self.orders.get_mut(&old_tail_id) {
+                old_tail_order.set_next(Some(order_id));
             }
         }
 
         // Update level head/tail (re-borrow level after updating orders)
         let level = self.get_or_create_level_mut(side, price);
         if level.head().is_none() {
-            level.set_head(Some(slot));
+            level.set_head(Some(order_id));
         }
-        level.set_tail(Some(slot));
+        level.set_tail(Some(order_id));
         level.add_size(size);
     }
 
@@ -620,16 +574,16 @@ impl OrderBook {
 
 /// Iterator over orders at a price level (follows linked list).
 pub(crate) struct LevelOrdersIter<'a> {
-    orders: &'a SlotMap<OrderSlot, BookOrder>,
-    current: Option<OrderSlot>,
+    orders: &'a HashMap<types::OrderId, BookOrder>,
+    current: Option<types::OrderId>,
 }
 
 impl<'a> Iterator for LevelOrdersIter<'a> {
     type Item = &'a BookOrder;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let slot = self.current?;
-        let order = self.orders.get(slot)?;
+        let id = self.current?;
+        let order = self.orders.get(&id)?;
         self.current = order.next();
         Some(order)
     }

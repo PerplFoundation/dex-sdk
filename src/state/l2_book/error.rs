@@ -3,18 +3,16 @@
 use fastnum::UD64;
 use thiserror::Error;
 
-use super::order::OrderSlot;
 use crate::types::{OrderId, OrderSide};
 
 /// Error type for order book operations.
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum OrderBookError {
     /// Attempted to add an order that already exists in the book.
-    #[error("order {order_id} already exists at price {existing_price} (slot {existing_slot:?})")]
+    #[error("order {order_id} already exists at price {existing_price}")]
     OrderAlreadyExists {
         order_id: OrderId,
         existing_price: UD64,
-        existing_slot: OrderSlot,
     },
 
     /// Attempted to update or remove an order that doesn't exist.

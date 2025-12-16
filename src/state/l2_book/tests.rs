@@ -760,12 +760,12 @@ fn linked_list_head_tail_multiple_orders() {
     let tail = level.tail().unwrap();
 
     // Head should be order 1, tail should be order 3
-    let head_order = book.all_orders().get(head).unwrap();
-    let tail_order = book.all_orders().get(tail).unwrap();
-    assert_eq!(head_order.order_id(), 1);
-    assert_eq!(tail_order.order_id(), 3);
+    assert_eq!(head, 1);
+    assert_eq!(tail, 3);
 
     // Head has no prev, tail has no next
+    let head_order = book.get_order(head).unwrap();
+    let tail_order = book.get_order(tail).unwrap();
     assert!(head_order.prev().is_none());
     assert!(tail_order.next().is_none());
 }
@@ -781,8 +781,8 @@ fn linked_list_remove_head() {
 
     let level = book.ask_level(udec64!(100)).unwrap();
     let head = level.head().unwrap();
-    let head_order = book.all_orders().get(head).unwrap();
-    assert_eq!(head_order.order_id(), 2);
+    assert_eq!(head, 2);
+    let head_order = book.get_order(head).unwrap();
     assert!(head_order.prev().is_none()); // New head has no prev
 }
 
@@ -797,8 +797,8 @@ fn linked_list_remove_tail() {
 
     let level = book.ask_level(udec64!(100)).unwrap();
     let tail = level.tail().unwrap();
-    let tail_order = book.all_orders().get(tail).unwrap();
-    assert_eq!(tail_order.order_id(), 1);
+    assert_eq!(tail, 1);
+    let tail_order = book.get_order(tail).unwrap();
     assert!(tail_order.next().is_none()); // New tail has no next
 }
 
@@ -819,11 +819,11 @@ fn linked_list_remove_middle() {
     let level = book.ask_level(udec64!(100)).unwrap();
     let head = level.head().unwrap();
     let tail = level.tail().unwrap();
-    let head_order = book.all_orders().get(head).unwrap();
-    let tail_order = book.all_orders().get(tail).unwrap();
+    assert_eq!(head, 1);
+    assert_eq!(tail, 3);
 
-    assert_eq!(head_order.order_id(), 1);
-    assert_eq!(tail_order.order_id(), 3);
+    let head_order = book.get_order(head).unwrap();
+    let tail_order = book.get_order(tail).unwrap();
     assert_eq!(head_order.next(), Some(tail)); // 1's next is 3
     assert_eq!(tail_order.prev(), Some(head)); // 3's prev is 1
 }
