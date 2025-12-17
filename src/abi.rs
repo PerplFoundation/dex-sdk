@@ -11,6 +11,16 @@ pub mod dex {
 }
 
 #[allow(clippy::too_many_arguments)]
+pub mod erc1967_proxy {
+    alloy::sol!(
+        #[derive(Debug)]
+        #[sol(rpc)]
+        ERC1967Proxy,
+        "abi/dex/ERC1967Proxy.json"
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
 pub mod errors {
     alloy::sol!(
         #[derive(Debug)]

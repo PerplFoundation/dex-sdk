@@ -22,7 +22,7 @@ async fn test_snapshot_and_events() {
     let btc_perp = exchange.btc_perp().await;
 
     let o = async |acc, r, oid, ot, p, s| {
-        btc_perp
+        _ = btc_perp
             .order(
                 acc,
                 types::OrderRequest::new(

@@ -82,6 +82,17 @@
   },
   {
     "type": "error",
+    "name": "AddressBlocked",
+    "inputs": [
+      {
+        "name": "addr",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "AmountExceedsAvailableBalance",
     "inputs": [
       {
@@ -174,6 +185,37 @@
       },
       {
         "name": "buyerAmtPer100K",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "BuyToLiquidateSlippageExceeded",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "posAccountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "positionType",
+        "type": "uint8",
+        "internalType": "enum PositionEnum"
+      },
+      {
+        "name": "referencePricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "limitPricePNS",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -435,7 +477,7 @@
   },
   {
     "type": "error",
-    "name": "CantLiquidatePosOnBook",
+    "name": "CantLiquidatePosOnBookSevere",
     "inputs": [
       {
         "name": "perpId",
@@ -807,6 +849,22 @@
   },
   {
     "type": "error",
+    "name": "DecreaseCollateralParamsDontExist",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "accountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "DecrementUnderflows",
     "inputs": [
       {
@@ -889,6 +947,32 @@
     "type": "error",
     "name": "ExchangeHalted",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExpiryTimestampOutsideRange",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "value",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "minimum",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maximum",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
@@ -1080,7 +1164,7 @@
   },
   {
     "type": "error",
-    "name": "InitialMarginFractionExceedsMaintenance",
+    "name": "InitialMarginFractionEqualsOrExceedsMaintenance",
     "inputs": [
       {
         "name": "initMarginFracHdths",
@@ -1231,6 +1315,32 @@
   },
   {
     "type": "error",
+    "name": "InvalidBorrowFraction",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "proposedBorrowFracHdths",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "minMarginFracHdths",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "initMarginFracHdths",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidExpiryBlock",
     "inputs": [
       {
@@ -1315,6 +1425,27 @@
         "name": "premiumPnlCNS",
         "type": "int256",
         "internalType": "int256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidMinWithdrawLimit",
+    "inputs": [
+      {
+        "name": "minCNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxCNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "proposedCNS",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },
@@ -1652,6 +1783,17 @@
     "type": "error",
     "name": "NoAccountsRemain",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotWhitelisted",
+    "inputs": [
+      {
+        "name": "addr",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
   },
   {
     "type": "error",
@@ -2204,6 +2346,48 @@
       },
       {
         "name": "reportValidFromTimestamp",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ReportExpiresTooSoon",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "expiresAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "minRequired",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ReportFromFuture",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "reportTimestamp",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "blockTimestamp",
         "type": "uint256",
         "internalType": "uint256"
       }

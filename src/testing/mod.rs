@@ -22,7 +22,7 @@ use fastnum::{UD64, UD128, udec64};
 
 use crate::{
     Chain,
-    abi::{dex::Exchange, testing::TestToken},
+    abi::{dex::Exchange, erc1967_proxy::ERC1967Proxy, testing::TestToken},
     error::DexError,
     num, types,
 };
@@ -32,7 +32,6 @@ const BLOCK_TIME_SEC: f64 = 0.45;
 const POLL_INTERVAL_MS: u64 = 50;
 
 const USD_DECIMALS: u8 = 6;
-const FUNDING_INTERVAL: u64 = 8571;
 
 #[derive(Debug)]
 pub struct TestExchange {
@@ -127,16 +126,31 @@ impl TestExchange {
             .await
             .unwrap();
 
-        // Exchange
-        let exchange = Exchange::deploy(
-            provider.clone(),
-            *token.address(),
-            U256::from(FUNDING_INTERVAL),
-            false,
-        )
-        .await
-        .map_err::<DexError, _>(DexError::from)
-        .unwrap();
+        // Exchange implementation and upgradeable proxy
+        let exchange_impl = Exchange::deploy(provider.clone())
+            .await
+            .map_err::<DexError, _>(DexError::from)
+            .unwrap();
+        let init_calldata = exchange_impl
+            .initialize(*token.address())
+            .calldata()
+            .clone();
+        let proxy = ERC1967Proxy::deploy(provider.clone(), *exchange_impl.address(), init_calldata)
+            .await
+            .map_err::<DexError, _>(DexError::from)
+            .unwrap();
+        let exchange = Exchange::new(*proxy.address(), provider.clone());
+
+        // Disable account whitelisting
+        exchange
+            .setWhitelistingEnabled(false)
+            .send()
+            .await
+            .map_err::<DexError, _>(DexError::from)
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
 
         // Setup roles
         exchange

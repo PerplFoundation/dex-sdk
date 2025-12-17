@@ -324,6 +324,16 @@ pub enum PositionEventType {
         premium_pnl: D256,
     },
 
+    /// Position collateral decreased.
+    CollateralDecreased {
+        #[debug("{prev_entry_price}")]
+        prev_entry_price: UD64,
+        #[debug("{new_entry_price}")]
+        new_entry_price: UD64,
+        #[debug("{deposit}")]
+        deposit: UD128,
+    },
+
     /// Position decreased.
     Decreased {
         #[debug("{prev_size}")]

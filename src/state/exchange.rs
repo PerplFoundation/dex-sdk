@@ -264,7 +264,8 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::AdministratorUpdated(_) => vec![], // Ignored
+            ExchangeEvents::AdminChanged(_) => vec![],
+            ExchangeEvents::AdministratorUpdated(_) => vec![],
             ExchangeEvents::AmountExceedsAvailableBalance(e) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| {
@@ -278,11 +279,15 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::BankruptcyPriceExceedsReferencePrice(_) => vec![], // Ignored
-            ExchangeEvents::BuyToLiquidateBuyerRestricted(_) => vec![],        // Ignored
-            ExchangeEvents::BuyToLiquidateParamsUpdated(_) => vec![],          // Ignored
-            ExchangeEvents::BuyToLiquidateThresholdUpdated(_) => vec![],       // Ignored
-            ExchangeEvents::BuyToLiquidateRestrictionUpdated(_) => vec![],     // Ignored
+            ExchangeEvents::BankruptcyPriceExceedsReferencePrice(_) => vec![],
+            ExchangeEvents::BeaconUpgraded(_) => vec![],
+            ExchangeEvents::BlockStatusChanged(_) => vec![],
+            ExchangeEvents::BorrowMarginNotMetAfterDecCollateral(_) => vec![],
+            ExchangeEvents::BuyToLiquidateSlippageExceeded(_) => vec![],
+            ExchangeEvents::BuyToLiquidateBuyerRestricted(_) => vec![],
+            ExchangeEvents::BuyToLiquidateParamsUpdated(_) => vec![],
+            ExchangeEvents::BuyToLiquidateThresholdUpdated(_) => vec![],
+            ExchangeEvents::BuyToLiquidateRestrictionUpdated(_) => vec![],
             ExchangeEvents::CancelExistingInvalidCloseOrders(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| {
@@ -290,14 +295,15 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::CantBuyToLiquidate(_) => vec![], // Ignored
+            ExchangeEvents::CannotAdjustEntryPriceToDecCollateral(_) => vec![],
+            ExchangeEvents::CantBuyToLiquidate(_) => vec![],
             ExchangeEvents::CantChangeCloseOrder(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::CantChangeCloseOrder))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::CantDeleverageAgainstOpposingPositions(_) => vec![], // Ignored
-            ExchangeEvents::CantLiquidatePosAboveMMR(_) => vec![],               // Ignored
+            ExchangeEvents::CantDeleverageAgainstOpposingPositions(_) => vec![],
+            ExchangeEvents::CantLiquidatePosAboveMMR(_) => vec![],
             ExchangeEvents::ChangeExpiredOrderNeedsNewExpiry(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| {
@@ -305,6 +311,7 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            ExchangeEvents::ClearedDecreaseCollatParams(_) => vec![],
             ExchangeEvents::ClearingExpiredOrder(e) => chain!(
                 if let Some(perp) = self.perpetual(e.perpId) {
                     let order = perp.remove_order(e.orderId.to())?;
@@ -421,6 +428,9 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            ExchangeEvents::CollateralDecreaseApproved(_) => vec![],
+            ExchangeEvents::CollateralDecreaseDeclined(_) => vec![],
+            ExchangeEvents::CollateralDecreaseRequested(_) => vec![],
             ExchangeEvents::CollateralDeposit(e) => self
                 .account(e.accountId)
                 .map(|acc| {
@@ -437,7 +447,7 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::ContractAdded(_) => vec![], // TODO: support tracking of newly created contracts
+            ExchangeEvents::ContractAdded(_) => vec![],
             ExchangeEvents::ContractIsPaused(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::ContractIsPaused))
@@ -478,7 +488,10 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::CrossesBook))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::DeleveragePositionListEmpty(_) => vec![], // Ignored
+            ExchangeEvents::DecreaseCollateralAmountOutOfRange(_) => vec![],
+            ExchangeEvents::DecreaseCollateralParamsExpired(_) => vec![],
+            ExchangeEvents::DecreaseCollateralPriceBeyondReference(_) => vec![],
+            ExchangeEvents::DeleveragePositionListEmpty(_) => vec![],
             ExchangeEvents::ExceedsLastExecutionBlock(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::ExceedsLastExecutionBlock))
@@ -488,8 +501,8 @@ impl Exchange {
                 self.is_halted = e.halted;
                 vec![StateEvents::Exchange(ExchangeEvent::Halted(self.is_halted))]
             }
-            ExchangeEvents::FeeParamsUpdated(_) => vec![], // Ignored
-            ExchangeEvents::FundingClampPctUpdated(_) => vec![], // Ignored
+            ExchangeEvents::FeeParamsUpdated(_) => vec![],
+            ExchangeEvents::FundingClampPctUpdated(_) => vec![],
             ExchangeEvents::FundingEventCompleted(e) => {
                 if let Some(perp) = self.perpetual(e.perpId) {
                     perp.update_funding(
@@ -503,9 +516,9 @@ impl Exchange {
                 }
                 vec![]
             }
-            ExchangeEvents::FundingEventSetTooEarly(_) => vec![], // Ignored
-            ExchangeEvents::FundingPriceExceedsTol(_) => vec![],  // Ignored
-            ExchangeEvents::FundingSumAlreadySet(_) => vec![],    // Ignored
+            ExchangeEvents::FundingEventSetTooEarly(_) => vec![],
+            ExchangeEvents::FundingPriceExceedsTol(_) => vec![],
+            ExchangeEvents::FundingSumAlreadySet(_) => vec![],
             ExchangeEvents::IgnoreOracleUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
@@ -540,6 +553,7 @@ impl Exchange {
                 }),
             )
             .collect(),
+            ExchangeEvents::Initialized(_) => vec![],
             ExchangeEvents::InitialMarginFractionUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
@@ -555,7 +569,7 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::InsolventPositionCannotBeForcedClose(_) => vec![], // Ignored
+            ExchangeEvents::InsolventPositionCannotBeForcedClose(_) => vec![],
             ExchangeEvents::InsuficientFundsForRecycleFee(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| {
@@ -563,27 +577,28 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::InsurancePaymentForSettlement(_) => vec![], // Ignored
-            ExchangeEvents::InvalidAccountFrozenOrder(_) => vec![],     // Ignored
-            ExchangeEvents::InvalidBankruptcyPrice(_) => vec![],        // Ignored
+            ExchangeEvents::InsufficientFundsToDecCollateral(_) => vec![],
+            ExchangeEvents::InsurancePaymentForSettlement(_) => vec![],
+            ExchangeEvents::InvalidAccountFrozenOrder(_) => vec![],
+            ExchangeEvents::InvalidBankruptcyPrice(_) => vec![],
             ExchangeEvents::InvalidExpiryBlock(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::InvalidExpiryBlock))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::InvalidLinkReportForContract(_) => vec![], // Ignored
-            ExchangeEvents::InvalidLinkReportVersion(_) => vec![],     // Ignored
-            ExchangeEvents::InvalidLiquidationPrice(_) => vec![],      // Ignored
+            ExchangeEvents::InvalidLinkReportForContract(_) => vec![],
+            ExchangeEvents::InvalidLinkReportVersion(_) => vec![],
+            ExchangeEvents::InvalidLiquidationPrice(_) => vec![],
             ExchangeEvents::InvalidOrderId(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::InvalidOrderId))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::InvalidSynthPerpPrice(_) => vec![], // Ignored
-            ExchangeEvents::LinkDatastreamConfigured(_) => vec![], // Ignored
-            ExchangeEvents::LinkDsError_0(_) => vec![],         // Ignored
-            ExchangeEvents::LinkDsError_1(_) => vec![],         // Ignored
-            ExchangeEvents::LinkDsPanic(_) => vec![],           // Ignored
+            ExchangeEvents::InvalidSynthPerpPrice(_) => vec![],
+            ExchangeEvents::LinkDatastreamConfigured(_) => vec![],
+            ExchangeEvents::LinkDsError_0(_) => vec![],
+            ExchangeEvents::LinkDsError_1(_) => vec![],
+            ExchangeEvents::LinkDsPanic(_) => vec![],
             ExchangeEvents::LinkPriceUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
@@ -598,8 +613,8 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::LiquidationBuyerUpdated(_) => vec![], // Ignored
-            ExchangeEvents::LiquidationParamsUpdated(_) => vec![], // Ignored
+            ExchangeEvents::LiquidationBuyerUpdated(_) => vec![],
+            ExchangeEvents::LiquidationParamsUpdated(_) => vec![],
             ExchangeEvents::LotOutOfRange(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::SizeOutOfRange))
@@ -641,7 +656,6 @@ impl Exchange {
                     let fill_price = perp.price_converter().from_unsigned(e.pricePNS);
                     let fill_size = perp.size_converter().from_unsigned(e.lotLNS);
                     let fee = cc.from_unsigned(e.feeCNS);
-
                     perp.update_last_price(instant, fill_price);
                     vec![
                         if order.size() > fill_size {
@@ -736,7 +750,7 @@ impl Exchange {
                 }),
             )
             .collect(),
-            ExchangeEvents::MarkExceedsTol(_) => vec![], // Ignored
+            ExchangeEvents::MarkExceedsTol(_) => vec![],
             ExchangeEvents::MarkUpdated(e) => {
                 let perp_mark = self.perpetual(e.perpId).map(|perp| {
                     perp.update_mark_price(
@@ -777,13 +791,13 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::MaxMatchesReached))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::MaxOpenInterestUpdated(_) => vec![], // Ignored
+            ExchangeEvents::MaxOpenInterestUpdated(_) => vec![],
             ExchangeEvents::MaximumAccountOrders(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::MaximumAccountOrders))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::MinAccountOpenAmountUpdated(_) => vec![], // Ignored
+            ExchangeEvents::MinAccountOpenAmountUpdated(_) => vec![],
             ExchangeEvents::MinPostUpdated(e) => {
                 self.min_post = cc.from_unsigned(e.minPostCNS);
                 vec![StateEvents::Exchange(ExchangeEvent::MinPostUpdated(
@@ -796,8 +810,8 @@ impl Exchange {
                     self.min_settle,
                 ))]
             }
-            ExchangeEvents::OracleAgeExceedsMax(_) => vec![], // Ignored
-            ExchangeEvents::OracleDisabled(_) => vec![],      // Ignored
+            ExchangeEvents::OracleAgeExceedsMax(_) => vec![],
+            ExchangeEvents::OracleDisabled(_) => vec![],
             ExchangeEvents::OrderBatchCompleted(_) => {
                 // Reset context
                 ctx.take();
@@ -938,14 +952,14 @@ impl Exchange {
                 )
                 .collect()
             }
-            ExchangeEvents::OrderDescIdTooLow(_) => vec![], // Ignored
+            ExchangeEvents::OrderDescIdTooLow(_) => vec![],
             ExchangeEvents::OrderDoesNotExist(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::OrderDoesNotExist))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::OrderForwardingNotAllowed(_) => vec![], // Ignored
-            ExchangeEvents::OrderForwardingUpdated(_) => vec![],    // Ignored
+            ExchangeEvents::OrderForwardingNotAllowed(_) => vec![],
+            ExchangeEvents::OrderForwardingUpdated(_) => vec![],
             ExchangeEvents::OrderPlaced(e) => {
                 let c = must_ctx()?;
                 chain!(
@@ -1021,11 +1035,11 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::OverCollatDescentThreshUpdated(_) => vec![], // Ignored
-            ExchangeEvents::OwnershipTransferStarted(_) => vec![],       // Ignored
-            ExchangeEvents::OwnershipTransferred(_) => vec![],           // Ignored
-            ExchangeEvents::PermissonedCancelParamsUpdated(_) => vec![], // Ignored
-            ExchangeEvents::PositionAdministratorUpdated(_) => vec![],   // Ignored
+            ExchangeEvents::OverCollatDescentThreshUpdated(_) => vec![],
+            ExchangeEvents::OwnershipTransferStarted(_) => vec![],
+            ExchangeEvents::OwnershipTransferred(_) => vec![],
+            ExchangeEvents::PermissonedCancelParamsUpdated(_) => vec![],
+            ExchangeEvents::PositionAdministratorUpdated(_) => vec![],
             ExchangeEvents::PositionClosed(e) => {
                 if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
                     let pos = acc
@@ -1056,6 +1070,29 @@ impl Exchange {
                         },
                     )
                     .collect()
+                } else {
+                    vec![]
+                }
+            }
+            ExchangeEvents::PositionCollateralDecreased(e) => {
+                if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
+                    let prev_entry_price = pos.entry_price();
+                    pos.update_entry_price(
+                        instant,
+                        perp.price_converter().from_unsigned(e.endEntryPricePNS),
+                    );
+                    pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
+                    pos.apply_mark_price(instant, perp.mark_price());
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    vec![StateEvents::position(
+                        pos,
+                        ctx,
+                        PositionEventType::CollateralDecreased {
+                            prev_entry_price,
+                            new_entry_price: pos.entry_price(),
+                            deposit: pos.deposit(),
+                        },
+                    )]
                 } else {
                     vec![]
                 }
@@ -1151,7 +1188,7 @@ impl Exchange {
                 }),
             )
             .collect(),
-            ExchangeEvents::PositionDoesNotExist(_) => vec![], // Ignored
+            ExchangeEvents::PositionDoesNotExist(_) => vec![],
             ExchangeEvents::PositionIncreased(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_size = pos.size();
@@ -1349,6 +1386,7 @@ impl Exchange {
                     vec![]
                 }
             }
+            ExchangeEvents::PositionTypeMismatch(_) => vec![],
             ExchangeEvents::PositionUnwound(e) => {
                 if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
                     let pos = acc
@@ -1428,7 +1466,7 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::PostOrderUnderMinimum))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::PriceAdministratorUpdated(_) => vec![], // Ignored
+            ExchangeEvents::PriceAdministratorUpdated(_) => vec![],
             ExchangeEvents::PriceMaxAgeUpdated(e) => {
                 if let Some(perp) = self.perpetual(e.perpId) {
                     perp.update_price_max_age_sec(instant, e.maxAgeSec.to());
@@ -1442,20 +1480,22 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::PriceOutOfRange))
                 .into_iter()
                 .collect(),
-            ExchangeEvents::PriceTolUpdated(_) => vec![], // Ignored
-            ExchangeEvents::ProtocolBalanceDeposit(_) => vec![], // Ignored
-            ExchangeEvents::ProtocolBalanceWithdraw(_) => vec![], // Ignored
-            ExchangeEvents::RecycleBalanceInsufficientSevere(_) => vec![], // Ignored
+            ExchangeEvents::PriceTolUpdated(_) => vec![],
+            ExchangeEvents::ProtocolBalanceDeposit(_) => vec![],
+            ExchangeEvents::ProtocolBalanceWithdraw(_) => vec![],
+            ExchangeEvents::RecycleBalanceInsufficientSevere(_) => vec![],
             ExchangeEvents::RecycleFeeUpdated(e) => {
                 self.recycle_fee = cc.from_unsigned(e.recycleFeeCNS);
                 vec![StateEvents::Exchange(ExchangeEvent::RecycleFeeUpdated(
                     self.recycle_fee(),
                 ))]
             }
-            ExchangeEvents::ReferencePriceAgesExceedMax(_) => vec![], // Ignored
-            ExchangeEvents::ReportAgeExceedsLastUpdate(_) => vec![],  // Ignored
-            ExchangeEvents::ReportPriceIsNegative(_) => vec![],       // Ignored
-            ExchangeEvents::SyntheticPriceError(_) => vec![],         // Ignored
+            ExchangeEvents::ReferencePriceAgesExceedMax(_) => vec![],
+            ExchangeEvents::ReportAgeExceedsLastUpdate(_) => vec![],
+            ExchangeEvents::ReportExpiresTooSoon(_) => vec![],
+            ExchangeEvents::ReportFromFuture(_) => vec![],
+            ExchangeEvents::ReportPriceIsNegative(_) => vec![],
+            ExchangeEvents::SyntheticPriceError(_) => vec![],
             ExchangeEvents::TakerFeeUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
@@ -1506,7 +1546,7 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::TransferPerpInsToProtocol(_) => vec![], // Ignored
+            ExchangeEvents::TransferPerpInsToProtocol(_) => vec![],
             ExchangeEvents::TransferProtocolToAccount(e) => self
                 .account(e.accountId)
                 .map(|acc| {
@@ -1515,20 +1555,26 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::TransferProtocolToPerp(_) => vec![], // Ignored
-            ExchangeEvents::TransferProtocolToRecycleBal(_) => vec![], // Ignored
-            ExchangeEvents::UnableToCancelOrder(_) => vec![],    // Ignored
-            ExchangeEvents::UnityDescentThreshUpdated(_) => vec![], // Ignored
-            ExchangeEvents::UnspecifiedCollateral(_) => vec![],  // Ignored
-            ExchangeEvents::UnsupportedOperation(_) => vec![],   // Ignored
-            ExchangeEvents::UnwindCompleted(_) => vec![],        // Ignored
-            ExchangeEvents::UnwindInitializationCleared(_) => vec![], // Ignored
-            ExchangeEvents::UnwindInitialized(_) => vec![],      // Ignored
-            ExchangeEvents::UnwindInsufficientBalance(_) => vec![], // Ignored
-            ExchangeEvents::UnwindIterationCompleted(_) => vec![], // Ignored
-            ExchangeEvents::UpdateOracleFailed(_) => vec![],     // Ignored
-            ExchangeEvents::WRLSThousandthsTvlUpdated(_) => vec![], // Ignored
-            ExchangeEvents::WithdrawRateLimitReset(_) => vec![], // Ignored
+            ExchangeEvents::TransferProtocolToPerp(_) => vec![],
+            ExchangeEvents::TransferProtocolToRecycleBal(_) => vec![],
+            ExchangeEvents::UnableToCancelOrder(_) => vec![],
+            ExchangeEvents::UnityDescentThreshUpdated(_) => vec![],
+            ExchangeEvents::UnspecifiedCollateral(_) => vec![],
+            ExchangeEvents::UnsupportedOperation(_) => vec![],
+            ExchangeEvents::UnwindCompleted(_) => vec![],
+            ExchangeEvents::UnwindInitializationCleared(_) => vec![],
+            ExchangeEvents::UnwindInitialized(_) => vec![],
+            ExchangeEvents::UnwindInsufficientBalance(_) => vec![],
+            ExchangeEvents::UnwindIterationCompleted(_) => vec![],
+            ExchangeEvents::UpdateOracleFailed(_) => vec![],
+            ExchangeEvents::Upgraded(_) => vec![],
+            ExchangeEvents::WhitelistAddress(_) => vec![],
+            ExchangeEvents::WhitelistingEnabledChanged(_) => vec![],
+            ExchangeEvents::WithdrawRateLimitBypassSet(_) => vec![],
+            ExchangeEvents::WithdrawRateLimitForceReset(_) => vec![],
+            ExchangeEvents::WRLSMinWithdrawLimitUpdated(_) => vec![],
+            ExchangeEvents::WRLSThousandthsTvlUpdated(_) => vec![],
+            ExchangeEvents::WithdrawRateLimitReset(_) => vec![],
             ExchangeEvents::WrongAccountForOrder(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::WrongAccountForOrder))
