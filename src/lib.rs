@@ -35,6 +35,7 @@
 
 pub mod abi;
 pub mod error;
+pub mod fill;
 pub mod num;
 pub mod state;
 pub mod stream;

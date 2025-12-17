@@ -26,6 +26,7 @@ fastnum = { version = "0.7.2" }
 futures = { version = "0.3.31" }
 itertools = { version = "0.14.0" }
 thiserror = { version = "2.0.17" }
+tokio = { version = "1.48.0", features = ["sync"] }
 
 [dependencies.clap]
 version = "4"
@@ -36,4 +37,5 @@ version = "1.48.0"
 features = ["rt-multi-thread", "macros"]
 
 [dev-dependencies]
+tokio = { version = "1.48.0", features = ["rt", "macros", "time"] }
 tokio-test = { version = "0.4" }
