@@ -56,11 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for fill in &trade.maker_fills {
                     println!(
                         "    <- Maker {} order {} filled {} @ {} (fee: {})",
-                        fill.maker_account_id,
-                        fill.maker_order_id,
-                        fill.size,
-                        fill.price,
-                        fill.fee,
+                        fill.maker_account_id, fill.maker_order_id, fill.size, fill.price, fill.fee,
                     );
                 }
             }
