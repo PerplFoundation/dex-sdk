@@ -691,8 +691,8 @@ fn snapshot_multiple_orders_same_level() {
         1,
         oid(1),
         1,
-        None,     // prev
-        ooid(2),  // next
+        None,    // prev
+        ooid(2), // next
     );
     let order2 = Order::for_l3_testing_with_links(
         types::OrderType::OpenShort,
@@ -701,8 +701,8 @@ fn snapshot_multiple_orders_same_level() {
         2,
         oid(2),
         2,
-        ooid(1),  // prev
-        ooid(3),  // next
+        ooid(1), // prev
+        ooid(3), // next
     );
     let order3 = Order::for_l3_testing_with_links(
         types::OrderType::OpenShort,
@@ -711,8 +711,8 @@ fn snapshot_multiple_orders_same_level() {
         3,
         oid(3),
         3,
-        ooid(2),  // prev
-        None,     // next
+        ooid(2), // prev
+        None,    // next
     );
 
     // Add in shuffled order - linked list should still be reconstructed correctly

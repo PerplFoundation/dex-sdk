@@ -599,7 +599,11 @@ mod tests {
 
         // Verify initial FIFO order
         let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
-        assert_eq!(orders, vec![oid(1), oid(2)], "Initial FIFO should be [1, 2]");
+        assert_eq!(
+            orders,
+            vec![oid(1), oid(2)],
+            "Initial FIFO should be [1, 2]"
+        );
 
         // Now simulate time passing: we're at block 150 (order 1 is expired at block 100)
         // Update order 1 with a new expiry (block 200)
@@ -667,6 +671,10 @@ mod tests {
 
         // Order 1 should keep its position: FIFO is [1, 2]
         let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
-        assert_eq!(orders, vec![oid(1), oid(2)], "Non-expired order should keep position");
+        assert_eq!(
+            orders,
+            vec![oid(1), oid(2)],
+            "Non-expired order should keep position"
+        );
     }
 }

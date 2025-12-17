@@ -8,7 +8,11 @@ use alloy::{
     transports,
 };
 
-use crate::{abi::errors::Exchange::ExchangeErrors, state::{OrderBookError, OrderParseError}, types};
+use crate::{
+    abi::errors::Exchange::ExchangeErrors,
+    state::{OrderBookError, OrderParseError},
+    types,
+};
 
 pub type DexError = ProviderError<ExchangeErrors>;
 

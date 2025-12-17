@@ -46,7 +46,9 @@ pub enum OrderBookError {
 
     /// Order references another order that doesn't exist in the snapshot.
     /// This indicates data inconsistency.
-    #[error("order {order_id} has dangling {pointer} reference to non-existent order {referenced_id}")]
+    #[error(
+        "order {order_id} has dangling {pointer} reference to non-existent order {referenced_id}"
+    )]
     DanglingOrderReference {
         order_id: OrderId,
         referenced_id: OrderId,

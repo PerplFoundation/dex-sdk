@@ -136,7 +136,15 @@ async fn test_snapshot_and_events() {
     });
 
     // A bit more activity
-    o(maker.id, 10, Some(oid(1)), Change, udec64!(100100), udec64!(1)).await;
+    o(
+        maker.id,
+        10,
+        Some(oid(1)),
+        Change,
+        udec64!(100100),
+        udec64!(1),
+    )
+    .await;
     o(taker.id, 11, None, OpenLong, udec64!(100100), udec64!(0.1)).await;
     o(maker.id, 12, Some(oid(1)), Cancel, udec64!(0), udec64!(0)).await;
 

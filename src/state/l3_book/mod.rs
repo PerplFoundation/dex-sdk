@@ -125,8 +125,8 @@ impl OrderBook {
         self.orders.len()
     }
 
-    /// Access to all orders in the book.
-    pub(crate) fn all_orders(&self) -> &HashMap<types::OrderId, BookOrder> {
+    /// Access to all orders in the book keyed by order ID.
+    pub fn all_orders(&self) -> &HashMap<types::OrderId, BookOrder> {
         &self.orders
     }
 
