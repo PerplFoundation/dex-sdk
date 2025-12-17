@@ -164,28 +164,33 @@ async fn test_full_book_snapshot() {
     assert_eq!(perp.funding_start_block(), 8571);
     assert_eq!(perp.open_interest(), udec128!(0.09));
 
-    assert_eq!(perp.orders().len(), 65424);
-    assert!(
-        perp.orders()
-            .values()
-            .all(|o| o.account_id() == maker.id && o.size() == udec64!(0.001))
-    );
+    assert_eq!(perp.total_orders(), 65424);
+    // Verify all orders belong to maker account with expected size
+    let all_asks_valid = perp
+        .l3_book()
+        .ask_orders()
+        .all(|o| o.account_id() == maker.id && o.size() == udec64!(0.001));
+    let all_bids_valid = perp
+        .l3_book()
+        .bid_orders()
+        .all(|o| o.account_id() == maker.id && o.size() == udec64!(0.001));
+    assert!(all_asks_valid && all_bids_valid);
 
     assert_eq!(
-        perp.l2_book().best_ask(),
+        perp.l3_book().best_ask(),
         Some((udec64!(100101), udec64!(0.001)))
     );
     assert_eq!(
-        perp.l2_book().best_bid(),
+        perp.l3_book().best_bid(),
         Some((udec64!(99989), udec64!(0.001)))
     );
 
     assert_eq!(
-        perp.l2_book().ask_impact(udec64!(1)),
+        perp.l3_book().ask_impact(udec64!(1)),
         Some((udec64!(101100), udec64!(1), udec64!(100600.5)))
     );
     assert_eq!(
-        perp.l2_book().bid_impact(udec64!(1)),
+        perp.l3_book().bid_impact(udec64!(1)),
         Some((udec64!(98990), udec64!(1), udec64!(99489.5)))
     );
 }

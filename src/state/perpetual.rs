@@ -1,5 +1,3 @@
-use std::collections::hash_map::Entry;
-
 use super::*;
 use crate::{abi::dex::Exchange::PerpetualInfo, types};
 use alloy::primitives::{B256, I256, U256};
@@ -67,8 +65,7 @@ pub struct Perpetual {
     is_oracle_used: bool,
     price_max_age_sec: u64,
 
-    orders: HashMap<types::OrderId, Order>,
-    l2_book: L2Book,
+    l3_book: OrderBook,
 
     #[debug("{open_interest}")]
     open_interest: UD128,
@@ -135,8 +132,7 @@ impl Perpetual {
             is_oracle_used: !info.ignOracle,
             price_max_age_sec: info.refPriceMaxAgeSec.to(),
 
-            orders: HashMap::new(),
-            l2_book: L2Book::new(),
+            l3_book: OrderBook::new(),
 
             open_interest: size_converter.from_unsigned(info.longOpenInterestLNS),
         }
@@ -312,14 +308,19 @@ impl Perpetual {
         self.price_max_age_sec
     }
 
-    /// Active orders in the perpetual contract book.
-    pub fn orders(&self) -> &HashMap<types::OrderId, Order> {
-        &self.orders
+    /// Get a specific order by ID.
+    pub fn get_order(&self, order_id: types::OrderId) -> Option<&Order> {
+        self.l3_book.get_order_data(order_id)
     }
 
-    /// Up to date L2 order book.
-    pub fn l2_book(&self) -> &L2Book {
-        &self.l2_book
+    /// Total number of orders in the book.
+    pub fn total_orders(&self) -> usize {
+        self.l3_book.total_orders()
+    }
+
+    /// Up to date L3 order book.
+    pub fn l3_book(&self) -> &OrderBook {
+        &self.l3_book
     }
 
     /// Open interest in the perpetual contract.
@@ -353,36 +354,51 @@ impl Perpetual {
         }
     }
 
-    pub(crate) fn add_order(&mut self, order: Order) {
-        self.l2_book.add_order(&order);
-        self.orders.insert(order.order_id(), order);
+    pub(crate) fn add_order(&mut self, order: Order) -> Result<(), DexError> {
+        self.l3_book.add_order(&order)?;
+        Ok(())
+    }
+
+    /// Add orders from a snapshot, reconstructing FIFO order from linked list pointers.
+    ///
+    /// Uses the `prev_order_id`/`next_order_id` fields from the snapshot to determine
+    /// the correct queue position within each price level.
+    pub(crate) fn add_orders_from_snapshot(&mut self, orders: Vec<Order>) -> Result<(), DexError> {
+        self.l3_book.add_orders_from_snapshot(&orders)?;
+        Ok(())
     }
 
     pub(crate) fn update_order(&mut self, order: Order) -> Result<(), DexError> {
-        match self.orders.entry(order.order_id()) {
-            Entry::Occupied(mut e) => {
-                let prev = e.get();
-                if prev.price() != order.price() {
-                    self.l2_book.remove_order(prev);
-                    self.l2_book.add_order(&order);
-                } else {
-                    self.l2_book.update_order(&order, prev.size());
-                }
-                e.insert(order);
-                Ok(())
-            }
-            Entry::Vacant(_) => Err(DexError::OrderNotFound(self.id, order.order_id())),
+        let prev = self
+            .l3_book
+            .get_order_data(order.order_id())
+            .copied()
+            .ok_or(DexError::OrderNotFound(self.id, order.order_id()))?;
+
+        if prev.price() != order.price() {
+            // Price changed: remove from old level, add to new level (back of queue)
+            self.l3_book.remove_order_by_id(order.order_id())?;
+            self.l3_book.add_order(&order)?;
+        } else if order.size() > prev.size() {
+            // Size INCREASED at same price: move to back of queue (loses priority)
+            self.l3_book.move_to_back(&order, &prev)?;
+        } else if prev.expiry_block() > 0
+            && prev.expiry_block() < order.instant().block_number()
+            && prev.expiry_block() != order.expiry_block()
+        {
+            // Expired order got new expiry: move to back of queue (loses priority)
+            self.l3_book.move_to_back(&order, &prev)?;
+        } else {
+            // Size decreased or unchanged: keep queue position
+            self.l3_book.update_order(&order, &prev)?;
         }
+        Ok(())
     }
 
     pub(crate) fn remove_order(&mut self, order_id: types::OrderId) -> Result<Order, DexError> {
-        match self.orders.entry(order_id) {
-            Entry::Occupied(e) => {
-                self.l2_book.remove_order(e.get());
-                Ok(e.remove())
-            }
-            Entry::Vacant(_) => Err(DexError::OrderNotFound(self.id, order_id)),
-        }
+        self.l3_book
+            .remove_order_by_id(order_id)
+            .map_err(|_| DexError::OrderNotFound(self.id, order_id))
     }
 
     pub(crate) fn update_paused(&mut self, instant: types::StateInstant, paused: bool) {
@@ -496,5 +512,169 @@ impl Perpetual {
         self.open_interest -= prev_size.resize();
         self.open_interest += new_size.resize();
         self.instant = instant;
+    }
+
+    /// Create a minimal Perpetual for testing purposes.
+    #[cfg(test)]
+    pub(crate) fn for_testing(id: types::PerpetualId) -> Self {
+        Self {
+            instant: types::StateInstant::new(0, 0),
+            state_instant: types::StateInstant::new(0, 0),
+            id,
+            name: "TEST".to_string(),
+            symbol: "TEST".to_string(),
+            is_paused: false,
+            price_converter: num::Converter::new(0),
+            size_converter: num::Converter::new(0),
+            leverage_converter: num::Converter::new(2),
+            fee_converter: num::Converter::new(5),
+            funding_rate_converter: num::Converter::new(5),
+            base_price: UD64::ZERO,
+            maker_fee: UD64::ZERO,
+            taker_fee: UD64::ZERO,
+            initial_margin: UD64::ZERO,
+            maintenance_margin: UD64::ZERO,
+            last_price: UD64::ZERO,
+            last_price_block: None,
+            last_price_timestamp: 0,
+            mark_price: UD64::ZERO,
+            mark_price_block: None,
+            mark_price_timestamp: 0,
+            oracle_price: UD64::ZERO,
+            oracle_price_block: None,
+            oracle_price_timestamp: 0,
+            prev_funding_rate: D64::ZERO,
+            next_funding_rate: None,
+            next_funding_payment: None,
+            next_funding_event_block: None,
+            funding_start_block: 0,
+            oracle_feed_id: B256::ZERO,
+            is_oracle_used: false,
+            price_max_age_sec: 0,
+            l3_book: OrderBook::new(),
+            open_interest: UD128::ZERO,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fastnum::udec64;
+    use std::num::NonZeroU16;
+
+    fn oid(n: u16) -> types::OrderId {
+        NonZeroU16::new(n).expect("test order id must be non-zero")
+    }
+
+    #[test]
+    fn update_order_expired_order_renewal_moves_to_back() {
+        let mut perp = Perpetual::for_testing(1);
+
+        // Create two orders at the same price
+        // Order 1: expires at block 100
+        // Order 2: no expiry
+        let order1 = Order::for_l3_testing(
+            types::OrderType::OpenShort, // Ask
+            udec64!(100),                // price
+            udec64!(1.0),                // size
+            50,                          // block_number
+            oid(1),                      // order_id
+            101,                         // account_id
+        )
+        .with_expiry_block(100);
+
+        let order2 = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(2.0),
+            50,
+            oid(2),
+            102,
+        );
+
+        // Add orders: FIFO is [1, 2]
+        perp.add_order(order1).unwrap();
+        perp.add_order(order2).unwrap();
+
+        // Verify initial FIFO order
+        let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
+        assert_eq!(
+            orders,
+            vec![oid(1), oid(2)],
+            "Initial FIFO should be [1, 2]"
+        );
+
+        // Now simulate time passing: we're at block 150 (order 1 is expired at block 100)
+        // Update order 1 with a new expiry (block 200)
+        let order1_renewed = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(1.0),
+            150, // current block
+            oid(1),
+            101,
+        )
+        .with_expiry_block(200); // new expiry
+
+        perp.update_order(order1_renewed).unwrap();
+
+        // Order 1 should have moved to back: FIFO is [2, 1]
+        let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
+        assert_eq!(
+            orders,
+            vec![oid(2), oid(1)],
+            "After expiry renewal, FIFO should be [2, 1]"
+        );
+    }
+
+    #[test]
+    fn update_order_non_expired_order_keeps_position() {
+        let mut perp = Perpetual::for_testing(1);
+
+        // Create two orders at the same price
+        // Order 1: expires at block 100
+        let order1 = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(1.0),
+            50,
+            oid(1),
+            101,
+        )
+        .with_expiry_block(100);
+
+        let order2 = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(2.0),
+            50,
+            oid(2),
+            102,
+        );
+
+        perp.add_order(order1).unwrap();
+        perp.add_order(order2).unwrap();
+
+        // Update order 1 at block 80 (NOT expired yet) with new expiry
+        let order1_updated = Order::for_l3_testing(
+            types::OrderType::OpenShort,
+            udec64!(100),
+            udec64!(1.0),
+            80, // current block < expiry_block(100)
+            oid(1),
+            101,
+        )
+        .with_expiry_block(200);
+
+        perp.update_order(order1_updated).unwrap();
+
+        // Order 1 should keep its position: FIFO is [1, 2]
+        let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
+        assert_eq!(
+            orders,
+            vec![oid(1), oid(2)],
+            "Non-expired order should keep position"
+        );
     }
 }

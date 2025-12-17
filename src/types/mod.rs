@@ -15,7 +15,8 @@ pub type AccountId = u32;
 /// Exchange internal ID of the order.
 /// Unique only within particular perpetual contract at the
 /// exact point in time.
-pub type OrderId = u16;
+/// Note: The exchange uses 0 as NULL_ORDER_ID sentinel, so valid order IDs are always non-zero.
+pub type OrderId = std::num::NonZeroU16;
 
 /// Order request ID.
 pub type RequestId = u64;

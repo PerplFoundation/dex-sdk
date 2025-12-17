@@ -555,12 +555,11 @@ pub(crate) struct OrderContext {
 
 impl From<&OrderRequest> for OrderContext {
     fn from(value: &OrderRequest) -> Self {
-        let order_id = value.orderId.to::<u16>();
         Self {
             perpetual_id: value.perpId.to(),
             account_id: value.accountId.to(),
             request_id: value.orderDescId.to(),
-            order_id: if order_id > 0 { Some(order_id) } else { None },
+            order_id: std::num::NonZeroU16::new(value.orderId.to::<u16>()),
             r#type: value.orderType.into(),
             price: value.pricePNS,
             expiry_block: value.expiryBlock.to(),

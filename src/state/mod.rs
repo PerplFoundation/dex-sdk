@@ -14,7 +14,7 @@
 mod account;
 mod event;
 mod exchange;
-mod l2_book;
+mod l3_book;
 mod order;
 mod perpetual;
 mod position;
@@ -37,7 +37,7 @@ use std::collections::{HashMap, hash_map};
 pub use account::*;
 pub use event::*;
 pub use exchange::*;
-pub use l2_book::*;
+pub use l3_book::*;
 pub use order::*;
 pub use perpetual::*;
 pub use position::*;
@@ -309,9 +309,14 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .enumerate()
             .flat_map(|(leaf, bitmap)| {
                 // Skip the first bit of the first leaf slot (_NULL_ORDER_ID)
+                // All remaining IDs are guaranteed non-zero since we start at bit 1
                 ((if leaf == 0 { 1 } else { 0 })..U256::BITS)
                     .filter(move |bit| bitmap.bit(*bit))
-                    .map(move |bit| (leaf * U256::BITS + bit) as types::OrderId)
+                    .map(move |bit| {
+                        let id = (leaf * U256::BITS + bit) as u16;
+                        // Safety: we skip bit 0 of leaf 0, so id is always >= 1
+                        std::num::NonZeroU16::new(id).expect("order id from bitmap cannot be 0")
+                    })
             })
             .collect::<Vec<_>>();
 
@@ -324,7 +329,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                 .extend(
                     chunk
                         .iter()
-                        .map(|oid| self.instance.getOrder(pid, U256::from(*oid))),
+                        .map(|oid| self.instance.getOrder(pid, U256::from(oid.get()))),
                 );
             async move { multicall.aggregate().await }
         });
@@ -336,23 +341,26 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             perp.size_converter(),
             perp.leverage_converter(),
         );
-        futures::future::try_join_all(order_batch_futs)
+
+        // Collect all orders first, then add via snapshot method to preserve FIFO ordering
+        let orders: Vec<Order> = futures::future::try_join_all(order_batch_futs)
             .await
             .map_err(DexError::from)?
             .into_iter()
             .flatten()
-            .for_each(|ord| {
-                perp.add_order(Order::new(
+            .map(|ord| {
+                Order::new(
                     instant,
                     ord,
                     base_price,
                     price_converter,
                     size_converter,
                     leverage_converter,
-                ));
-            });
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
-        Ok(())
+        perp.add_orders_from_snapshot(orders)
     }
 
     async fn accounts(
