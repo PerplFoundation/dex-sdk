@@ -1,4 +1,4 @@
-use std::{pin::pin, sync::Arc};
+use std::{num::NonZeroU16, pin::pin, sync::Arc};
 
 use dex_sdk::{
     state::{
@@ -11,6 +11,10 @@ use dex_sdk::{
 use fastnum::{udec64, udec128};
 use futures::StreamExt;
 use tokio::sync::{RwLock, mpsc};
+
+fn oid(n: u16) -> types::OrderId {
+    NonZeroU16::new(n).expect("test order id must be non-zero")
+}
 
 /// Tests the creation of initial exchange snapshot followed by
 /// updating it with real-time events.
@@ -82,7 +86,7 @@ async fn test_snapshot_and_events() {
 
         assert_eq!(perp.total_orders(), 1);
 
-        let order = perp.get_order(1).unwrap();
+        let order = perp.get_order(oid(1)).unwrap();
         assert_eq!(order.r#type(), types::OrderType::OpenShort);
         assert_eq!(order.price(), udec64!(100000));
         assert_eq!(order.size(), udec64!(0.9));
@@ -132,9 +136,9 @@ async fn test_snapshot_and_events() {
     });
 
     // A bit more activity
-    o(maker.id, 10, Some(1), Change, udec64!(100100), udec64!(1)).await;
+    o(maker.id, 10, Some(oid(1)), Change, udec64!(100100), udec64!(1)).await;
     o(taker.id, 11, None, OpenLong, udec64!(100100), udec64!(0.1)).await;
-    o(maker.id, 12, Some(1), Cancel, udec64!(0), udec64!(0)).await;
+    o(maker.id, 12, Some(oid(1)), Cancel, udec64!(0), udec64!(0)).await;
 
     o(maker.id, 20, None, OpenLong, udec64!(100100), udec64!(1)).await;
     o(taker.id, 21, None, CloseLong, udec64!(100100), udec64!(0.2)).await;
@@ -164,14 +168,14 @@ async fn test_snapshot_and_events() {
                         perpetual_id: 16,
                         account_id: 1,
                         request_id: Some(10),
-                        order_id: Some(1),
+                        order_id: Some(order_id),
                         r#type:
                             OrderEventType::Updated {
                                 price,
                                 size,
                                 expiry_block,
                             },
-                    }) => {
+                    }) if *order_id == oid(1) => {
                         assert_eq!(*price, Some(udec64!(100100)));
                         assert_eq!(*size, Some(udec64!(1)));
                         assert_eq!(*expiry_block, None);
@@ -180,7 +184,7 @@ async fn test_snapshot_and_events() {
                         perpetual_id: 16,
                         account_id: 1,
                         request_id: Some(11),
-                        order_id: Some(1),
+                        order_id: Some(order_id),
                         r#type:
                             OrderEventType::Filled {
                                 fill_price,
@@ -188,7 +192,7 @@ async fn test_snapshot_and_events() {
                                 fee,
                                 is_maker,
                             },
-                    }) => {
+                    }) if *order_id == oid(1) => {
                         assert_eq!(*fill_price, udec64!(100100));
                         assert_eq!(*fill_size, udec64!(0.1));
                         assert_eq!(*fee, udec64!(1.001));
@@ -228,7 +232,7 @@ async fn test_snapshot_and_events() {
 
         assert_eq!(perp.total_orders(), 1);
 
-        let order = perp.get_order(1).unwrap();
+        let order = perp.get_order(oid(1)).unwrap();
         assert_eq!(order.r#type(), types::OrderType::OpenLong);
         assert_eq!(order.price(), udec64!(100100));
         assert_eq!(order.size(), udec64!(0.8));
