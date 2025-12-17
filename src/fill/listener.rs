@@ -1,6 +1,6 @@
 //! Fill listener implementation.
 
-use std::{collections::HashMap, future::Future, time::Duration};
+use std::{collections::HashMap, future::Future, num::NonZeroU16, time::Duration};
 
 use alloy::{primitives::U256, providers::Provider};
 use futures::StreamExt;
@@ -128,7 +128,7 @@ impl TradeProcessor {
                 log_index: event.log_index(),
                 perpetual_id: perp_id,
                 maker_account_id: e.accountId.to(),
-                maker_order_id: e.orderId.to(),
+                maker_order_id: NonZeroU16::new(e.orderId.to()).expect("non-zero maker order ID"),
                 price: converters.price_converter.from_unsigned(e.pricePNS),
                 size: converters.size_converter.from_unsigned(e.lotLNS),
                 maker_fee: self.config.collateral_converter.from_unsigned(e.feeCNS),
