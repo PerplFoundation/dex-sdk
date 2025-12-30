@@ -250,6 +250,9 @@ pub struct PerpetualEvent {
 /// Type of perpetual event with corresponding details.
 #[derive(Clone, Copy, derive_more::Debug)]
 pub enum PerpetualEventType {
+    /// Perpetual contract being added
+    Added,
+
     /// Funding event occured and rate updated.
     FundingEvent {
         #[debug("{rate}")]

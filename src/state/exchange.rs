@@ -455,7 +455,25 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::ContractAdded(_) => vec![],
+            ExchangeEvents::ContractAdded(e) => {
+                let perp = Perpetual::added(
+                    instant,
+                    e.perpId.to(),
+                    e.name.clone(),
+                    e.symbol.clone(),
+                    e.paused,
+                    e.priceDecimals.to(),
+                    e.lotDecimals.to(),
+                    e.basePricePNS,
+                    e.makerFeePer100K,
+                    e.takerFeePer100K,
+                    e.initMarginFracHdths,
+                    e.maintMarginFracHdths,
+                );
+                let event = StateEvents::perpetual(&perp, PerpetualEventType::Added);
+                self.perpetuals.insert(perp.id(), perp);
+                vec![event]
+            }
             ExchangeEvents::ContractIsPaused(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::ContractIsPaused))

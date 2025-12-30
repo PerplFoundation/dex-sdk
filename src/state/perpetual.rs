@@ -138,6 +138,76 @@ impl Perpetual {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn added(
+        instant: types::StateInstant,
+        id: types::PerpetualId,
+        name: String,
+        symbol: String,
+        is_paused: bool,
+        price_decimals: u8,
+        size_decimals: u8,
+        base_price: U256,
+        maker_fee: U256,
+        taker_fee: U256,
+        initial_margin: U256,
+        maintenance_margin: U256,
+    ) -> Self {
+        let price_converter = num::Converter::new(price_decimals);
+        let size_converter = num::Converter::new(size_decimals);
+        let leverage_converter = num::Converter::new(LEVERAGE_SCALE);
+        let fee_converter = num::Converter::new(FEE_SCALE);
+        let funding_rate_converter = num::Converter::new(FUNDING_RATE_SCALE);
+        Self {
+            instant,
+            state_instant: instant,
+            id,
+            name,
+            symbol,
+            is_paused,
+
+            price_converter,
+            size_converter,
+            leverage_converter,
+            fee_converter,
+            funding_rate_converter,
+            base_price: price_converter.from_unsigned(base_price),
+
+            maker_fee: fee_converter.from_unsigned(maker_fee), // Fees are per 100K
+            taker_fee: fee_converter.from_unsigned(taker_fee), // Fees are per 100K
+            // Margins are in hundredths
+            initial_margin: leverage_converter.from_unsigned(initial_margin),
+            // Margins are in hundredths
+            maintenance_margin: leverage_converter.from_unsigned(maintenance_margin),
+
+            last_price: UD64::ZERO,
+            last_price_block: None,
+            last_price_timestamp: 0,
+
+            mark_price: UD64::ZERO,
+            mark_price_block: None,
+            mark_price_timestamp: 0,
+
+            oracle_price: UD64::ZERO,
+            oracle_price_block: None,
+            oracle_price_timestamp: 0,
+
+            prev_funding_rate: D64::ZERO,
+            next_funding_rate: None,
+            next_funding_payment: None,
+            next_funding_event_block: None,
+            funding_start_block: 0,
+
+            oracle_feed_id: B256::ZERO,
+            is_oracle_used: true,
+            price_max_age_sec: 60,
+
+            l3_book: OrderBook::new(),
+
+            open_interest: UD128::ZERO,
+        }
+    }
+
     /// Instant the perpetual contract state is consistent with or was last updated at.
     pub fn instant(&self) -> types::StateInstant {
         self.instant
@@ -404,6 +474,10 @@ impl Perpetual {
     pub(crate) fn update_paused(&mut self, instant: types::StateInstant, paused: bool) {
         self.is_paused = paused;
         self.instant = instant;
+        // Funding start block is set on first unpausing
+        if !paused && self.funding_start_block == 0 {
+            self.funding_start_block = instant.block_number()
+        }
     }
 
     pub(crate) fn update_maker_fee(&mut self, instant: types::StateInstant, maker_fee: UD64) {

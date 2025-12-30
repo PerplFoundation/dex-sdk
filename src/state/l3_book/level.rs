@@ -8,13 +8,14 @@ use crate::types;
 ///
 /// The level stores head/tail pointers to the linked list and maintains
 /// cached aggregates for O(1) access to total size and order count.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, derive_more::Debug, Default)]
 pub struct BookLevel {
     /// First order in the FIFO queue (oldest).
     head: Option<types::OrderId>,
     /// Last order in the FIFO queue (newest).
     tail: Option<types::OrderId>,
     /// Cached aggregate: total size at this level.
+    #[debug("{cached_size}")]
     cached_size: UD64,
     /// Cached aggregate: number of orders at this level.
     cached_count: u32,
