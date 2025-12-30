@@ -1,4 +1,4 @@
-//! Perpetual DEX SDK.
+//! [`perpl.xyz`] DEX SDK.
 //!
 //! # Overview
 //!
@@ -21,8 +21,6 @@
 //!   stream of events. Future versions could improve indexing latency by utilizing
 //!   WebSocket subscriptions and/or Monad [`execution events`].
 //!
-//! * State tracking is supported only for existing accounts and perpetual contracts.
-//!
 //! * Test coverage is far below reasonable.
 //!
 //! # Testing
@@ -31,11 +29,11 @@
 //! token and exchange smart contracts deployed.
 //!
 //!
+//! [`perpl.xyz`]: https://perpl.xyz
 //! [`execution events`]: https://docs.monad.xyz/execution-events/
 
 pub mod abi;
 pub mod error;
-pub mod fill;
 pub mod num;
 pub mod state;
 pub mod stream;
