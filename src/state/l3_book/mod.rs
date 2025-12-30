@@ -339,10 +339,10 @@ impl OrderBook {
         let old_tail = level.tail();
 
         // Update old tail's next pointer
-        if let Some(old_tail_id) = old_tail {
-            if let Some(old_tail_order) = self.orders.get_mut(&old_tail_id) {
-                old_tail_order.set_next(Some(order_id));
-            }
+        if let Some(old_tail_id) = old_tail
+            && let Some(old_tail_order) = self.orders.get_mut(&old_tail_id)
+        {
+            old_tail_order.set_next(Some(order_id));
         }
 
         // Update this order's links and data
@@ -393,23 +393,23 @@ impl OrderBook {
             }
 
             // Validate that referenced orders exist in this snapshot
-            if let Some(prev_id) = order.prev_order_id() {
-                if !order_ids.contains(&prev_id) {
-                    return Err(OrderBookError::DanglingOrderReference {
-                        order_id,
-                        referenced_id: prev_id,
-                        pointer: "prev",
-                    });
-                }
+            if let Some(prev_id) = order.prev_order_id()
+                && !order_ids.contains(&prev_id)
+            {
+                return Err(OrderBookError::DanglingOrderReference {
+                    order_id,
+                    referenced_id: prev_id,
+                    pointer: "prev",
+                });
             }
-            if let Some(next_id) = order.next_order_id() {
-                if !order_ids.contains(&next_id) {
-                    return Err(OrderBookError::DanglingOrderReference {
-                        order_id,
-                        referenced_id: next_id,
-                        pointer: "next",
-                    });
-                }
+            if let Some(next_id) = order.next_order_id()
+                && !order_ids.contains(&next_id)
+            {
+                return Err(OrderBookError::DanglingOrderReference {
+                    order_id,
+                    referenced_id: next_id,
+                    pointer: "next",
+                });
             }
 
             // Create BookOrder with prev/next pointing directly to OrderIds
@@ -514,17 +514,17 @@ impl OrderBook {
     /// Unlink a node from the doubly-linked list by updating its neighbors.
     fn unlink_node(&mut self, prev_id: Option<types::OrderId>, next_id: Option<types::OrderId>) {
         // Update prev's next pointer
-        if let Some(prev) = prev_id {
-            if let Some(prev_order) = self.orders.get_mut(&prev) {
-                prev_order.set_next(next_id);
-            }
+        if let Some(prev) = prev_id
+            && let Some(prev_order) = self.orders.get_mut(&prev)
+        {
+            prev_order.set_next(next_id);
         }
 
         // Update next's prev pointer
-        if let Some(next) = next_id {
-            if let Some(next_order) = self.orders.get_mut(&next) {
-                next_order.set_prev(prev_id);
-            }
+        if let Some(next) = next_id
+            && let Some(next_order) = self.orders.get_mut(&next)
+        {
+            next_order.set_prev(prev_id);
         }
     }
 
@@ -539,10 +539,10 @@ impl OrderBook {
         size: UD64,
     ) {
         // Update old tail's next pointer
-        if let Some(old_tail_id) = old_tail {
-            if let Some(old_tail_order) = self.orders.get_mut(&old_tail_id) {
-                old_tail_order.set_next(Some(order_id));
-            }
+        if let Some(old_tail_id) = old_tail
+            && let Some(old_tail_order) = self.orders.get_mut(&old_tail_id)
+        {
+            old_tail_order.set_next(Some(order_id));
         }
 
         // Update level head/tail (re-borrow level after updating orders)
