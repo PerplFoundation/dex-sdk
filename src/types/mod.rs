@@ -1,10 +1,12 @@
 mod event;
 mod order;
 mod request;
+mod trade;
 
 pub use event::*;
 pub use order::{OrderSide, OrderType};
 pub use request::{OrderRequest, RequestType};
+pub use trade::*;
 
 /// ID of perpetual contract.
 pub type PerpetualId = u32;

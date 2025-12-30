@@ -1,22 +1,107 @@
-//! Fill listener implementation.
-
-use std::{collections::HashMap, future::Future, num::NonZeroU16, time::Duration};
+use std::{collections::HashMap, num::NonZeroU16};
 
 use alloy::{primitives::U256, providers::Provider};
-use futures::StreamExt;
-use tokio::sync::mpsc;
+use futures::{Stream, StreamExt};
 
-use super::types::{BlockTrades, MakerFill, TakerTrade, TradeReceiver};
 use crate::{
     Chain,
     abi::dex::Exchange::{ExchangeEvents, ExchangeInstance, MakerOrderFilled},
     error::DexError,
-    num, stream,
-    types::{self, OrderSide, RequestType},
+    num, types,
 };
 
-/// Default channel buffer size.
-const DEFAULT_CHANNEL_SIZE: usize = 100;
+pub type TradeEvent = types::EventContext<types::Trade>;
+pub type BlockTrades = types::BlockEvents<TradeEvent>;
+
+/// Returns stream of normalized trade events aggregated from the [`super::raw`] event stream,
+/// batched per block.
+///
+/// Listens to `MakerOrderFilled` and `TakerOrderFilled` events, batches all
+/// maker fills per taker into unified `Trade` events, normalizes
+/// fixed-point values to decimals.
+///
+/// # Safety note
+///
+/// The returned stream is not cancellation-safe and should not be used within `select!`.
+///
+/// # Architecture
+///
+/// The module separates pure processing logic from async I/O:
+///
+/// - [`TradeProcessor`] - Pure, synchronous trade extraction from raw events
+/// - [`NormalizationConfig`] - Configuration fetched once at startup
+///
+/// # Data Model
+///
+/// Each [`TradeEvent`] represents a single taker order execution that may have
+/// matched against multiple maker orders. The `maker_fills` vector contains
+/// all individual [`types::MakerFill`]s that occurred as part of this trade.
+///
+/// # Example
+///
+/// ```
+/// use dex_sdk::{Chain, stream, types::StateInstant};
+///
+/// let chain = Chain::testnet();
+/// let provider = /* setup provider */;
+/// let from = StateInstant::new(latest_block, timestamp);
+///
+/// let raw_stream = stream::raw(
+///     &chain,
+///     provider.clone(),
+///     types::StateInstant::new(block_num, 0),
+///     tokio::time::sleep,
+/// );
+/// let mut trade_stream = pin!(stream::trade(&chain, provider, raw_stream).await.unwrap());
+///
+/// while let Some(Ok(block_trades)) = trade_stream.next().await {
+///     if !block_trades.events().is_empty() {
+///         println!(
+///             "Block {} - {} trade(s):",
+///             block_trades.instant().block_number(),
+///             block_trades.events().len()
+///         );
+///         for event in block_trades.events() {
+///             let trade = event.event();
+///             println!(
+///                 "  Taker {} {:?} {} @ {} on perp={} (fee: {})",
+///                 trade.taker_account_id,
+///                 trade.taker_side,
+///                 trade.total_size(),
+///                 trade.avg_price().unwrap_or_default(),
+///                 trade.perpetual_id,
+///                 trade.taker_fee,
+///             );
+///             for fill in &trade.maker_fills {
+///                 println!(
+///                     "    <- Maker {} order {} filled {} @ {} (fee: {})",
+///                     fill.maker_account_id, fill.maker_order_id, fill.size, fill.price, fill.fee,
+///                 );
+///             }
+///         }
+///     }
+/// }
+/// ```
+///
+pub async fn trade<P>(
+    chain: &Chain,
+    provider: P,
+    raw_events: impl Stream<Item = Result<super::RawBlockEvents, DexError>>,
+) -> Result<impl Stream<Item = Result<BlockTrades, DexError>>, DexError>
+where
+    P: Provider,
+{
+    // Fetch normalization config
+    let config = NormalizationConfig::fetch(chain, &provider).await?;
+    // Setup trade processor
+    let mut processor = TradeProcessor::new(config);
+
+    let stream = raw_events.map(move |block_result| {
+        block_result.map(|block_events| processor.process_block(&block_events))
+    });
+
+    Ok(stream)
+}
 
 /// Configuration for normalization.
 #[derive(Clone)]
@@ -35,7 +120,7 @@ struct PerpetualConverters {
 /// Context for tracking order requests (reuses pattern from exchange.rs).
 struct OrderContext {
     account_id: types::AccountId,
-    side: OrderSide,
+    side: types::OrderSide,
 }
 
 /// Pending maker fill waiting for taker match.
@@ -72,7 +157,7 @@ impl TradeProcessor {
     /// Process a block of raw events and extract trades.
     ///
     /// This is pure logic - no async, no I/O.
-    pub fn process_block(&mut self, events: &stream::RawBlockEvents) -> BlockTrades {
+    pub fn process_block(&mut self, events: &super::RawBlockEvents) -> BlockTrades {
         let mut trades = Vec::new();
 
         for event in events.events() {
@@ -93,10 +178,10 @@ impl TradeProcessor {
     }
 
     /// Process a single event, potentially emitting a trade.
-    fn process_event(&mut self, event: &stream::RawEvent) -> Option<TakerTrade> {
+    fn process_event(&mut self, event: &super::RawEvent) -> Option<TradeEvent> {
         match event.event() {
             ExchangeEvents::OrderRequest(e) => {
-                let request_type: RequestType = e.orderType.into();
+                let request_type: types::RequestType = e.orderType.into();
                 // Only track context for order types that can have fills
                 if let Some(side) = request_type.try_side() {
                     self.order_context = Some(OrderContext {
@@ -120,7 +205,7 @@ impl TradeProcessor {
         }
     }
 
-    fn handle_maker_fill(&mut self, event: &stream::RawEvent, e: &MakerOrderFilled) {
+    fn handle_maker_fill(&mut self, event: &super::RawEvent, e: &MakerOrderFilled) {
         let perp_id: types::PerpetualId = e.perpId.to();
         if let Some(converters) = self.config.perpetuals.get(&perp_id) {
             self.pending_maker_fills.push(PendingMakerFill {
@@ -138,9 +223,9 @@ impl TradeProcessor {
 
     fn handle_taker_fill(
         &mut self,
-        event: &stream::RawEvent,
+        event: &super::RawEvent,
         e: &crate::abi::dex::Exchange::TakerOrderFilled,
-    ) -> Option<TakerTrade> {
+    ) -> Option<TradeEvent> {
         let makers = std::mem::take(&mut self.pending_maker_fills);
         if makers.is_empty() {
             return None;
@@ -160,25 +245,25 @@ impl TradeProcessor {
         // All makers should have the same perpetual_id (from the same order request)
         let perpetual_id = makers.first()?.perpetual_id;
 
-        Some(TakerTrade {
-            tx_hash: taker_tx_hash,
-            tx_index: event.tx_index(),
-            perpetual_id,
-            taker_account_id: ctx.account_id,
-            taker_side: ctx.side,
-            taker_fee: self.config.collateral_converter.from_unsigned(e.feeCNS),
-            maker_fills: makers
-                .into_iter()
-                .map(|m| MakerFill {
-                    log_index: m.log_index,
-                    maker_account_id: m.maker_account_id,
-                    maker_order_id: m.maker_order_id,
-                    price: m.price,
-                    size: m.size,
-                    fee: m.maker_fee,
-                })
-                .collect(),
-        })
+        Some(
+            event.pass(types::Trade {
+                perpetual_id,
+                taker_account_id: ctx.account_id,
+                taker_side: ctx.side,
+                taker_fee: self.config.collateral_converter.from_unsigned(e.feeCNS),
+                maker_fills: makers
+                    .into_iter()
+                    .map(|m| types::MakerFill {
+                        log_index: m.log_index,
+                        maker_account_id: m.maker_account_id,
+                        maker_order_id: m.maker_order_id,
+                        price: m.price,
+                        size: m.size,
+                        fee: m.maker_fee,
+                    })
+                    .collect(),
+            }),
+        )
     }
 }
 
@@ -214,83 +299,42 @@ impl NormalizationConfig {
     }
 }
 
-/// Start the trade listener.
-///
-/// Returns a receiver for trades and a handle to the background task.
-/// The listener will stream all trades from the exchange starting from
-/// the specified block, normalize them, and push them to the channel.
-///
-/// # Example
-///
-/// ```ignore
-/// let (mut rx, handle) = fill::start(&chain, provider, from, tokio::time::sleep).await?;
-///
-/// while let Some(block_trades) = rx.recv().await {
-///     for trade in &block_trades.trades {
-///         println!("Taker {} {:?} on perp {} (fee: {})",
-///             trade.taker_account_id, trade.taker_side,
-///             trade.perpetual_id, trade.taker_fee);
-///         for fill in &trade.maker_fills {
-///             println!("  Maker {} @ {} (fee: {})", fill.size, fill.price, fill.fee);
-///         }
-///     }
-/// }
-/// ```
-pub async fn start<P, S, SFut>(
-    chain: &Chain,
-    provider: P,
-    from: types::StateInstant,
-    sleep: S,
-) -> Result<(TradeReceiver, tokio::task::JoinHandle<Result<(), DexError>>), DexError>
-where
-    P: Provider + Clone + Send + 'static,
-    S: Fn(Duration) -> SFut + Copy + Send + 'static,
-    SFut: Future<Output = ()> + Send,
-{
-    // Fetch normalization config
-    let config = NormalizationConfig::fetch(chain, &provider).await?;
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
 
-    let (tx, rx) = mpsc::channel(DEFAULT_CHANNEL_SIZE);
+    use alloy::{
+        providers::ProviderBuilder, rpc::client::RpcClient, transports::layers::RetryBackoffLayer,
+    };
+    use futures::StreamExt;
 
-    let chain_clone = chain.clone();
-    let handle =
-        tokio::spawn(
-            async move { run_listener(chain_clone, provider, from, sleep, config, tx).await },
+    use super::*;
+    use crate::Chain;
+
+    #[tokio::test]
+    async fn test_stream_recent_blocks() {
+        let client = RpcClient::builder()
+            .layer(RetryBackoffLayer::new(10, 100, 200))
+            .connect("https://testnet-rpc.monad.xyz")
+            .await
+            .unwrap();
+        client.set_poll_interval(Duration::from_millis(100));
+        let provider = ProviderBuilder::new().connect_client(client);
+
+        let testnet = Chain::testnet();
+        let block_num = provider.get_block_number().await.unwrap() + 1;
+        let raw_stream = crate::stream::raw(
+            &testnet,
+            provider.clone(),
+            types::StateInstant::new(block_num, 0),
+            tokio::time::sleep,
         );
 
-    Ok((TradeReceiver::new(rx), handle))
-}
+        let trade_stream = trade(&testnet, provider, raw_stream).await.unwrap();
+        let block_trades = trade_stream.take(10).collect::<Vec<_>>().await;
 
-async fn run_listener<P, S, SFut>(
-    chain: Chain,
-    provider: P,
-    from: types::StateInstant,
-    sleep: S,
-    config: NormalizationConfig,
-    tx: mpsc::Sender<BlockTrades>,
-) -> Result<(), DexError>
-where
-    P: Provider,
-    S: Fn(Duration) -> SFut + Copy,
-    SFut: Future<Output = ()>,
-{
-    let raw_stream = stream::raw(&chain, provider, from, sleep);
-    futures::pin_mut!(raw_stream);
-
-    let mut processor = TradeProcessor::new(config);
-
-    while let Some(result) = raw_stream.next().await {
-        let block_events = result?;
-
-        // Pure processing - no async
-        let block_trades = processor.process_block(&block_events);
-
-        // Send trades (even if empty, for block progression tracking)
-        if tx.send(block_trades).await.is_err() {
-            // Receiver dropped, graceful shutdown
-            break;
+        for bt in &block_trades {
+            println!("block trades: {:?}", bt);
         }
     }
-
-    Ok(())
 }

@@ -20,6 +20,10 @@ pub type RawBlockEvents = types::BlockEvents<RawEvent>;
 ///
 /// See [`crate::abi::dex::Exchange::ExchangeEvents`] for the list of possible events and corresponding details.
 ///
+/// # Safety note
+///
+/// The returned stream is not cancellation-safe and should not be used within `select!`.
+///
 pub fn raw<P, S, SFut>(
     chain: &Chain,
     provider: P,

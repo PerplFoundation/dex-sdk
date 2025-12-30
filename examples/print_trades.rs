@@ -2,6 +2,7 @@
 //!
 //! Run with: cargo run --example print_trades
 
+use std::pin::pin;
 use std::time::Duration;
 
 use alloy::{
@@ -9,7 +10,8 @@ use alloy::{
     rpc::client::RpcClient,
     transports::layers::RetryBackoffLayer,
 };
-use dex_sdk::{Chain, fill, types::StateInstant};
+use dex_sdk::{Chain, stream, types};
+use futures::StreamExt;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,24 +28,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let block_num = provider.get_block_number().await?;
     println!("Starting from block {}", block_num);
 
-    let (mut rx, _handle) = fill::start(
+    let raw_stream = stream::raw(
         &chain,
-        provider,
-        StateInstant::new(block_num, 0),
+        provider.clone(),
+        types::StateInstant::new(block_num, 0),
         tokio::time::sleep,
-    )
-    .await?;
+    );
 
+    let mut trade_stream = pin!(stream::trade(&chain, provider, raw_stream).await.unwrap());
     println!("Listening for trades...\n");
 
-    while let Some(block_trades) = rx.recv().await {
-        if !block_trades.is_empty() {
+    while let Some(Ok(block_trades)) = trade_stream.next().await {
+        if !block_trades.events().is_empty() {
             println!(
                 "Block {} - {} trade(s):",
-                block_trades.instant.block_number(),
-                block_trades.len()
+                block_trades.instant().block_number(),
+                block_trades.events().len()
             );
-            for trade in &block_trades.trades {
+            for event in block_trades.events() {
+                let trade = event.event();
                 println!(
                     "  Taker {} {:?} {} @ {} on perp={} (fee: {})",
                     trade.taker_account_id,
