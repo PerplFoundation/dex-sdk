@@ -1,0 +1,18 @@
+[package]
+name = "perpl-sdk"
+build = "build.rs"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+alloy.workspace = true
+alloy-sol-types.workspace = true
+dashmap.workspace = true
+derive_more.workspace = true
+fastnum.workspace = true
+futures.workspace = true
+itertools.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

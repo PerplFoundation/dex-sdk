@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use dex_sdk::{state, testing, types};
 use fastnum::{UD64, udec64, udec128};
+use perpl_sdk::{state, testing, types};
 
 /// Tests the creation of exchange snapshot when perpetual order book is full.
 #[tokio::test]

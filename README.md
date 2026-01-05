@@ -1,5 +1,5 @@
-# dex-sdk
-Perpetual DEX SDK
+# perpl-sdk
+[Perpl](https://perpl.xyz) DEX SDK
 
 ## Prerequisites
 
@@ -12,6 +12,11 @@ Perpetual DEX SDK
 ```
 cargo doc --no-deps --open
 ```
+
+## Crates
+
+* [perpl-sdk](./crates/sdk/src/lib.rs): SDK types for building and maintaining in-memory cache of the exchange state, along with order posting helpers.
+* [perpl-cli](./crates/cli/src/lib.rs): CLI for reading and tracing the exchange state.
 
 ## Usage
 

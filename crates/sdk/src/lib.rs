@@ -1,4 +1,4 @@
-//! [`perpl.xyz`] DEX SDK.
+//! [`Perpl`] DEX SDK.
 //!
 //! # Overview
 //!
@@ -29,7 +29,7 @@
 //! token and exchange smart contracts deployed.
 //!
 //!
-//! [`perpl.xyz`]: https://perpl.xyz
+//! [`Perpl`]: https://perpl.xyz
 //! [`execution events`]: https://docs.monad.xyz/execution-events/
 
 pub mod abi;

@@ -39,8 +39,8 @@ pub type BlockTrades = types::BlockEvents<TradeEvent>;
 ///
 /// # Example
 ///
-/// ```
-/// use dex_sdk::{Chain, stream, types::StateInstant};
+/// ```ignore
+/// use perpl_sdk::{Chain, stream, types::StateInstant};
 ///
 /// let chain = Chain::testnet();
 /// let provider = /* setup provider */;
