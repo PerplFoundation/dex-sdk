@@ -80,6 +80,8 @@ pub(crate) async fn render<P: Provider + Clone>(
                     );
                 },
             }
+
+            // State events produced from exchange events
             while let Some(state_events) = state_event_iter.peek()
                 && state_events.tx_index() == block_event.tx_index()
                 && state_events.log_index() == block_event.log_index()
@@ -92,6 +94,13 @@ pub(crate) async fn render<P: Provider + Clone>(
                     );
                 }
                 state_event_iter.next();
+            }
+
+            // Remain state events
+            while let Some(state_events) = state_event_iter.next() {
+                for event in state_events.event() {
+                    println!("{}", format!("  > {:?}", event).bright_green());
+                }
             }
         }
 
