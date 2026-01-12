@@ -2,6 +2,9 @@ use alloy::primitives::Address;
 use clap::{Parser, Subcommand};
 use perpl_sdk::types;
 
+pub(crate) const DEFAULT_RPC_PROVIDER: &str = "https://testnet-rpc.monad.xyz";
+pub(crate) const DEFAULT_RPC_THROTTLING: u32 = 15;
+
 #[derive(Parser, Debug)]
 #[command(name = "perpl-cli", version, about, long_about = None)]
 pub struct Cli {
@@ -9,8 +12,13 @@ pub struct Cli {
     pub command: Commands,
 
     /// RPC endpoint to connect to
-    #[arg(long, global = true, default_value = "https://testnet-rpc.monad.xyz")]
+    #[arg(long, global = true, default_value_t = DEFAULT_RPC_PROVIDER.to_string() )]
     pub rpc: String,
+
+    /// RPC throttling (req/sec), defaults to 15 for default RPC provider and
+    /// none for custom
+    #[arg(long, global = true)]
+    pub rpc_throttle: Option<u32>,
 
     /// Exchange smart contract address
     #[arg(long, global = true)]
@@ -56,21 +64,21 @@ pub enum ShowCommands {
     /// Render live state of particular account
     Account {
         /// Number of most recent trades to show (0 = don't show trades)
-        #[arg(long, default_value = "10")]
+        #[arg(long, default_value_t = 10)]
         num_trades: usize,
     },
     /// Render live state of particular perpetual order book
     Book {
         /// Number of price levels to display (0 = all)
-        #[arg(short, long, default_value = "10")]
+        #[arg(short, long, default_value_t = 10)]
         depth: usize,
 
         /// Maximum orders to show per level (0 = all)
-        #[arg(long, default_value = "10")]
+        #[arg(long, default_value_t = 10)]
         orders_per_level: usize,
 
         /// Whether to show expired orders
-        #[arg(long, default_value = "false")]
+        #[arg(long, default_value_t = false)]
         show_expired: bool,
     },
     /// Render live trades

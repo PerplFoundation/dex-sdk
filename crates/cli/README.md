@@ -20,6 +20,7 @@ perpl-cli [OPTIONS] COMMAND
 ### Options
 
 - `--rpc <RPC>`: RPC endpoint to connect to (default: https://testnet-rpc.monad.xyz)
+- `--rpc_throttle <REQ_PER_SEC>`: RPC endpoint throttling, defaults to 15 for default RPC provider and none for custom
 - `--exchange <ADDRESS>`: Exchange smart contract address (default: [`Chain::testnet().exchange()`])
 - `--block <BLOCK>`: Block number to fetch state at or start tracing from (default: latest)
 - `--num-blocks <NUM_BLOCKS>`: Number of blocks to trace (default: until terminated)

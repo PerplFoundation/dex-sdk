@@ -11,7 +11,7 @@ use alloy::{
     primitives::Address,
     providers::{Provider, ProviderBuilder},
     rpc::{client::RpcClient, types::BlockId},
-    transports::layers::RetryBackoffLayer,
+    transports::layers::{RetryBackoffLayer, ThrottleLayer},
 };
 use anyhow::Context;
 use args::Cli;
@@ -21,11 +21,21 @@ use tokio_util::sync::CancellationToken;
 use crate::args::{Commands, ShowCommands};
 
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
-    let client = RpcClient::builder()
-        .layer(RetryBackoffLayer::new(10, 100, 200))
-        .connect(&cli.rpc)
-        .await
-        .context("connecting to RPC")?;
+    let client = if cli.rpc == args::DEFAULT_RPC_PROVIDER || cli.rpc_throttle.is_some() {
+        // Apply throttling with default RPC
+        RpcClient::builder()
+            .layer(ThrottleLayer::new(cli.rpc_throttle.unwrap_or(args::DEFAULT_RPC_THROTTLING)))
+            .layer(RetryBackoffLayer::new(10, 100, 200))
+            .connect(&cli.rpc)
+            .await
+            .context("connecting to RPC")?
+    } else {
+        RpcClient::builder()
+            .layer(RetryBackoffLayer::new(10, 100, 200))
+            .connect(&cli.rpc)
+            .await
+            .context("connecting to RPC")?
+    };
     client.set_poll_interval(Duration::from_millis(250));
     let provider = ProviderBuilder::new().connect_client(client);
 
@@ -65,13 +75,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades: _ } => {
                 if cli.accounts.len() != 1 {
-                    return Err(anyhow::anyhow!("exactly one account should be provided, see `--accounts`"));
+                    return Err(anyhow::anyhow!(
+                        "exactly one account should be provided, see `--accounts`"
+                    ));
                 }
                 Some(builder)
             },
             ShowCommands::Book { depth: _, orders_per_level: _, show_expired: _ } => {
                 if cli.perps.len() != 1 {
-                    return Err(anyhow::anyhow!("exactly one perp should be provided, see `--perps`"));
+                    return Err(anyhow::anyhow!(
+                        "exactly one perp should be provided, see `--perps`"
+                    ));
                 }
                 Some(builder)
             },

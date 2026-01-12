@@ -16,6 +16,7 @@ alloy = { version = "1.4.0", default-features = false, features = [
   "rpc",
   "rpc-client",
   "rpc-types",
+  "transport-throttle",
 ] }
 alloy-sol-types = { version = "1.5.2", default-features = false, features = [
   "more-tuple-impls",
