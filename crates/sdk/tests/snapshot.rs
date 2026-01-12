@@ -65,11 +65,12 @@ async fn test_full_book_snapshot() {
             .collect();
 
         pending_txs.push(btc_perp.orders(maker.id, orders).await);
+        if chunk == 500 {
+            pending_txs.push(btc_perp.set_mark_price(udec64!(100000)).await);
+        }
     }
     futures::future::join_all(pending_txs.into_iter().map(|ptx| ptx.get_receipt())).await;
     println!("book filled in: {:?}", started_at.elapsed());
-
-    btc_perp.set_mark_price(udec64!(100000)).await;
 
     // Do some trades
     btc_perp

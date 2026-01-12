@@ -380,6 +380,7 @@ impl<'e> TestPerp<'e> {
             .exchange
             .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
             .from(self.exchange.price_admin)
+            .gas(500000)
             .send()
             .await
             .map_err::<DexError, _>(DexError::from)
@@ -422,6 +423,7 @@ impl<'e> TestPerp<'e> {
         self.exchange
             .exchange
             .setContractPaused(U256::from(self.id), false)
+            .gas(500000)
             .send()
             .await
             .map_err::<DexError, _>(DexError::from)
@@ -432,32 +434,32 @@ impl<'e> TestPerp<'e> {
         self
     }
 
-    pub async fn set_mark_price(&self, price: UD64) {
+    pub async fn set_mark_price(&self, price: UD64) -> PendingTransactionBuilder<Ethereum> {
         self.exchange
             .exchange
             .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
             .from(self.exchange.price_admin)
+            .gas(500000)
             .send()
             .await
             .map_err::<DexError, _>(DexError::from)
             .unwrap()
-            .get_receipt()
-            .await
-            .unwrap();
     }
 
-    pub async fn set_funding_rate(&self, price: u32, rate: i32) {
+    pub async fn set_funding_rate(
+        &self,
+        price: u32,
+        rate: i32,
+    ) -> PendingTransactionBuilder<Ethereum> {
         self.exchange
             .exchange
             .setFundingSum(U256::from(self.id), I256::try_from(rate).unwrap(), price, true, true)
             .from(self.exchange.anvil.addresses()[2]) // From Price Admin
+            .gas(500000)
             .send()
             .await
             .map_err::<DexError, _>(DexError::from)
             .unwrap()
-            .get_receipt()
-            .await
-            .unwrap();
     }
 
     pub async fn order(
@@ -481,6 +483,7 @@ impl<'e> TestPerp<'e> {
                     .unwrap()
                     .value(),
             )
+            .gas(1000000)
             .send()
             .await
             .map_err::<DexError, _>(DexError::from)
@@ -517,6 +520,7 @@ impl<'e> TestPerp<'e> {
                     .unwrap()
                     .value(),
             )
+            .gas(250000 * requests.len() as u64)
             .send()
             .await
             .map_err::<DexError, _>(DexError::from)
