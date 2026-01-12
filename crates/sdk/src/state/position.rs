@@ -261,6 +261,7 @@ impl tabled::Tabled for Position {
                 self.pnl().to_string().green().to_string().into()
             },
             format!("{:.6}", self.liquidation_price()).into(),
+            format!("{:.6}", self.bankruptcy_price()).into(),
         ]
     }
 
@@ -275,6 +276,7 @@ impl tabled::Tabled for Position {
             "Premium PnL".into(),
             "Total PnL".into(),
             "Liq Price".into(),
+            "Bnkrp Price".into(),
         ]
     }
 }
