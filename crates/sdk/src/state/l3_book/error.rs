@@ -10,10 +10,7 @@ use crate::types::{OrderId, OrderSide};
 pub enum OrderBookError {
     /// Attempted to add an order that already exists in the book.
     #[error("order {order_id} already exists at price {existing_price}")]
-    OrderAlreadyExists {
-        order_id: OrderId,
-        existing_price: UD64,
-    },
+    OrderAlreadyExists { order_id: OrderId, existing_price: UD64 },
 
     /// Attempted to update or remove an order that doesn't exist.
     #[error("order {order_id} not found in book")]
@@ -22,11 +19,7 @@ pub enum OrderBookError {
     /// Order exists in index but not found at the expected price level.
     /// This indicates internal inconsistency.
     #[error("order {order_id} not found at expected {side:?} level price {expected_price}")]
-    OrderNotAtExpectedLevel {
-        order_id: OrderId,
-        expected_price: UD64,
-        side: OrderSide,
-    },
+    OrderNotAtExpectedLevel { order_id: OrderId, expected_price: UD64, side: OrderSide },
 
     /// Attempted to update an order but the new order has a different ID.
     #[error("order ID mismatch: expected {expected}, got {actual}")]
@@ -49,11 +42,7 @@ pub enum OrderBookError {
     #[error(
         "order {order_id} has dangling {pointer} reference to non-existent order {referenced_id}"
     )]
-    DanglingOrderReference {
-        order_id: OrderId,
-        referenced_id: OrderId,
-        pointer: &'static str,
-    },
+    DanglingOrderReference { order_id: OrderId, referenced_id: OrderId, pointer: &'static str },
 }
 
 /// Result type for OrderBook operations.

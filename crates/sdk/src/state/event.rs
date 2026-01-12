@@ -2,7 +2,6 @@ use alloy::primitives::{B256, U256};
 use fastnum::{D64, D256, UD64, UD128};
 
 use super::{account, order, perpetual, position};
-
 use crate::{abi::dex::Exchange::OrderRequest, types};
 
 /// Exchange state processing events.
@@ -29,6 +28,9 @@ pub enum StateEvents {
 
     /// Position state updated.
     Position(PositionEvent),
+
+    /// Trade happened.
+    Trade(types::Trade),
 }
 
 /// Account state mutation event.
@@ -197,8 +199,8 @@ pub struct OrderEvent {
 #[derive(Clone, Copy, derive_more::Debug)]
 pub enum OrderEventType {
     /// Order filled.
-    /// For maker orders this event is paired with [`OrderEventType::Updated`] or
-    /// [`OrderEventType::Removed`].
+    /// For maker orders this event is paired with [`OrderEventType::Updated`]
+    /// or [`OrderEventType::Removed`].
     Filled {
         #[debug("{fill_price}")]
         fill_price: UD64,
@@ -466,6 +468,50 @@ pub enum PositionEventType {
 }
 
 impl StateEvents {
+    pub fn as_account_event(&self) -> Option<AccountEvent> {
+        if let StateEvents::Account(account_event) = self {
+            Some(account_event.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn as_error(&self) -> Option<OrderError> {
+        if let StateEvents::Error(error_event) = self { Some(error_event.clone()) } else { None }
+    }
+
+    pub fn as_order_event(&self) -> Option<OrderEvent> {
+        if let StateEvents::Order(order_event) = self { Some(order_event.clone()) } else { None }
+    }
+
+    pub fn as_exchange_event(&self) -> Option<ExchangeEvent> {
+        if let StateEvents::Exchange(exchange_event) = self {
+            Some(exchange_event.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn as_perpetual_event(&self) -> Option<PerpetualEvent> {
+        if let StateEvents::Perpetual(perpetual_event) = self {
+            Some(perpetual_event.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn as_position_event(&self) -> Option<PositionEvent> {
+        if let StateEvents::Position(position_event) = self {
+            Some(position_event.clone())
+        } else {
+            None
+        }
+    }
+
+    pub fn as_trade(&self) -> Option<types::Trade> {
+        if let StateEvents::Trade(trade) = self { Some(trade.clone()) } else { None }
+    }
+
     pub(crate) fn account(
         acc: &account::Account,
         ctx: &Option<OrderContext>,
@@ -521,10 +567,7 @@ impl StateEvents {
         perp: &perpetual::Perpetual,
         r#type: PerpetualEventType,
     ) -> StateEvents {
-        Self::Perpetual(PerpetualEvent {
-            perpetual_id: perp.id(),
-            r#type,
-        })
+        Self::Perpetual(PerpetualEvent { perpetual_id: perp.id(), r#type })
     }
 
     pub(crate) fn position(
@@ -537,6 +580,16 @@ impl StateEvents {
             account_id: pos.account_id(),
             request_id: ctx.as_ref().map(|c| c.request_id),
             r#type,
+        })
+    }
+
+    pub(crate) fn trade(ctx: &OrderContext, taker_fee: UD64) -> Self {
+        Self::Trade(types::Trade {
+            perpetual_id: ctx.perpetual_id,
+            taker_account_id: ctx.account_id,
+            taker_side: ctx.r#type.try_side().expect("order type with side"),
+            taker_fee,
+            maker_fills: ctx.maker_fills.clone(),
         })
     }
 }
@@ -554,6 +607,7 @@ pub(crate) struct OrderContext {
     pub(crate) post_only: bool,
     pub(crate) fill_or_kill: bool,
     pub(crate) immediate_or_cancel: bool,
+    pub(crate) maker_fills: Vec<types::MakerFill>,
 }
 
 impl From<&OrderRequest> for OrderContext {
@@ -570,6 +624,7 @@ impl From<&OrderRequest> for OrderContext {
             post_only: value.postOnly,
             fill_or_kill: value.fillOrKill,
             immediate_or_cancel: value.immediateOrCancel,
+            maker_fills: vec![],
         }
     }
 }

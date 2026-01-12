@@ -1,0 +1,49 @@
+# Version of rustfmt configuration (optional, but good to specify for future compatibility)
+edition = "2024"
+
+# Enable nightly features
+unstable_features = true
+
+# Use 4 spaces for indentation (Rust default, aligns with common practice)
+tab_spaces = 4
+
+# Always use Unix-style line endings (consistency across platforms)
+newline_style = "Unix"
+
+# Group imports and sort them alphabetically within groups
+group_imports       = "StdExternalCrate"
+imports_granularity = "Crate"
+
+# Break long match arms into multiple lines for readability
+match_block_trailing_comma = true
+
+# Wrap comments at max_width for better readability
+wrap_comments = true
+
+# Ensure consistent use of braces in control flow (e.g., if, for, while)
+use_small_heuristics = "Max"
+
+# Format chained method calls more readably
+# E.g. `foo.bar().baz().qux()` will be broken into multiple lines
+# befor reaching to a width of 60
+chain_width = 60
+
+# Ensure trailing commas in multi-line lists/arrays/structs
+trailing_comma = "Vertical"
+
+# Normalize doc comments by removing extra whitespace
+normalize_doc_attributes = true
+
+# Keep short functions on a single line if they fit
+fn_single_line = true
+
+# Add a blank line between items (functions, structs, etc.) for clarity
+blank_lines_lower_bound = 0
+blank_lines_upper_bound = 1
+
+# Nightly-only features
+format_code_in_doc_comments = true
+format_strings              = true
+remove_nested_parens        = true
+use_field_init_shorthand    = true
+force_explicit_abi          = true

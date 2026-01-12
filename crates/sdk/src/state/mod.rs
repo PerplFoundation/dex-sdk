@@ -1,15 +1,16 @@
 //! Exchange state tracking.
 //!
-//! Initial state snapshot has to be taken from the recent on-chain state by the [`SnapshotBuilder`],
-//! then the snapshot can be kept up to date by the event data from [`crate::stream::raw`]
-//! in a consistent manner.
+//! Initial state snapshot has to be taken from the recent on-chain state by the
+//! [`SnapshotBuilder`], then the snapshot can be kept up to date by the event
+//! data from [`crate::stream::raw`] in a consistent manner.
 //!
 //! [`Exchange`] is at the root of indexed state and provides access to all
-//! nested state entities, as well as basic market data derived from observed trading activity.
+//! nested state entities, as well as basic market data derived from observed
+//! trading activity.
 //!
-//! Some of the state and market data can be retrieved/computed only from the event stream
-//! and is not available from the plain snapshot, the documentation for corresponding
-//! access methods explicitly covers such cases.
+//! Some of the state and market data can be retrieved/computed only from the
+//! event stream and is not available from the plain snapshot, the documentation
+//! for corresponding access methods explicitly covers such cases.
 
 mod account;
 mod event;
@@ -19,37 +20,37 @@ mod order;
 mod perpetual;
 mod position;
 
+use std::collections::{HashMap, hash_map};
+
+pub use account::*;
+use alloy::{
+    eips::BlockId,
+    primitives::{Address, U256},
+    providers::Provider,
+};
+pub use event::*;
+pub use exchange::*;
+use itertools::Itertools;
+pub use l3_book::*;
+pub use order::*;
+pub use perpetual::*;
+pub use position::*;
+
 use crate::{
     Chain,
     abi::dex::{self, Exchange::getExchangeInfoReturn},
     error::DexError,
     num, types,
 };
-use alloy::{
-    eips::BlockId,
-    primitives::{Address, U256},
-    providers::Provider,
-};
-use itertools::Itertools;
-use std::collections::{HashMap, hash_map};
-
-// Public re-exports
-pub use account::*;
-pub use event::*;
-pub use exchange::*;
-pub use l3_book::*;
-pub use order::*;
-pub use perpetual::*;
-pub use position::*;
 
 /// Default number of orders to fetch via single call.
-/// Assuming Monad's 8100 gas per storage slot access and 30M gas limit of `eth_call`,
-/// plus some buffer.
+/// Assuming Monad's 8100 gas per storage slot access and 30M gas limit of
+/// `eth_call`, plus some buffer.
 const DEFAULT_ORDERS_PER_BATCH: usize = 3000;
 
 /// Default number of positions to fetch via single call.
-/// Assuming Monad's 8100 gas per storage slot access and 30M gas limit of `eth_call`,
-/// plus some buffer.
+/// Assuming Monad's 8100 gas per storage slot access and 30M gas limit of
+/// `eth_call`, plus some buffer.
 const DEFAULT_POSITIONS_PER_BATCH: usize = 3000;
 
 /// Builds a consistent snapshot of the exchange state
@@ -60,7 +61,7 @@ pub struct SnapshotBuilder<P> {
     provider: P,
     block_id: BlockId,
     perpetuals: Vec<types::PerpetualId>,
-    accounts: Vec<Address>,
+    accounts: Vec<types::AccountAddressOrID>,
     all_positions: bool,
     orders_per_batch: usize,
     positions_per_batch: usize,
@@ -99,37 +100,24 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
 
     /// Sets the list of addresses to fetch the state of exchange accounts for.
     /// Assumes accounts already exist, snapshot creation will fail otherwise.
-    ///
-    /// # Panics
-    ///
-    /// If [`Self::with_all_positions`] was called before.
-    pub fn with_accounts(mut self, accounts: Vec<Address>) -> Self {
-        assert!(
-            !self.all_positions,
-            "simultaneous tracking of all positions and specific accounts is not supported"
-        );
+    pub fn with_accounts(mut self, accounts: Vec<types::AccountAddressOrID>) -> Self {
         self.accounts = accounts;
+        self.all_positions = false;
         self
     }
 
     /// Forces to fetch all available positions, along with corresponding
     /// accounts, but without account state snapshot.
     /// Mutually exclusive with [`Self::with_accounts`].
-    ///
-    /// # Panics
-    ///
-    /// If [`Self::with_accounts`] was called before.
     pub fn with_all_positions(mut self) -> Self {
-        assert!(
-            self.accounts.is_empty(),
-            "simultaneous tracking of all positions and specific accounts is not supported"
-        );
+        self.accounts = vec![];
         self.all_positions = true;
         self
     }
 
-    /// Sets the number of orders to fetch in a single batch via multicall (default: 3000).
-    /// Use if default does not fit node/provider gas and response size limits.
+    /// Sets the number of orders to fetch in a single batch via multicall
+    /// (default: 3000). Use if default does not fit node/provider gas and
+    /// response size limits.
     pub fn with_orders_per_batch(mut self, orders_per_batch: usize) -> Self {
         self.orders_per_batch = orders_per_batch;
         self
@@ -167,14 +155,10 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             self.accounts(instant, &perpetuals, collateral_converter)
                 .await?
         } else if self.all_positions {
-            // All positions with corresponding accounts without parameters and balance snapshot
-            self.position_accounts(
-                instant,
-                &perpetuals,
-                num_of_accounts.to(),
-                collateral_converter,
-            )
-            .await?
+            // All positions with corresponding accounts without parameters and balance
+            // snapshot
+            self.position_accounts(instant, &perpetuals, num_of_accounts.to(), collateral_converter)
+                .await?
         } else {
             HashMap::new()
         };
@@ -205,10 +189,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .map(|b| b.into_header())
             .ok_or(DexError::InvalidRequest("block not found".to_string()))?;
         self.block_id = BlockId::number(block_header.number);
-        Ok(types::StateInstant::new(
-            block_header.number,
-            block_header.timestamp,
-        ))
+        Ok(types::StateInstant::new(block_header.number, block_header.timestamp))
     }
 
     async fn exchange_info(
@@ -342,7 +323,8 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             perp.leverage_converter(),
         );
 
-        // Collect all orders first, then add via snapshot method to preserve FIFO ordering
+        // Collect all orders first, then add via snapshot method to preserve FIFO
+        // ordering
         let orders: Vec<Order> = futures::future::try_join_all(order_batch_futs)
             .await
             .map_err(DexError::from)?
@@ -369,13 +351,23 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         perpetuals: &HashMap<types::PerpetualId, perpetual::Perpetual>,
         collateral_converter: num::Converter,
     ) -> Result<HashMap<types::AccountId, Account>, DexError> {
-        let account_futs = self.accounts.iter().map(|acc_addr| async {
-            let acc_info = self
-                .instance
-                .getAccountByAddr(*acc_addr)
-                .block(self.block_id)
-                .call()
-                .await?;
+        let account_futs = self.accounts.iter().map(|acc| async move {
+            let acc_info = match acc {
+                types::AccountAddressOrID::Address(addr) => {
+                    self.instance
+                        .getAccountByAddr(*addr)
+                        .block(self.block_id)
+                        .call()
+                        .await?
+                },
+                types::AccountAddressOrID::ID(id) => {
+                    self.instance
+                        .getAccountById(U256::from(*id))
+                        .block(self.block_id)
+                        .call()
+                        .await?
+                },
+            };
             let perps_with_positions = perpetuals_with_position(&acc_info.positions);
             let position_futs = perps_with_positions.iter().map(|perp_id| async {
                 self.instance
@@ -465,10 +457,10 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                         match accounts.entry(pos.positionInfo.accountId.to()) {
                             hash_map::Entry::Occupied(mut e) => {
                                 e.get_mut().positions_mut().insert(*perp_id, position);
-                            }
+                            },
                             hash_map::Entry::Vacant(e) => {
                                 e.insert(Account::from_position(instant, position));
-                            }
+                            },
                         }
                     }
                 });

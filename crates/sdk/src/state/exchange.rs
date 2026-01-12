@@ -1,7 +1,10 @@
-use super::*;
-use crate::{Chain, abi::dex::Exchange::ExchangeEvents, stream, types::EventContext};
+use std::iter;
+
 use fastnum::{D256, UD64, UD128};
 use itertools::chain;
+
+use super::*;
+use crate::{Chain, abi::dex::Exchange::ExchangeEvents, stream, types::EventContext};
 
 pub type StateBlockEvents = types::BlockEvents<types::EventContext<Vec<StateEvents>>>;
 
@@ -59,103 +62,87 @@ impl Exchange {
     }
 
     /// Revision of the exchange smart contract the SDK targeted at.
-    pub const fn revision() -> &'static str {
-        crate::abi::DEX_REVISION
-    }
+    pub const fn revision() -> &'static str { crate::abi::DEX_REVISION }
 
     /// Chain the snapshot collected from.
-    pub fn chain(&self) -> &Chain {
-        &self.chain
-    }
+    pub fn chain(&self) -> &Chain { &self.chain }
 
     /// Instant the snapshot is consistent with or was last updated at.
-    pub fn instant(&self) -> types::StateInstant {
-        self.instant
-    }
+    pub fn instant(&self) -> types::StateInstant { self.instant }
 
     /// Converter of fixed-point <-> decimal numbers for collateral token
     /// amounts.
-    pub fn collateral_converter(&self) -> num::Converter {
-        self.collateral_converter
-    }
+    pub fn collateral_converter(&self) -> num::Converter { self.collateral_converter }
 
     /// Funding interval in blocks.
     ///
-    /// Each perpetual contract has own [Perpetual::funding_start_block]  this interval
-    /// applied to.
-    pub fn funding_interval_blocks(&self) -> u32 {
-        self.funding_interval_blocks
-    }
+    /// Each perpetual contract has own [Perpetual::funding_start_block]  this
+    /// interval applied to.
+    pub fn funding_interval_blocks(&self) -> u32 { self.funding_interval_blocks }
 
     /// Minimal amount in collateral token that can be posted to the book.
-    pub fn min_post(&self) -> UD128 {
-        self.min_post
-    }
+    pub fn min_post(&self) -> UD128 { self.min_post }
 
     /// Minimal amount in collateral token that can be settled.
-    pub fn min_settle(&self) -> UD128 {
-        self.min_settle
-    }
+    pub fn min_settle(&self) -> UD128 { self.min_settle }
 
     /// Amount in collateral token locked with each posted order to
     /// pay the account that cleans it up:
     /// * When cancelled/changed by the original poster -> the original poster
     /// * When filled -> the original poster
     /// * In all other cases -> the one that performed the recycling
-    pub fn recycle_fee(&self) -> UD128 {
-        self.recycle_fee
-    }
+    pub fn recycle_fee(&self) -> UD128 { self.recycle_fee }
 
-    /// Perpetual contracts state tracked within the exchange, according to initial
-    /// snapshot building configuration.
-    pub fn perpetuals(&self) -> &HashMap<types::PerpetualId, Perpetual> {
-        &self.perpetuals
-    }
+    /// Perpetual contracts state tracked within the exchange, according to
+    /// initial snapshot building configuration.
+    pub fn perpetuals(&self) -> &HashMap<types::PerpetualId, Perpetual> { &self.perpetuals }
 
     /// Accounts state tracked within the exchange, according to initial
     /// snapshot building configuration.
-    pub fn accounts(&self) -> &HashMap<types::AccountId, Account> {
-        &self.accounts
-    }
+    pub fn accounts(&self) -> &HashMap<types::AccountId, Account> { &self.accounts }
 
     /// Indicates if exchange is being halted.
-    pub fn is_halted(&self) -> bool {
-        self.is_halted
-    }
+    pub fn is_halted(&self) -> bool { self.is_halted }
 
     /// Updates state snapshot by applying raw exchange events from the
     /// specific block.
     ///
-    /// Blocks expected to arrive strictly in-order, with already applied blocks being ignored,
-    /// to enforce state consistency as most raw events provide only incremental state update
-    /// information rather than full piece of state snapshot.
+    /// Blocks expected to arrive strictly in-order, with already applied blocks
+    /// being ignored, to enforce state consistency as most raw events
+    /// provide only incremental state update information rather than full
+    /// piece of state snapshot.
     ///
     /// Exchange emits two categories of events:
     /// * State mutation events
     /// * Order request error responses, for requests issued in batches via
-    ///   [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`]
-    ///   with `revertOnFail` = false.
+    ///   [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`] with
+    ///   `revertOnFail` = false.
     ///
-    /// This method applies state mutation events only to tracked perpetual contracts and accounts
-    /// provided to [`SnapshotBuilder`] during the initial snapshot creation, and returns order request
-    /// failure events only for requests issues by tracked accounts.
-    /// Successfull order book mutations are applied to all orders of tracked perpetual contracts,
-    /// so client code can keep up to date order book representation externally if needed.
+    /// This method applies state mutation events only to tracked perpetual
+    /// contracts and accounts provided to [`SnapshotBuilder`] during the
+    /// initial snapshot creation, and returns order request failure events
+    /// only for requests issues by tracked accounts. Successfull order book
+    /// mutations are applied to all orders of tracked perpetual contracts,
+    /// so client code can keep up to date order book representation externally
+    /// if needed.
     ///
     /// # Returns
     ///
-    /// On success, list of state mutation and failure [`StateEvents`] produced from the original raw events,
-    /// filtered as described above and with numeric systems conversion applied.
+    /// On success, list of state mutation and failure [`StateEvents`] produced
+    /// from the original raw events, filtered as described above and with
+    /// numeric systems conversion applied.
     ///
-    /// [`StateEvents`] are roughly resemble [`crate::abi::dex::Exchange::ExchangeEvents`] so corresponding
-    /// smart contract documentation and raw event data for error responses could be helpful with debugging,
-    /// but there is no exact match and more than one state event can be emitted in response to a single raw event, eg.
-    /// processing of single order event produces up to two account events on top of order events within the
-    /// same event context.
+    /// [`StateEvents`] are roughly resemble
+    /// [`crate::abi::dex::Exchange::ExchangeEvents`] so corresponding smart
+    /// contract documentation and raw event data for error responses could be
+    /// helpful with debugging, but there is no exact match and more than
+    /// one state event can be emitted in response to a single raw event, eg.
+    /// processing of single order event produces up to two account events on
+    /// top of order events within the same event context.
     ///
-    /// On failure, the corresponding [`DexError`], any of which indicates some inconsistency in event sequence or
-    /// event handling logic and should not be ignored as it may lead to state inconsistency.
-    ///
+    /// On failure, the corresponding [`DexError`], any of which indicates some
+    /// inconsistency in event sequence or event handling logic and should
+    /// not be ignored as it may lead to state inconsistency.
     pub fn apply_events(
         &mut self,
         events: &stream::RawBlockEvents,
@@ -221,19 +208,15 @@ impl Exchange {
         let cc = self.collateral_converter;
 
         let must_ctx = || {
-            ctx.as_ref().ok_or(DexError::OrderContextExpected(
-                event.tx_index(),
-                event.log_index(),
-            ))
+            ctx.as_ref()
+                .ok_or(DexError::OrderContextExpected(event.tx_index(), event.log_index()))
         };
 
         Ok(match event.event() {
             ExchangeEvents::AccountCreated(e) => {
                 if self.track_all_accounts {
-                    self.accounts.insert(
-                        e.id.to(),
-                        Account::from_event(instant, e.id.to(), e.account),
-                    );
+                    self.accounts
+                        .insert(e.id.to(), Account::from_event(instant, e.id.to(), e.account));
                     vec![StateEvents::Account(AccountEvent {
                         account_id: e.id.to(),
                         request_id: None,
@@ -242,7 +225,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::AccountFreeze(e) => self
                 .account(e.accountId)
                 .map(|acc| {
@@ -317,12 +300,7 @@ impl Exchange {
                     let order_id = std::num::NonZeroU16::new(e.orderId.to::<u16>())
                         .expect("orderId in event cannot be 0");
                     let order = perp.remove_order(order_id)?;
-                    Some(StateEvents::order(
-                        perp,
-                        &order,
-                        ctx,
-                        OrderEventType::Removed,
-                    ))
+                    Some(StateEvents::order(perp, &order, ctx, OrderEventType::Removed))
                 } else {
                     None
                 },
@@ -345,12 +323,7 @@ impl Exchange {
                     let order_id = std::num::NonZeroU16::new(e.orderId.to::<u16>())
                         .expect("orderId in event cannot be 0");
                     let order = perp.remove_order(order_id)?;
-                    Some(StateEvents::order(
-                        perp,
-                        &order,
-                        ctx,
-                        OrderEventType::Removed,
-                    ))
+                    Some(StateEvents::order(perp, &order, ctx, OrderEventType::Removed))
                 } else {
                     None
                 },
@@ -373,12 +346,7 @@ impl Exchange {
                     let order_id = std::num::NonZeroU16::new(e.orderId.to::<u16>())
                         .expect("orderId in event cannot be 0");
                     let order = perp.remove_order(order_id)?;
-                    Some(StateEvents::order(
-                        perp,
-                        &order,
-                        ctx,
-                        OrderEventType::Removed,
-                    ))
+                    Some(StateEvents::order(perp, &order, ctx, OrderEventType::Removed))
                 } else {
                     None
                 },
@@ -401,12 +369,7 @@ impl Exchange {
                     let order_id = std::num::NonZeroU16::new(e.orderId.to::<u16>())
                         .expect("orderId in event cannot be 0");
                     let order = perp.remove_order(order_id)?;
-                    Some(StateEvents::order(
-                        perp,
-                        &order,
-                        ctx,
-                        OrderEventType::Removed,
-                    ))
+                    Some(StateEvents::order(perp, &order, ctx, OrderEventType::Removed))
                 } else {
                     None
                 },
@@ -473,7 +436,7 @@ impl Exchange {
                 let event = StateEvents::perpetual(&perp, PerpetualEventType::Added);
                 self.perpetuals.insert(perp.id(), perp);
                 vec![event]
-            }
+            },
             ExchangeEvents::ContractIsPaused(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::ContractIsPaused))
@@ -526,7 +489,7 @@ impl Exchange {
             ExchangeEvents::ExchangeHalted(e) => {
                 self.is_halted = e.halted;
                 vec![StateEvents::Exchange(ExchangeEvent::Halted(self.is_halted))]
-            }
+            },
             ExchangeEvents::FeeParamsUpdated(_) => vec![],
             ExchangeEvents::FundingClampPctUpdated(_) => vec![],
             ExchangeEvents::FundingEventCompleted(e) => {
@@ -541,7 +504,7 @@ impl Exchange {
                     );
                 }
                 vec![]
-            }
+            },
             ExchangeEvents::FundingEventSetTooEarly(_) => vec![],
             ExchangeEvents::FundingPriceExceedsTol(_) => vec![],
             ExchangeEvents::FundingSumAlreadySet(_) => vec![],
@@ -683,6 +646,16 @@ impl Exchange {
                     let fill_size = perp.size_converter().from_unsigned(e.lotLNS);
                     let fee = cc.from_unsigned(e.feeCNS);
                     perp.update_last_price(instant, fill_price);
+                    if let Some(ctx) = ctx {
+                        ctx.maker_fills.push(types::MakerFill {
+                            log_index: event.log_index(),
+                            maker_account_id: order.account_id(),
+                            maker_order_id: order.order_id(),
+                            price: fill_price,
+                            size: fill_size,
+                            fee,
+                        });
+                    }
                     vec![
                         if order.size() > fill_size {
                             let new_size = order.size() - fill_size;
@@ -712,12 +685,7 @@ impl Exchange {
                             perp,
                             &order,
                             ctx,
-                            OrderEventType::Filled {
-                                fill_price,
-                                fill_size,
-                                fee,
-                                is_maker: true,
-                            },
+                            OrderEventType::Filled { fill_price, fill_size, fee, is_maker: true },
                         ),
                         StateEvents::perpetual(
                             perp,
@@ -747,12 +715,7 @@ impl Exchange {
                         .expect("orderId in event cannot be 0");
                     let order = perp.remove_order(order_id)?;
                     chain!(
-                        Some(StateEvents::order(
-                            perp,
-                            &order,
-                            ctx,
-                            OrderEventType::Removed
-                        )),
+                        Some(StateEvents::order(perp, &order, ctx, OrderEventType::Removed)),
                         self.err_ctx(ctx, event)?
                             .map(|ctx| StateEvents::affected_order_error(
                                 ctx,
@@ -813,7 +776,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::MaxMatchesReached(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::MaxMatchesReached))
@@ -828,35 +791,26 @@ impl Exchange {
             ExchangeEvents::MinAccountOpenAmountUpdated(_) => vec![],
             ExchangeEvents::MinPostUpdated(e) => {
                 self.min_post = cc.from_unsigned(e.minPostCNS);
-                vec![StateEvents::Exchange(ExchangeEvent::MinPostUpdated(
-                    self.min_post,
-                ))]
-            }
+                vec![StateEvents::Exchange(ExchangeEvent::MinPostUpdated(self.min_post))]
+            },
             ExchangeEvents::MinSettleUpdated(e) => {
                 self.min_settle = cc.from_unsigned(e.minSettleCNS);
-                vec![StateEvents::Exchange(ExchangeEvent::MinSettleUpdated(
-                    self.min_settle,
-                ))]
-            }
+                vec![StateEvents::Exchange(ExchangeEvent::MinSettleUpdated(self.min_settle))]
+            },
             ExchangeEvents::OracleAgeExceedsMax(_) => vec![],
             ExchangeEvents::OracleDisabled(_) => vec![],
             ExchangeEvents::OrderBatchCompleted(_) => {
                 // Reset context
                 ctx.take();
                 vec![]
-            }
+            },
             ExchangeEvents::OrderCancelled(e) => {
                 let c = must_ctx()?;
                 let order_id = c.order_id.expect("order_id required for OrderCancelled");
                 chain!(
                     if let Some(perp) = self.perpetuals.get_mut(&c.perpetual_id) {
                         let order = perp.remove_order(order_id)?;
-                        Some(StateEvents::order(
-                            perp,
-                            &order,
-                            ctx,
-                            OrderEventType::Removed,
-                        ))
+                        Some(StateEvents::order(perp, &order, ctx, OrderEventType::Removed))
                     } else {
                         None
                     },
@@ -880,7 +834,7 @@ impl Exchange {
                     },
                 )
                 .collect()
-            }
+            },
             ExchangeEvents::OrderCancelledByAdmin(e) => chain!(
                 self.order(e.perpId, e.orderId)?.map(|(perp, order)| {
                     perp.remove_order(order.order_id()).expect("order exists");
@@ -923,16 +877,10 @@ impl Exchange {
                         let new_price = perp.price_converter().from_unsigned(e.pricePNS);
                         let new_size = perp.size_converter().from_unsigned(e.lotLNS);
                         let new_expiry_block = e.expiryBlock.to();
-                        let price_update = if order.price() != new_price {
-                            Some(new_price)
-                        } else {
-                            None
-                        };
-                        let size_update = if order.size() != new_size {
-                            Some(new_size)
-                        } else {
-                            None
-                        };
+                        let price_update =
+                            if order.price() != new_price { Some(new_price) } else { None };
+                        let size_update =
+                            if order.size() != new_size { Some(new_size) } else { None };
                         let expiry_block_update = if order.expiry_block() != new_expiry_block {
                             Some(new_expiry_block)
                         } else {
@@ -979,7 +927,7 @@ impl Exchange {
                     },
                 )
                 .collect()
-            }
+            },
             ExchangeEvents::OrderDescIdTooLow(_) => vec![],
             ExchangeEvents::OrderDoesNotExist(_) => self
                 .err_ctx(ctx, event)?
@@ -1037,7 +985,7 @@ impl Exchange {
                     },
                 )
                 .collect()
-            }
+            },
             ExchangeEvents::OrderPostFailed(e) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| {
@@ -1050,7 +998,7 @@ impl Exchange {
                 // future events
                 ctx.replace(OrderContext::from(e));
                 vec![]
-            }
+            },
             ExchangeEvents::OrderSettlementImpliesInsolvent(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| {
@@ -1103,7 +1051,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::PositionCollateralDecreased(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_entry_price = pos.entry_price();
@@ -1126,7 +1074,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::PositionDecreased(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_size = pos.size();
@@ -1164,7 +1112,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::PositionDeleveraged(e) => chain!(
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_size = pos.size();
@@ -1257,7 +1205,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::PositionInverted(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_type = pos.r#type();
@@ -1312,7 +1260,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::PositionLiquidated(e) => chain!(
                 if let Some((pos, perp)) = self.position(e.posAccountId, e.perpId)? {
                     let prev_size = pos.size();
@@ -1415,7 +1363,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::PositionTypeMismatch(_) => vec![],
             ExchangeEvents::PositionUnwound(e) => {
                 if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
@@ -1456,7 +1404,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::PositionUnwoundWithoutPayment(e) => {
                 if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
                     let pos = acc
@@ -1490,7 +1438,7 @@ impl Exchange {
                 } else {
                     vec![]
                 }
-            }
+            },
             ExchangeEvents::PostOrderUnderMinimum(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::PostOrderUnderMinimum))
@@ -1502,7 +1450,7 @@ impl Exchange {
                     perp.update_price_max_age_sec(instant, e.maxAgeSec.to());
                 }
                 vec![]
-            }
+            },
             ExchangeEvents::PriceOutOfRange(_) => self
                 .err_ctx(ctx, event)
                 .ok() // Used both for orders and mark/oracle prices
@@ -1516,10 +1464,8 @@ impl Exchange {
             ExchangeEvents::RecycleBalanceInsufficientSevere(_) => vec![],
             ExchangeEvents::RecycleFeeUpdated(e) => {
                 self.recycle_fee = cc.from_unsigned(e.recycleFeeCNS);
-                vec![StateEvents::Exchange(ExchangeEvent::RecycleFeeUpdated(
-                    self.recycle_fee(),
-                ))]
-            }
+                vec![StateEvents::Exchange(ExchangeEvent::RecycleFeeUpdated(self.recycle_fee()))]
+            },
             ExchangeEvents::ReferencePriceAgesExceedMax(_) => vec![],
             ExchangeEvents::ReportAgeExceedsLastUpdate(_) => vec![],
             ExchangeEvents::ReportExpiresTooSoon(_) => vec![],
@@ -1542,6 +1488,7 @@ impl Exchange {
                 .collect(),
             ExchangeEvents::TakerOrderFilled(e) => {
                 let c = must_ctx()?;
+                let taker_fee = cc.from_unsigned(e.feeCNS);
                 chain!(
                     self.perpetuals
                         .get(&c.perpetual_id)
@@ -1553,7 +1500,7 @@ impl Exchange {
                             r#type: OrderEventType::Filled {
                                 fill_price: perp.price_converter().from_unsigned(e.pricePNS),
                                 fill_size: perp.size_converter().from_unsigned(e.lotLNS),
-                                fee: cc.from_unsigned(e.feeCNS),
+                                fee: taker_fee,
                                 is_maker: false,
                             },
                         })),
@@ -1565,9 +1512,10 @@ impl Exchange {
                             AccountEventType::BalanceUpdated(acc.balance()),
                         )
                     }),
+                    iter::once(StateEvents::trade(c, taker_fee)),
                 )
                 .collect()
-            }
+            },
             ExchangeEvents::TransferAccountToProtocol(e) => self
                 .account(e.accountId)
                 .map(|acc| {
@@ -1621,10 +1569,7 @@ impl Exchange {
         Ok(match event {
             StateEvents::Perpetual(pe) => {
                 match pe.r#type {
-                    PerpetualEventType::FundingEvent {
-                        rate: _,
-                        payment_per_unit,
-                    } => {
+                    PerpetualEventType::FundingEvent { rate: _, payment_per_unit } => {
                         // Applying funding to all tracked positions
                         self.accounts
                             .values_mut()
@@ -1648,7 +1593,7 @@ impl Exchange {
                                     })
                             })
                             .collect()
-                    }
+                    },
                     PerpetualEventType::MaintenanceMarginFractionUpdated(maintenance_margin) => {
                         // Applying new maintenance margin to all tracked positions
                         self.accounts
@@ -1666,10 +1611,10 @@ impl Exchange {
                                 })
                             })
                             .collect()
-                    }
+                    },
                     _ => vec![],
                 }
-            }
+            },
             _ => vec![],
         })
     }
@@ -1679,20 +1624,17 @@ impl Exchange {
         ctx: &'c mut Option<OrderContext>,
         event: &stream::RawEvent,
     ) -> Result<Option<&'c OrderContext>, DexError> {
-        let c = ctx.as_ref().ok_or(DexError::OrderContextExpected(
-            event.tx_index(),
-            event.log_index(),
-        ))?;
+        let c = ctx
+            .as_ref()
+            .ok_or(DexError::OrderContextExpected(event.tx_index(), event.log_index()))?;
         Ok(self.accounts.contains_key(&c.account_id).then_some(c))
     }
 
     fn ensure_account(&mut self, id: U256) {
         let id = id.to::<types::AccountId>();
         if self.track_all_accounts && !self.accounts.contains_key(&id) {
-            self.accounts.insert(
-                id,
-                Account::from_event(types::StateInstant::default(), id, Address::ZERO),
-            );
+            self.accounts
+                .insert(id, Account::from_event(types::StateInstant::default(), id, Address::ZERO));
         }
     }
 
@@ -1708,17 +1650,15 @@ impl Exchange {
     ) -> Result<Option<(&mut Perpetual, Order)>, DexError> {
         let ord_id = std::num::NonZeroU16::new(ord_id.to::<u16>())
             .expect("ord_id in order lookup cannot be 0");
-        Ok(
-            if let Some(perp) = self.perpetuals.get_mut(&perp_id.to::<types::PerpetualId>()) {
-                let ord = perp
-                    .get_order(ord_id)
-                    .copied()
-                    .ok_or(DexError::OrderNotFound(perp.id(), ord_id))?;
-                Some((perp, ord))
-            } else {
-                None
-            },
-        )
+        Ok(if let Some(perp) = self.perpetuals.get_mut(&perp_id.to::<types::PerpetualId>()) {
+            let ord = perp
+                .get_order(ord_id)
+                .copied()
+                .ok_or(DexError::OrderNotFound(perp.id(), ord_id))?;
+            Some((perp, ord))
+        } else {
+            None
+        })
     }
 
     fn perpetual(&mut self, id: U256) -> Option<&mut Perpetual> {
@@ -1744,17 +1684,64 @@ impl Exchange {
         self.ensure_account(acc_id);
         let acc_id = acc_id.to::<types::AccountId>();
         let perp_id = perp_id.to::<types::PerpetualId>();
-        Ok(if let Some(acc) = self.accounts.get_mut(&acc_id) {
-            let pos = acc
-                .positions_mut()
-                .get_mut(&perp_id)
-                .ok_or(DexError::PositionNotFound(acc_id, perp_id))?;
-            Some((
-                pos,
-                self.perpetuals.get_mut(&perp_id).expect("perpetual found"),
-            ))
-        } else {
-            None
-        })
+        Ok(
+            if let Some(acc) = self.accounts.get_mut(&acc_id)
+                && let Some(perp) = self.perpetuals.get_mut(&perp_id)
+            {
+                let pos = acc
+                    .positions_mut()
+                    .get_mut(&perp_id)
+                    .ok_or(DexError::PositionNotFound(acc_id, perp_id))?;
+                Some((pos, perp))
+            } else {
+                None
+            },
+        )
+    }
+}
+
+#[cfg(feature = "display")]
+impl std::fmt::Display for Exchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use colored::Colorize;
+
+        writeln!(
+            f,
+            "{}",
+            format!(
+                "{} | {}{} | ver {} | chain {}",
+                self.instant,
+                if self.is_halted { "[HALTED] ".bold().bright_red() } else { Default::default() },
+                self.chain.exchange(),
+                Self::revision(),
+                self.chain.chain_id(),
+            )
+            .bold()
+            .purple(),
+        )?;
+        writeln!(
+            f,
+            "    Min Post: {} | Min Settle: {} | Funding Interval: {}\n",
+            self.min_post, self.min_settle, self.funding_interval_blocks,
+        )?;
+
+        // Render perpetuals and accounts in alternate mode
+        if f.alternate() && !self.perpetuals().is_empty() {
+            let mut perpetuals: Vec<_> = self.perpetuals().values().collect();
+            perpetuals.sort_by_key(|p| p.id());
+            for perpetual in perpetuals {
+                writeln!(f, "{:#}", perpetual)?;
+            }
+        }
+
+        if f.alternate() && !self.accounts().is_empty() {
+            let mut accounts: Vec<_> = self.accounts().values().collect();
+            accounts.sort_by_key(|a| a.id());
+            for account in accounts {
+                writeln!(f, "{:#}", account)?;
+            }
+        }
+
+        Ok(())
     }
 }

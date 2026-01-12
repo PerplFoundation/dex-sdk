@@ -68,6 +68,9 @@ pub enum ProviderError<R> {
 
     #[error("order parse error: {0}")]
     OrderParse(#[from] OrderParseError),
+
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
 }
 
 impl<R: SolInterface> From<contract::Error> for ProviderError<R> {
@@ -90,13 +93,13 @@ impl<R: SolInterface> From<PendingTransactionError> for ProviderError<R> {
         match value {
             alloy::providers::PendingTransactionError::FailedToRegister => {
                 Self::Fatal(value.to_string())
-            }
+            },
             alloy::providers::PendingTransactionError::TransportError(rpc_err) => {
                 Self::from(rpc_err)
-            }
+            },
             alloy::providers::PendingTransactionError::Recv(_) => {
                 Self::Transport(value.to_string())
-            }
+            },
             alloy::providers::PendingTransactionError::TxWatcher(err) => match err {
                 alloy::providers::WatchTxError::Timeout => Self::Timeout,
             },
@@ -124,7 +127,7 @@ impl<E: Display, R: SolInterface> From<transports::RpcError<E>> for ProviderErro
                 } else {
                     Self::Transport(value.to_string())
                 }
-            }
+            },
             transports::RpcError::NullResp => Self::NullResp,
             _ => Self::Transport(value.to_string()),
         }
@@ -132,9 +135,7 @@ impl<E: Display, R: SolInterface> From<transports::RpcError<E>> for ProviderErro
 }
 
 impl<R: SolInterface> From<sol_types::Error> for ProviderError<R> {
-    fn from(value: sol_types::Error) -> Self {
-        Self::Fatal(value.to_string())
-    }
+    fn from(value: sol_types::Error) -> Self { Self::Fatal(value.to_string()) }
 }
 
 impl<R: SolInterface> From<MulticallError> for ProviderError<R> {
@@ -145,7 +146,7 @@ impl<R: SolInterface> From<MulticallError> for ProviderError<R> {
             MulticallError::NoReturnData => Self::NullResp,
             MulticallError::CallFailed(bytes) => {
                 Self::Reverted(Box::new(RevertReason::from(bytes)))
-            }
+            },
             MulticallError::TransportError(rpc_err) => Self::from(rpc_err),
         }
     }

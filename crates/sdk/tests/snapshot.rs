@@ -134,7 +134,10 @@ async fn test_full_book_snapshot() {
     // Take the snapshot
     let started_at = Instant::now();
     let snap = state::SnapshotBuilder::new(&exchange.chain(), exchange.provider.clone())
-        .with_accounts(vec![maker.address, taker.address])
+        .with_accounts(vec![
+            types::AccountAddressOrID::Address(maker.address),
+            types::AccountAddressOrID::Address(taker.address),
+        ])
         .build()
         .await
         .unwrap();
@@ -176,14 +179,8 @@ async fn test_full_book_snapshot() {
         .all(|o| o.account_id() == maker.id && o.size() == udec64!(0.001));
     assert!(all_asks_valid && all_bids_valid);
 
-    assert_eq!(
-        perp.l3_book().best_ask(),
-        Some((udec64!(100101), udec64!(0.001)))
-    );
-    assert_eq!(
-        perp.l3_book().best_bid(),
-        Some((udec64!(99989), udec64!(0.001)))
-    );
+    assert_eq!(perp.l3_book().best_ask(), Some((udec64!(100101), udec64!(0.001))));
+    assert_eq!(perp.l3_book().best_bid(), Some((udec64!(99989), udec64!(0.001))));
 
     assert_eq!(
         perp.l3_book().ask_impact(udec64!(1)),

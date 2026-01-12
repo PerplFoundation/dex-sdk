@@ -1,7 +1,10 @@
-use super::*;
-use crate::{abi::dex::Exchange::PerpetualInfo, types};
+use std::ops::Deref;
+
 use alloy::primitives::{B256, I256, U256};
 use fastnum::{D64, D256, UD64, UD128};
+
+use super::*;
+use crate::{abi::dex::Exchange::PerpetualInfo, types};
 
 const FEE_SCALE: u8 = 5;
 const FUNDING_RATE_SCALE: u8 = 5;
@@ -208,107 +211,85 @@ impl Perpetual {
         }
     }
 
-    /// Instant the perpetual contract state is consistent with or was last updated at.
-    pub fn instant(&self) -> types::StateInstant {
-        self.instant
-    }
+    /// Instant the perpetual contract state is consistent with or was last
+    /// updated at.
+    pub fn instant(&self) -> types::StateInstant { self.instant }
 
     /// ID of the perpetual contract.
-    pub fn id(&self) -> types::PerpetualId {
-        self.id
-    }
+    pub fn id(&self) -> types::PerpetualId { self.id }
 
     /// Name of the perpetual contract.
-    pub fn name(&self) -> String {
-        self.name.clone()
-    }
+    pub fn name(&self) -> String { self.name.clone() }
 
     /// Symbol of the perpetual contract.
-    pub fn symbol(&self) -> String {
-        self.symbol.clone()
-    }
+    pub fn symbol(&self) -> String { self.symbol.clone() }
 
     /// Indicates if the perpetual contract is paused.
-    pub fn is_paused(&self) -> bool {
-        self.is_paused
-    }
+    pub fn is_paused(&self) -> bool { self.is_paused }
 
-    /// Converter of prices between internal fixed-point and decimal representations.
-    pub fn price_converter(&self) -> num::Converter {
-        self.price_converter
-    }
+    /// Converter of prices between internal fixed-point and decimal
+    /// representations.
+    pub fn price_converter(&self) -> num::Converter { self.price_converter }
 
-    /// Converter of sizes between internal fixed-point and decimal representations.
-    pub fn size_converter(&self) -> num::Converter {
-        self.size_converter
-    }
+    /// Converter of sizes between internal fixed-point and decimal
+    /// representations.
+    pub fn size_converter(&self) -> num::Converter { self.size_converter }
 
-    /// Converter of leverage/margin between internal fixed-point and decimal representations.
-    pub fn leverage_converter(&self) -> num::Converter {
-        self.leverage_converter
-    }
+    /// Converter of leverage/margin between internal fixed-point and decimal
+    /// representations.
+    pub fn leverage_converter(&self) -> num::Converter { self.leverage_converter }
 
-    /// Converter of fees between internal fixed-point and decimal representations.
-    pub fn fee_converter(&self) -> num::Converter {
-        self.fee_converter
-    }
+    /// Converter of fees between internal fixed-point and decimal
+    /// representations.
+    pub fn fee_converter(&self) -> num::Converter { self.fee_converter }
 
-    /// Converter of funding rates between internal fixed-point and decimal representations.
-    pub fn funding_rate_converter(&self) -> num::Converter {
-        self.funding_rate_converter
-    }
+    /// Converter of funding rates between internal fixed-point and decimal
+    /// representations.
+    pub fn funding_rate_converter(&self) -> num::Converter { self.funding_rate_converter }
 
     /// Maker fee, gets collected only on position opening/increasing.
-    pub fn maker_fee(&self) -> UD64 {
-        self.maker_fee
-    }
+    pub fn maker_fee(&self) -> UD64 { self.maker_fee }
 
     /// Taker fee, gets collected only on position opening/increasing.
-    pub fn taker_fee(&self) -> UD64 {
-        self.taker_fee
-    }
+    pub fn taker_fee(&self) -> UD64 { self.taker_fee }
 
     /// Minimal initial margin fraction required to open a position.
-    pub fn initial_margin(&self) -> UD64 {
-        self.initial_margin
-    }
+    pub fn initial_margin(&self) -> UD64 { self.initial_margin }
 
     /// Minimal maintenance margin fraction required to keep a position.
-    pub fn maintenance_margin(&self) -> UD64 {
-        self.maintenance_margin
-    }
+    pub fn maintenance_margin(&self) -> UD64 { self.maintenance_margin }
 
     /// The price last trade was executed at.
-    pub fn last_price(&self) -> UD64 {
-        self.last_price
-    }
+    pub fn last_price(&self) -> UD64 { self.last_price }
 
-    /// The block number of the last trade.
-    /// Available only from real-time events, not from the initial snapshot.
-    pub fn last_price_block(&self) -> Option<u64> {
-        self.last_price_block
+    /// Instant the last trade was executed at.
+    /// Block number available only from real-time events, not from the initial
+    /// snapshot.
+    pub fn last_price_instant(&self) -> types::StateInstant {
+        types::StateInstant::new(
+            self.last_price_block.unwrap_or_default(),
+            self.last_price_timestamp,
+        )
     }
 
     /// Unix timestamp (in seconds) of the last trade.
-    pub fn last_price_timestamp(&self) -> u64 {
-        self.last_price_timestamp
-    }
+    pub fn last_price_timestamp(&self) -> u64 { self.last_price_timestamp }
 
     /// Mark price of the contract.
-    pub fn mark_price(&self) -> UD64 {
-        self.mark_price
-    }
+    pub fn mark_price(&self) -> UD64 { self.mark_price }
 
-    /// The block number of the most recent mark price update.
-    /// Available only from real-time events, not from the initial snapshot.
-    pub fn mark_price_block(&self) -> Option<u64> {
-        self.mark_price_block
+    /// Instant the mark price was updated at.
+    /// Block number available only from real-time events, not from the initial
+    /// snapshot.
+    pub fn mark_price_instant(&self) -> types::StateInstant {
+        types::StateInstant::new(
+            self.mark_price_block.unwrap_or_default(),
+            self.mark_price_timestamp,
+        )
     }
 
     /// Unix timestamp (in seconds) of the most recent mark price update.
-    pub fn mark_price_timestamp(&self) -> u64 {
-        self.mark_price_timestamp
-    }
+    pub fn mark_price_timestamp(&self) -> u64 { self.mark_price_timestamp }
 
     /// Indicates that the mark price is obsolete and will not be accepted
     /// during the order/position settlement
@@ -317,20 +298,20 @@ impl Perpetual {
     }
 
     /// Oracle price of the contract.
-    pub fn oracle_price(&self) -> UD64 {
-        self.oracle_price
-    }
+    pub fn oracle_price(&self) -> UD64 { self.oracle_price }
 
-    /// The block number of the most recent oracle price update.
-    /// Available only from real-time events, not from the initial snapshot.
-    pub fn oracle_price_block(&self) -> Option<u64> {
-        self.oracle_price_block
+    /// Instant the oracle price was updated at.
+    /// Block number available only from real-time events, not from the initial
+    /// snapshot.
+    pub fn oracle_price_instant(&self) -> types::StateInstant {
+        types::StateInstant::new(
+            self.oracle_price_block.unwrap_or_default(),
+            self.oracle_price_timestamp,
+        )
     }
 
     /// Unix timestamp (in seconds) of the most recent oracle price update.
-    pub fn oracle_price_timestamp(&self) -> u64 {
-        self.oracle_price_timestamp
-    }
+    pub fn oracle_price_timestamp(&self) -> u64 { self.oracle_price_timestamp }
 
     /// Indicates that the oracle price is obsolete and will not be accepted
     /// during the order/position settlement
@@ -358,55 +339,52 @@ impl Perpetual {
     }
 
     /// Starting block number of funding intervals.
-    /// Use [`Exchange::funding_interval_blocks`] to get interval "duration" in blocks.
-    pub fn funding_start_block(&self) -> u64 {
-        self.funding_start_block
-    }
+    /// Use [`Exchange::funding_interval_blocks`] to get interval "duration" in
+    /// blocks.
+    pub fn funding_start_block(&self) -> u64 { self.funding_start_block }
+
+    /// The block number of the next funding event, if scheduled.
+    pub fn next_funding_event_block(&self) -> Option<u64> { self.next_funding_event_block }
 
     /// Feed ID of ChainLink DataStreams price oracle.
-    pub fn oracle_feed_id(&self) -> B256 {
-        self.oracle_feed_id
-    }
+    pub fn oracle_feed_id(&self) -> B256 { self.oracle_feed_id }
 
     /// If perpetual contract relues on oracle prices.
-    pub fn is_oracle_used(&self) -> bool {
-        self.is_oracle_used
-    }
+    pub fn is_oracle_used(&self) -> bool { self.is_oracle_used }
 
     /// Max age in seconds for oracle/mark prices.
-    pub fn price_max_age_sec(&self) -> u64 {
-        self.price_max_age_sec
-    }
+    pub fn price_max_age_sec(&self) -> u64 { self.price_max_age_sec }
 
     /// Get a specific order by ID.
     pub fn get_order(&self, order_id: types::OrderId) -> Option<&Order> {
-        self.l3_book.get_order_data(order_id)
+        self.l3_book.get_order(order_id).map(|o| o.deref())
     }
 
     /// Total number of orders in the book.
-    pub fn total_orders(&self) -> usize {
-        self.l3_book.total_orders()
-    }
+    pub fn total_orders(&self) -> usize { self.l3_book.total_orders() }
 
     /// Up to date L3 order book.
-    pub fn l3_book(&self) -> &OrderBook {
-        &self.l3_book
-    }
+    pub fn l3_book(&self) -> &OrderBook { &self.l3_book }
 
-    /// Open interest in the perpetual contract.
-    pub fn open_interest(&self) -> UD128 {
-        self.open_interest
-    }
+    /// Open interest size.
+    pub fn open_interest(&self) -> UD128 { self.open_interest }
 
-    pub(crate) fn base_price(&self) -> UD64 {
-        self.base_price
-    }
+    /// Open interest amount.
+    pub fn open_interest_amount(&self) -> UD128 { self.open_interest * self.last_price.resize() }
+
+    pub(crate) fn base_price(&self) -> UD64 { self.base_price }
 
     pub(crate) fn update_state_instant(
         &mut self,
         instant: types::StateInstant,
     ) -> Vec<StateEvents> {
+        // Update state instant first
         self.state_instant = instant;
+
+        // Check for expired orders
+        self.l3_book.check_expired(instant);
+
+        // Check if next funding event is due
         if let Some(payment) = self.next_funding_payment
             && self
                 .next_funding_event_block
@@ -429,10 +407,11 @@ impl Perpetual {
         Ok(())
     }
 
-    /// Add orders from a snapshot, reconstructing FIFO order from linked list pointers.
+    /// Add orders from a snapshot, reconstructing FIFO order from linked list
+    /// pointers.
     ///
-    /// Uses the `prev_order_id`/`next_order_id` fields from the snapshot to determine
-    /// the correct queue position within each price level.
+    /// Uses the `prev_order_id`/`next_order_id` fields from the snapshot to
+    /// determine the correct queue position within each price level.
     pub(crate) fn add_orders_from_snapshot(&mut self, orders: Vec<Order>) -> Result<(), DexError> {
         self.l3_book.add_orders_from_snapshot(&orders)?;
         Ok(())
@@ -441,13 +420,13 @@ impl Perpetual {
     pub(crate) fn update_order(&mut self, order: Order) -> Result<(), DexError> {
         let prev = self
             .l3_book
-            .get_order_data(order.order_id())
-            .copied()
+            .get_order(order.order_id())
+            .cloned()
             .ok_or(DexError::OrderNotFound(self.id, order.order_id()))?;
 
         if prev.price() != order.price() {
             // Price changed: remove from old level, add to new level (back of queue)
-            self.l3_book.remove_order_by_id(order.order_id())?;
+            self.l3_book.remove_order(&prev)?;
             self.l3_book.add_order(&order)?;
         } else if order.size() > prev.size() {
             // Size INCREASED at same price: move to back of queue (loses priority)
@@ -466,9 +445,12 @@ impl Perpetual {
     }
 
     pub(crate) fn remove_order(&mut self, order_id: types::OrderId) -> Result<Order, DexError> {
-        self.l3_book
-            .remove_order_by_id(order_id)
-            .map_err(|_| DexError::OrderNotFound(self.id, order_id))
+        let order = self
+            .l3_book
+            .get_order(order_id)
+            .cloned()
+            .ok_or(DexError::OrderNotFound(self.id, order_id))?;
+        self.l3_book.remove_order(&order).map_err(|err| err.into())
     }
 
     pub(crate) fn update_paused(&mut self, instant: types::StateInstant, paused: bool) {
@@ -631,15 +613,105 @@ impl Perpetual {
     }
 }
 
+#[cfg(feature = "display")]
+impl std::fmt::Display for Perpetual {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use colored::Colorize;
+        use tabled::{
+            Table,
+            settings::{Alignment, Style, object::Cell},
+        };
+
+        let mut table = Table::from_iter(vec![
+            vec![
+                format!(
+                    "Last: {}\n{}",
+                    self.last_price.to_string().green(),
+                    self.last_price_instant()
+                ),
+                format!(
+                    "Mark: {}\n{}",
+                    if self.is_mark_price_obsolete() {
+                        self.mark_price.to_string().red()
+                    } else {
+                        self.mark_price.to_string().green()
+                    },
+                    self.mark_price_instant(),
+                ),
+                format!(
+                    "Oracle: {}\n{}",
+                    if self.is_oracle_used {
+                        if self.is_oracle_price_obsolete() {
+                            self.oracle_price.to_string().red()
+                        } else {
+                            self.oracle_price.to_string().green()
+                        }
+                    } else {
+                        "N/A".red()
+                    },
+                    if self.is_oracle_used {
+                        self.oracle_price_instant().to_string()
+                    } else {
+                        "".to_string()
+                    },
+                ),
+                format!(
+                    "Funding Rate: {}\nnext: {} @ #{}",
+                    if self.funding_rate().is_negative() {
+                        self.funding_rate().to_string().red()
+                    } else {
+                        self.funding_rate().to_string().green()
+                    },
+                    self.next_funding_rate.unwrap_or_default(),
+                    self.next_funding_event_block.unwrap_or_default(),
+                ),
+                format!(
+                    "Open Interest: {}\namount: ${}",
+                    self.open_interest.to_string().cyan(),
+                    self.open_interest_amount()
+                        .trunc_with_scale(2)
+                        .to_string()
+                        .cyan(),
+                ),
+            ],
+            vec![
+                format!("Fees: {} / {} (mkr/tkr)", self.maker_fee, self.taker_fee),
+                format!("Margin: {} / {} (ini/mnt)", self.initial_margin, self.maintenance_margin),
+                format!("Price Max Age: {}", self.price_max_age_sec),
+                format!("Funding Start: {}", self.funding_start_block),
+            ],
+        ]);
+        table.with(Style::modern());
+        table.modify(Cell::new(0, 4), Alignment::right());
+
+        writeln!(
+            f,
+            "{}\n{}",
+            format_args!(
+                "{} {}",
+                format!("* Perp #{} {}", self.id, self.symbol).bold().cyan(),
+                if self.is_paused { "PAUSED ".bright_red() } else { Default::default() },
+            ),
+            table,
+        )?;
+
+        // Render order book in alternate mode
+        if f.alternate() && self.l3_book().total_orders() > 0 {
+            writeln!(f, "{:}", self.l3_book)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use fastnum::udec64;
     use std::num::NonZeroU16;
 
-    fn oid(n: u16) -> types::OrderId {
-        NonZeroU16::new(n).expect("test order id must be non-zero")
-    }
+    use fastnum::udec64;
+
+    use super::*;
+
+    fn oid(n: u16) -> types::OrderId { NonZeroU16::new(n).expect("test order id must be non-zero") }
 
     #[test]
     fn update_order_expired_order_renewal_moves_to_back() {
@@ -673,14 +745,10 @@ mod tests {
 
         // Verify initial FIFO order
         let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
-        assert_eq!(
-            orders,
-            vec![oid(1), oid(2)],
-            "Initial FIFO should be [1, 2]"
-        );
+        assert_eq!(orders, vec![oid(1), oid(2)], "Initial FIFO should be [1, 2]");
 
-        // Now simulate time passing: we're at block 150 (order 1 is expired at block 100)
-        // Update order 1 with a new expiry (block 200)
+        // Now simulate time passing: we're at block 150 (order 1 is expired at block
+        // 100) Update order 1 with a new expiry (block 200)
         let order1_renewed = Order::for_l3_testing(
             types::OrderType::OpenShort,
             udec64!(100),
@@ -695,11 +763,7 @@ mod tests {
 
         // Order 1 should have moved to back: FIFO is [2, 1]
         let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
-        assert_eq!(
-            orders,
-            vec![oid(2), oid(1)],
-            "After expiry renewal, FIFO should be [2, 1]"
-        );
+        assert_eq!(orders, vec![oid(2), oid(1)], "After expiry renewal, FIFO should be [2, 1]");
     }
 
     #[test]
@@ -745,10 +809,6 @@ mod tests {
 
         // Order 1 should keep its position: FIFO is [1, 2]
         let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
-        assert_eq!(
-            orders,
-            vec![oid(1), oid(2)],
-            "Non-expired order should keep position"
-        );
+        assert_eq!(orders, vec![oid(1), oid(2)], "Non-expired order should keep position");
     }
 }

@@ -23,44 +23,29 @@ pub struct BookLevel {
 
 impl BookLevel {
     /// Create a new empty book level.
-    pub fn new() -> Self {
-        Self::default()
-    }
+    pub fn new() -> Self { Self::default() }
 
-    /// Total size at this price level (cached, O(1)).
-    pub fn size(&self) -> UD64 {
-        self.cached_size
-    }
+    /// Total size at this price level, excluding expired orders (cached, O(1)).
+    pub fn size(&self) -> UD64 { self.cached_size }
 
-    /// Number of orders at this price level (cached, O(1)).
-    pub fn num_orders(&self) -> u32 {
-        self.cached_count
-    }
-
-    /// First (oldest) order ID at this level.
-    pub(crate) fn head(&self) -> Option<types::OrderId> {
-        self.head
-    }
-
-    /// Last (newest) order ID at this level.
-    pub(crate) fn tail(&self) -> Option<types::OrderId> {
-        self.tail
-    }
+    /// Number of orders at this price level, excluding expired orders (cached,
+    /// O(1)).
+    pub fn num_orders(&self) -> u32 { self.cached_count }
 
     /// Check if this level has no orders.
-    pub fn is_empty(&self) -> bool {
-        self.head.is_none()
-    }
+    pub fn is_empty(&self) -> bool { self.head.is_none() }
+
+    /// First (oldest) order ID at this level.
+    pub(crate) fn head(&self) -> Option<types::OrderId> { self.head }
+
+    /// Last (newest) order ID at this level.
+    pub(crate) fn tail(&self) -> Option<types::OrderId> { self.tail }
 
     /// Set the head pointer.
-    pub(crate) fn set_head(&mut self, head: Option<types::OrderId>) {
-        self.head = head;
-    }
+    pub(crate) fn set_head(&mut self, head: Option<types::OrderId>) { self.head = head; }
 
     /// Set the tail pointer.
-    pub(crate) fn set_tail(&mut self, tail: Option<types::OrderId>) {
-        self.tail = tail;
-    }
+    pub(crate) fn set_tail(&mut self, tail: Option<types::OrderId>) { self.tail = tail; }
 
     /// Add to cached size.
     pub(crate) fn add_size(&mut self, size: UD64) {

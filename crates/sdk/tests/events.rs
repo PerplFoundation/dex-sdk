@@ -12,9 +12,7 @@ use perpl_sdk::{
 };
 use tokio::sync::{RwLock, mpsc};
 
-fn oid(n: u16) -> types::OrderId {
-    NonZeroU16::new(n).expect("test order id must be non-zero")
-}
+fn oid(n: u16) -> types::OrderId { NonZeroU16::new(n).expect("test order id must be non-zero") }
 
 /// Tests the creation of initial exchange snapshot followed by
 /// updating it with real-time events.
@@ -112,20 +110,12 @@ async fn test_snapshot_and_events() {
     // actually following the tip of the chain
     let (results_tx, mut results_rx) = mpsc::unbounded_channel();
     tokio::spawn({
-        let (chain, provider, snapshot) = (
-            exchange.chain().clone(),
-            exchange.provider.clone(),
-            snapshot.clone(),
-        );
+        let (chain, provider, snapshot) =
+            (exchange.chain().clone(), exchange.provider.clone(), snapshot.clone());
         async move {
             let mut stream = pin!(
-                stream::raw(
-                    &chain,
-                    provider,
-                    snapshot.read().await.instant(),
-                    tokio::time::sleep
-                )
-                .take(20)
+                stream::raw(&chain, provider, snapshot.read().await.instant(), tokio::time::sleep)
+                    .take(20)
             );
             while let Some(batch) = stream.next().await {
                 let batch = batch.unwrap();
@@ -136,15 +126,7 @@ async fn test_snapshot_and_events() {
     });
 
     // A bit more activity
-    o(
-        maker.id,
-        10,
-        Some(oid(1)),
-        Change,
-        udec64!(100100),
-        udec64!(1),
-    )
-    .await;
+    o(maker.id, 10, Some(oid(1)), Change, udec64!(100100), udec64!(1)).await;
     o(taker.id, 11, None, OpenLong, udec64!(100100), udec64!(0.1)).await;
     o(maker.id, 12, Some(oid(1)), Cancel, udec64!(0), udec64!(0)).await;
 
@@ -177,53 +159,37 @@ async fn test_snapshot_and_events() {
                         account_id: 1,
                         request_id: Some(10),
                         order_id: Some(order_id),
-                        r#type:
-                            OrderEventType::Updated {
-                                price,
-                                size,
-                                expiry_block,
-                            },
+                        r#type: OrderEventType::Updated { price, size, expiry_block },
                     }) if *order_id == oid(1) => {
                         assert_eq!(*price, Some(udec64!(100100)));
                         assert_eq!(*size, Some(udec64!(1)));
                         assert_eq!(*expiry_block, None);
-                    }
+                    },
                     state::StateEvents::Order(OrderEvent {
                         perpetual_id: 16,
                         account_id: 1,
                         request_id: Some(11),
                         order_id: Some(order_id),
-                        r#type:
-                            OrderEventType::Filled {
-                                fill_price,
-                                fill_size,
-                                fee,
-                                is_maker,
-                            },
+                        r#type: OrderEventType::Filled { fill_price, fill_size, fee, is_maker },
                     }) if *order_id == oid(1) => {
                         assert_eq!(*fill_price, udec64!(100100));
                         assert_eq!(*fill_size, udec64!(0.1));
                         assert_eq!(*fee, udec64!(1.001));
                         assert_eq!(*is_maker, true);
-                    }
+                    },
 
                     state::StateEvents::Position(PositionEvent {
                         perpetual_id: 16,
                         account_id: 2,
                         request_id: Some(11),
                         r#type:
-                            PositionEventType::Increased {
-                                entry_price,
-                                prev_size,
-                                new_size,
-                                deposit,
-                            },
+                            PositionEventType::Increased { entry_price, prev_size, new_size, deposit },
                     }) => {
                         assert_eq!(*entry_price, udec64!(100050));
                         assert_eq!(*prev_size, udec64!(0.1));
                         assert_eq!(*new_size, udec64!(0.2));
                         assert_eq!(*deposit, udec128!(2002));
-                    }
+                    },
 
                     _ => (),
                 }

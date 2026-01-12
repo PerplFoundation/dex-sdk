@@ -13,8 +13,8 @@ use crate::{
 pub type TradeEvent = types::EventContext<types::Trade>;
 pub type BlockTrades = types::BlockEvents<TradeEvent>;
 
-/// Returns stream of normalized trade events aggregated from the [`super::raw`] event stream,
-/// batched per block.
+/// Returns stream of normalized trade events aggregated from the [`super::raw`]
+/// event stream, batched per block.
 ///
 /// Listens to `MakerOrderFilled` and `TakerOrderFilled` events, batches all
 /// maker fills per taker into unified `Trade` events, normalizes
@@ -22,7 +22,8 @@ pub type BlockTrades = types::BlockEvents<TradeEvent>;
 ///
 /// # Safety note
 ///
-/// The returned stream is not cancellation-safe and should not be used within `select!`.
+/// The returned stream is not cancellation-safe and should not be used within
+/// `select!`.
 ///
 /// # Architecture
 ///
@@ -82,7 +83,6 @@ pub type BlockTrades = types::BlockEvents<TradeEvent>;
 ///     }
 /// }
 /// ```
-///
 pub async fn trade<P>(
     chain: &Chain,
     provider: P,
@@ -146,12 +146,7 @@ pub struct TradeProcessor {
 impl TradeProcessor {
     /// Create a new trade processor with the given normalization config.
     pub fn new(config: NormalizationConfig) -> Self {
-        Self {
-            config,
-            order_context: None,
-            pending_maker_fills: Vec::new(),
-            prev_tx_index: None,
-        }
+        Self { config, order_context: None, pending_maker_fills: Vec::new(), prev_tx_index: None }
     }
 
     /// Process a block of raw events and extract trades.
@@ -184,22 +179,19 @@ impl TradeProcessor {
                 let request_type: types::RequestType = e.orderType.into();
                 // Only track context for order types that can have fills
                 if let Some(side) = request_type.try_side() {
-                    self.order_context = Some(OrderContext {
-                        account_id: e.accountId.to(),
-                        side,
-                    });
+                    self.order_context = Some(OrderContext { account_id: e.accountId.to(), side });
                 }
                 None
-            }
+            },
             ExchangeEvents::OrderBatchCompleted(_) => {
                 self.order_context.take();
                 self.pending_maker_fills.clear();
                 None
-            }
+            },
             ExchangeEvents::MakerOrderFilled(e) => {
                 self.handle_maker_fill(event, e);
                 None
-            }
+            },
             ExchangeEvents::TakerOrderFilled(e) => self.handle_taker_fill(event, e),
             _ => None,
         }
@@ -292,10 +284,7 @@ impl NormalizationConfig {
             );
         }
 
-        Ok(Self {
-            collateral_converter,
-            perpetuals,
-        })
+        Ok(Self { collateral_converter, perpetuals })
     }
 }
 

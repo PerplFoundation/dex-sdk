@@ -11,15 +11,9 @@ pub struct Converter {
 }
 
 impl Converter {
-    pub(crate) fn new(decimals: u8) -> Self {
-        Self {
-            decimals: decimals as i32,
-        }
-    }
+    pub(crate) fn new(decimals: u8) -> Self { Self { decimals: decimals as i32 } }
 
-    pub fn decimals(&self) -> u8 {
-        self.decimals as u8
-    }
+    pub fn decimals(&self) -> u8 { self.decimals as u8 }
 
     pub fn from_unsigned<const N: usize>(&self, value: U256) -> UnsignedDecimal<N> {
         let unscaled = bint::UInt::<N>::from_le_slice(value.as_le_slice())
@@ -57,11 +51,7 @@ impl Converter {
         Decimal::<N>::from_parts(
             bint::UInt::from_u64(value.unsigned_abs()),
             -self.decimals,
-            if value < 0 {
-                fastnum::decimal::Sign::Minus
-            } else {
-                fastnum::decimal::Sign::Plus
-            },
+            if value < 0 { fastnum::decimal::Sign::Minus } else { fastnum::decimal::Sign::Plus },
             Context::default().with_rounding_mode(RoundingMode::Floor),
         )
     }
@@ -90,14 +80,8 @@ mod tests {
 
     #[test]
     fn test_numeric_converter_from_unsigned() {
-        assert_eq!(
-            Converter::new(0).from_unsigned(U256::from(1234567890)),
-            udec256!(1234567890)
-        );
-        assert_eq!(
-            Converter::new(6).from_unsigned(U256::from(1234567890)),
-            udec256!(1234.56789)
-        );
+        assert_eq!(Converter::new(0).from_unsigned(U256::from(1234567890)), udec256!(1234567890));
+        assert_eq!(Converter::new(6).from_unsigned(U256::from(1234567890)), udec256!(1234.56789));
         assert_eq!(
             Converter::new(12).from_unsigned(U256::from(1234567890)),
             udec256!(0.00123456789)
@@ -135,18 +119,9 @@ mod tests {
 
     #[test]
     fn test_numeric_converter_to_unsigned() {
-        assert_eq!(
-            Converter::new(0).to_unsigned(udec256!(1234567890)),
-            U256::from(1234567890)
-        );
-        assert_eq!(
-            Converter::new(6).to_unsigned(udec256!(1234.56789)),
-            U256::from(1234567890)
-        );
-        assert_eq!(
-            Converter::new(12).to_unsigned(udec256!(0.00123456789)),
-            U256::from(1234567890)
-        );
+        assert_eq!(Converter::new(0).to_unsigned(udec256!(1234567890)), U256::from(1234567890));
+        assert_eq!(Converter::new(6).to_unsigned(udec256!(1234.56789)), U256::from(1234567890));
+        assert_eq!(Converter::new(12).to_unsigned(udec256!(0.00123456789)), U256::from(1234567890));
     }
 
     #[test]

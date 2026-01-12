@@ -1,7 +1,8 @@
 //! Book order representation with intrusive linked list pointers.
 
+use std::ops::{Deref, DerefMut};
+
 use crate::{state::Order, types};
-use fastnum::UD64;
 
 /// Individual order in the book with linked list pointers.
 ///
@@ -18,66 +19,30 @@ pub struct BookOrder {
 
 impl BookOrder {
     /// Create a new book order (initially unlinked).
-    pub fn new(order: Order) -> Self {
-        Self {
-            order,
-            prev: None,
-            next: None,
-        }
-    }
-
-    /// The underlying order.
-    pub fn order(&self) -> &Order {
-        &self.order
-    }
-
-    /// Account ID that placed this order.
-    pub fn account_id(&self) -> types::AccountId {
-        self.order.account_id()
-    }
-
-    /// Order ID.
-    pub fn order_id(&self) -> types::OrderId {
-        self.order.order_id()
-    }
-
-    /// Order size.
-    pub fn size(&self) -> UD64 {
-        self.order.size()
-    }
-
-    /// Order price.
-    pub fn price(&self) -> UD64 {
-        self.order.price()
-    }
-
-    /// Order type.
-    pub fn r#type(&self) -> types::OrderType {
-        self.order.r#type()
-    }
+    pub fn new(order: Order) -> Self { Self { order, prev: None, next: None } }
 
     /// Previous order in the FIFO queue (toward head).
-    pub(crate) fn prev(&self) -> Option<types::OrderId> {
-        self.prev
-    }
+    pub(crate) fn prev(&self) -> Option<types::OrderId> { self.prev }
 
     /// Next order in the FIFO queue (toward tail).
-    pub(crate) fn next(&self) -> Option<types::OrderId> {
-        self.next
-    }
+    pub(crate) fn next(&self) -> Option<types::OrderId> { self.next }
 
     /// Update the underlying order data (for size changes).
-    pub(crate) fn update_order(&mut self, order: Order) {
-        self.order = order;
-    }
+    pub(crate) fn update_order(&mut self, order: Order) { self.order = order; }
 
     /// Set the previous order pointer.
-    pub(crate) fn set_prev(&mut self, prev: Option<types::OrderId>) {
-        self.prev = prev;
-    }
+    pub(crate) fn set_prev(&mut self, prev: Option<types::OrderId>) { self.prev = prev; }
 
     /// Set the next order pointer.
-    pub(crate) fn set_next(&mut self, next: Option<types::OrderId>) {
-        self.next = next;
-    }
+    pub(crate) fn set_next(&mut self, next: Option<types::OrderId>) { self.next = next; }
+}
+
+impl Deref for BookOrder {
+    type Target = Order;
+
+    fn deref(&self) -> &Self::Target { &self.order }
+}
+
+impl DerefMut for BookOrder {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.order }
 }

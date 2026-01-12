@@ -1,18 +1,15 @@
 [workspace]
-resolver        = "3"
-members         = [
-  "crates/sdk"
-]
+resolver = "3"
+members = ["crates/sdk", "crates/cli"]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 
 [workspace.dependencies]
-alloy = { version = "1.2.1", default-features = false, features = [
+alloy = { version = "1.4.0", default-features = false, features = [
   "contract",
   "eips",
-  "node-bindings",
   "provider-http",
   "reqwest",
   "reqwest-rustls-tls",
@@ -23,11 +20,24 @@ alloy = { version = "1.2.1", default-features = false, features = [
 alloy-sol-types = { version = "1.5.2", default-features = false, features = [
   "more-tuple-impls",
 ] }
+anyhow = { version = "1.0.100" }
+chrono = { version = "0.4.35", default-features = false, features = ["alloc"] }
 clap = { version = "4", features = ["derive"] }
+colored = { version = "3.0.0" }
+crossterm = { version = "0.29.0" }
 dashmap = { version = "6.1.0" }
-derive_more = { version = "2.1.1", default-features = false, features = [ "debug" ]}
+derive_more = { version = "2.1.1", default-features = false, features = [
+  "debug",
+] }
 fastnum = { version = "0.7.4" }
 futures = { version = "0.3.31" }
 itertools = { version = "0.14.0" }
+tabled = { version = "0.20.0", features = ["ansi"] }
 thiserror = { version = "2.0.17" }
-tokio = { version = "1.49.0", features = ["sync", "rt-multi-thread", "macros", "time"] }
+tokio = { version = "1.49.0", features = [
+  "sync",
+  "rt-multi-thread",
+  "macros",
+  "time",
+] }
+tokio-util = { version = "0.7.18" }

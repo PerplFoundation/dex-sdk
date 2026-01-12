@@ -1,27 +1,30 @@
 use alloy::primitives::U256;
 use fastnum::{UD64, UD128};
 
-use crate::{abi::dex::Exchange::OrderDesc, num, state};
-
 use super::*;
+use crate::{abi::dex::Exchange::OrderDesc, num, state};
 
 /// Type of the order request.
 ///
-/// * [`RequestType::OpenLong`] is used to open a long position (or to decrease, close, or invert a long
-///   position). The only restrictions applied are the user account must have sufficient
-///   collateral available.
-/// * [`RequestType::OpenShort`] is used to open a short position (or to decrease, close, or invert a
-///   short position). The only restrictions applied are the user account must have
-///   sufficient collateral available.
-/// * [`RequestType::CloseLong`] is a reduce only order type and can only be used to close all or part of
-///   an existing long position on the perpetual contract.
-/// * [`RequestType::CloseShort`] is a reduce only order type and can only be used to close all or part of
-///   an existing short position on the perpetual contract.
-/// * [`RequestType::Cancel`] is used to cancel an existing order on the perpetual contract's order book.
-/// * [`RequestType::IncreasePositionCollateral`] is an operation to increase the collateral of an existing
-///   position in the event that it has insufficient margin or the account holder wishes to
-///   reduce leverage.
-/// * [`RequestType::Change`] is an operation to change parameters of an existing order, gas-efficiently.
+/// * [`RequestType::OpenLong`] is used to open a long position (or to decrease,
+///   close, or invert a long position). The only restrictions applied are the
+///   user account must have sufficient collateral available.
+/// * [`RequestType::OpenShort`] is used to open a short position (or to
+///   decrease, close, or invert a short position). The only restrictions
+///   applied are the user account must have sufficient collateral available.
+/// * [`RequestType::CloseLong`] is a reduce only order type and can only be
+///   used to close all or part of an existing long position on the perpetual
+///   contract.
+/// * [`RequestType::CloseShort`] is a reduce only order type and can only be
+///   used to close all or part of an existing short position on the perpetual
+///   contract.
+/// * [`RequestType::Cancel`] is used to cancel an existing order on the
+///   perpetual contract's order book.
+/// * [`RequestType::IncreasePositionCollateral`] is an operation to increase
+///   the collateral of an existing position in the event that it has
+///   insufficient margin or the account holder wishes to reduce leverage.
+/// * [`RequestType::Change`] is an operation to change parameters of an
+///   existing order, gas-efficiently.
 #[derive(Clone, Copy, Debug)]
 pub enum RequestType {
     OpenLong,
@@ -58,7 +61,8 @@ pub struct OrderRequest {
 impl OrderRequest {
     /// Create a new order request with provided parameters.
     ///
-    /// Use [`Self::prepare`] to get [`OrderDesc`]s and then issue transactions with
+    /// Use [`Self::prepare`] to get [`OrderDesc`]s and then issue transactions
+    /// with
     /// [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`] calls.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -157,8 +161,9 @@ impl From<u8> for RequestType {
 impl RequestType {
     /// Returns the order side for this request type, if applicable.
     ///
-    /// Returns `Some(side)` for order-placing types (OpenLong, OpenShort, CloseLong, CloseShort).
-    /// Returns `None` for Cancel, IncreasePositionCollateral, and Change.
+    /// Returns `Some(side)` for order-placing types (OpenLong, OpenShort,
+    /// CloseLong, CloseShort). Returns `None` for Cancel,
+    /// IncreasePositionCollateral, and Change.
     pub fn try_side(&self) -> Option<OrderSide> {
         match self {
             RequestType::OpenLong | RequestType::CloseShort => Some(OrderSide::Bid),

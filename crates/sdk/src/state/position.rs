@@ -87,67 +87,41 @@ impl Position {
     }
 
     /// Instant the position state is consistent with or was last updated at.
-    pub fn instant(&self) -> types::StateInstant {
-        self.instant
-    }
+    pub fn instant(&self) -> types::StateInstant { self.instant }
 
     /// ID of the perpetual contract.
-    pub fn perpetual_id(&self) -> types::PerpetualId {
-        self.perpetual_id
-    }
+    pub fn perpetual_id(&self) -> types::PerpetualId { self.perpetual_id }
 
     /// ID of the account holding the position.
-    pub fn account_id(&self) -> types::AccountId {
-        self.account_id
-    }
+    pub fn account_id(&self) -> types::AccountId { self.account_id }
 
     /// Type of the position.
-    pub fn r#type(&self) -> PositionType {
-        self.r#type
-    }
+    pub fn r#type(&self) -> PositionType { self.r#type }
 
     /// Position entry price.
-    pub fn entry_price(&self) -> UD64 {
-        self.entry_price
-    }
+    pub fn entry_price(&self) -> UD64 { self.entry_price }
 
     /// Size of the position.
-    pub fn size(&self) -> UD64 {
-        self.size
-    }
+    pub fn size(&self) -> UD64 { self.size }
 
     /// Collateral deposit / margin locked in the position.
-    pub fn deposit(&self) -> UD128 {
-        self.deposit
-    }
+    pub fn deposit(&self) -> UD128 { self.deposit }
 
     /// Unrealized Delta PnL of the position.
-    pub fn delta_pnl(&self) -> D256 {
-        self.delta_pnl
-    }
+    pub fn delta_pnl(&self) -> D256 { self.delta_pnl }
 
     /// Unrealized Premium PnL of the position.
-    pub fn premium_pnl(&self) -> D256 {
-        self.premium_pnl
-    }
+    pub fn premium_pnl(&self) -> D256 { self.premium_pnl }
 
     /// Unrealized PnL of the position.
-    pub fn pnl(&self) -> D256 {
-        self.delta_pnl + self.premium_pnl
-    }
+    pub fn pnl(&self) -> D256 { self.delta_pnl + self.premium_pnl }
 
     /// Maintenance margin requirement of the position.
-    pub fn maintenance_margin_requirement(&self) -> UD128 {
-        self.maintenance_margin_requirement
-    }
+    pub fn maintenance_margin_requirement(&self) -> UD128 { self.maintenance_margin_requirement }
 
     /// Liquidation price of the position.
     pub fn liquidation_price(&self) -> UD64 {
-        let side = if self.r#type.is_long() {
-            D256::ONE
-        } else {
-            D256::ONE.neg()
-        };
+        let side = if self.r#type.is_long() { D256::ONE } else { D256::ONE.neg() };
         let liquidation_price = self.entry_price.to_signed()
             + (side
                 * (self.maintenance_margin_requirement.to_signed().resize()
@@ -160,11 +134,7 @@ impl Position {
 
     /// Bankruptcy price of the position.
     pub fn bankruptcy_price(&self) -> UD64 {
-        let side = if self.r#type.is_long() {
-            D256::ONE
-        } else {
-            D256::ONE.neg()
-        };
+        let side = if self.r#type.is_long() { D256::ONE } else { D256::ONE.neg() };
         let bankruptcy_price = self.entry_price.to_signed()
             - (side * (self.deposit.to_signed().resize() + self.premium_pnl)
                 / self.size.to_signed().resize())
@@ -198,11 +168,7 @@ impl Position {
     }
 
     pub(crate) fn apply_mark_price(&mut self, instant: types::StateInstant, mark_price: UD64) {
-        let sign = if self.r#type.is_long() {
-            D256::ONE
-        } else {
-            D256::ONE.neg()
-        };
+        let sign = if self.r#type.is_long() { D256::ONE } else { D256::ONE.neg() };
         self.delta_pnl = sign
             * (mark_price.resize().to_signed() - self.entry_price.resize().to_signed())
             * self.size.resize().to_signed();
@@ -220,11 +186,7 @@ impl Position {
         }
 
         // Positive funding payment means longs pay shorts
-        let sign = if self.r#type.is_long() {
-            D256::ONE.neg()
-        } else {
-            D256::ONE
-        };
+        let sign = if self.r#type.is_long() { D256::ONE.neg() } else { D256::ONE };
         self.premium_pnl += sign * payment_per_unit * self.size.resize().to_signed();
         self.instant = instant;
         self.funding_instant = instant;
@@ -243,13 +205,9 @@ impl Position {
 }
 
 impl PositionType {
-    pub fn is_long(&self) -> bool {
-        matches!(self, PositionType::Long)
-    }
+    pub fn is_long(&self) -> bool { matches!(self, PositionType::Long) }
 
-    pub fn is_short(&self) -> bool {
-        matches!(self, PositionType::Short)
-    }
+    pub fn is_short(&self) -> bool { matches!(self, PositionType::Short) }
 }
 
 impl From<u8> for PositionType {
@@ -262,13 +220,71 @@ impl From<u8> for PositionType {
     }
 }
 
+impl std::fmt::Display for PositionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PositionType::Long => write!(f, "Long"),
+            PositionType::Short => write!(f, "Short"),
+        }
+    }
+}
+
+#[cfg(feature = "display")]
+impl tabled::Tabled for Position {
+    const LENGTH: usize = 9;
+
+    fn fields(&self) -> Vec<std::borrow::Cow<'_, str>> {
+        use colored::Colorize;
+        vec![
+            self.perpetual_id().to_string().into(),
+            if self.r#type.is_long() {
+                self.r#type().to_string().green().to_string().into()
+            } else {
+                self.r#type().to_string().red().to_string().into()
+            },
+            self.entry_price().to_string().into(),
+            self.size().to_string().into(),
+            self.deposit().to_string().into(),
+            if self.delta_pnl.is_negative() {
+                self.delta_pnl.to_string().red().to_string().into()
+            } else {
+                self.delta_pnl.to_string().green().to_string().into()
+            },
+            if self.premium_pnl.is_negative() {
+                self.premium_pnl.to_string().red().to_string().into()
+            } else {
+                self.premium_pnl.to_string().green().to_string().into()
+            },
+            if self.pnl().is_negative() {
+                self.pnl().to_string().red().to_string().into()
+            } else {
+                self.pnl().to_string().green().to_string().into()
+            },
+            format!("{:.6}", self.liquidation_price()).into(),
+        ]
+    }
+
+    fn headers() -> Vec<std::borrow::Cow<'static, str>> {
+        vec![
+            "Perp ID".into(),
+            "Type".into(),
+            "Entry Price".into(),
+            "Size".into(),
+            "Deposit".into(),
+            "Delta PnL".into(),
+            "Premium PnL".into(),
+            "Total PnL".into(),
+            "Liq Price".into(),
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use fastnum::{dec256, udec64, udec128};
 
-    use crate::types::StateInstant;
-
     use super::*;
+    use crate::types::StateInstant;
 
     #[test]
     fn test_apply_mark_price() {
@@ -308,11 +324,8 @@ mod tests {
 
     #[test]
     fn test_apply_funding_payment() {
-        let (i0, i1, i2) = (
-            StateInstant::default(),
-            StateInstant::new(1, 1),
-            StateInstant::new(2, 2),
-        );
+        let (i0, i1, i2) =
+            (StateInstant::default(), StateInstant::new(1, 1), StateInstant::new(2, 2));
         let mut pos = Position::opened(
             i0,
             1,

@@ -9,7 +9,8 @@ use crate::{abi::dex, num};
 /// Error creating an Order from exchange data.
 #[derive(Debug, Clone, Error)]
 pub enum OrderParseError {
-    /// Order has invalid ID 0 (which is reserved as NULL_ORDER_ID on the exchange).
+    /// Order has invalid ID 0 (which is reserved as NULL_ORDER_ID on the
+    /// exchange).
     #[error("order has invalid id 0")]
     ZeroOrderId,
 }
@@ -17,26 +18,26 @@ pub enum OrderParseError {
 /// Active order in the perpetual contract order book.
 ///
 /// Exchange order book has a limited capacity of 2^16-1 orders, which requires
-/// an extensive reuse of order IDs, up to the point that within the order of execution
-/// of a single order request, the same order ID can be used for more than one order.
-/// For example, if a taker order partially matches and then gets placed, the matched
-/// maker order with order ID = 1 gets removed from the book (and thus vacates the ID),
-/// then taker order gets placed under the same order ID = 1.
+/// an extensive reuse of order IDs, up to the point that within the order of
+/// execution of a single order request, the same order ID can be used for more
+/// than one order. For example, if a taker order partially matches and then
+/// gets placed, the matched maker order with order ID = 1 gets removed from the
+/// book (and thus vacates the ID), then taker order gets placed under the same
+/// order ID = 1.
 ///
-/// So the state of order book and particular mapping between orders and their IDs is
-/// tied to a particular point in time and should be used with care.
+/// So the state of order book and particular mapping between orders and their
+/// IDs is tied to a particular point in time and should be used with care.
 ///
 /// Exchange does not support concept of client order IDs and does not store any
 /// externally-provided state with orders on-chain, but each order request emits
-/// provided [`Order::request_id`] with it, which gets indexed and stored with the order,
-/// but with the limitation that this data is available only from events, not
-/// with the original snapshot.
+/// provided [`Order::request_id`] with it, which gets indexed and stored with
+/// the order, but with the limitation that this data is available only from
+/// events, not with the original snapshot.
 ///
-/// See [`crate::abi::dex::Exchange::OrderDesc`] for more details on particular order parameters
-/// and exchange behavior.
-/// This wrapper provides automatic conversion from exchnage fixed numeric types to
-/// decimal numbers.
-///
+/// See [`crate::abi::dex::Exchange::OrderDesc`] for more details on particular
+/// order parameters and exchange behavior.
+/// This wrapper provides automatic conversion from exchnage fixed numeric types
+/// to decimal numbers.
 #[derive(Clone, Copy, derive_more::Debug)]
 pub struct Order {
     instant: types::StateInstant,
@@ -150,6 +151,19 @@ impl Order {
         }
     }
 
+    pub(crate) fn update_if_expired(&mut self, instant: types::StateInstant) -> bool {
+        if self.expiry_block != 0
+            && self.expiry_block < instant.block_number()
+            && !self.is_expired()
+        {
+            // Just updating instant so `is_expired` returns true
+            self.instant = instant;
+            true
+        } else {
+            false
+        }
+    }
+
     #[allow(unused)]
     pub(crate) fn for_testing(r#type: types::OrderType, price: UD64, size: UD64) -> Self {
         Self {
@@ -170,7 +184,8 @@ impl Order {
         }
     }
 
-    /// Create an order for L3 testing with full control over block_number, order_id, account_id.
+    /// Create an order for L3 testing with full control over block_number,
+    /// order_id, account_id.
     #[allow(unused)]
     pub(crate) fn for_l3_testing(
         r#type: types::OrderType,
@@ -198,7 +213,8 @@ impl Order {
         }
     }
 
-    /// Create an order for L3 testing with linked list pointers (for snapshot reconstruction tests).
+    /// Create an order for L3 testing with linked list pointers (for snapshot
+    /// reconstruction tests).
     #[allow(unused, clippy::too_many_arguments)]
     pub(crate) fn for_l3_testing_with_links(
         r#type: types::OrderType,
@@ -291,7 +307,8 @@ impl Order {
         }
     }
 
-    /// Create a copy with linked list pointers (for testing snapshot reconstruction).
+    /// Create a copy with linked list pointers (for testing snapshot
+    /// reconstruction).
     #[allow(unused)]
     pub(crate) fn with_links(
         &self,
@@ -317,78 +334,162 @@ impl Order {
     }
 
     /// Instant the order state is consistent with or was last updated at.
-    pub fn instant(&self) -> types::StateInstant {
-        self.instant
-    }
+    pub fn instant(&self) -> types::StateInstant { self.instant }
 
     /// ID of the request this order was posted by.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn request_id(&self) -> Option<types::RequestId> {
-        self.request_id
-    }
+    pub fn request_id(&self) -> Option<types::RequestId> { self.request_id }
 
     /// ID of the order in the book.
-    pub fn order_id(&self) -> types::OrderId {
-        self.order_id
-    }
+    pub fn order_id(&self) -> types::OrderId { self.order_id }
 
     /// Type of the order.
-    pub fn r#type(&self) -> types::OrderType {
-        self.r#type
-    }
+    pub fn r#type(&self) -> types::OrderType { self.r#type }
 
     /// ID of the account issued the order.
-    pub fn account_id(&self) -> types::AccountId {
-        self.account_id
-    }
+    pub fn account_id(&self) -> types::AccountId { self.account_id }
 
     /// Limit price of the order.
-    pub fn price(&self) -> UD64 {
-        self.price
-    }
+    pub fn price(&self) -> UD64 { self.price }
 
     /// Size of the order.
-    pub fn size(&self) -> UD64 {
-        self.size
-    }
+    pub fn size(&self) -> UD64 { self.size }
 
     /// Expiry block of the order, zero if was not specified.
-    pub fn expiry_block(&self) -> u64 {
-        self.expiry_block
+    pub fn expiry_block(&self) -> u64 { self.expiry_block }
+
+    /// Check if the order is expired.
+    /// NOTE: Valid only after the end of expiry block processing.
+    pub fn is_expired(&self) -> bool {
+        self.expiry_block != 0 && self.expiry_block < self.instant.block_number()
     }
 
     /// Leverage of the order.
-    pub fn leverage(&self) -> UD64 {
-        self.leverage
-    }
+    pub fn leverage(&self) -> UD64 { self.leverage }
 
     /// Post-only flag.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn post_only(&self) -> Option<bool> {
-        self.post_only
-    }
+    pub fn post_only(&self) -> Option<bool> { self.post_only }
 
     /// Fill-or-fill flag.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn fill_or_kill(&self) -> Option<bool> {
-        self.fill_or_kill
-    }
+    pub fn fill_or_kill(&self) -> Option<bool> { self.fill_or_kill }
 
     /// Immediate-or-cancel flag.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn immediate_or_cancel(&self) -> Option<bool> {
-        self.immediate_or_cancel
-    }
+    pub fn immediate_or_cancel(&self) -> Option<bool> { self.immediate_or_cancel }
 
     /// Previous order ID in the FIFO queue at this price level.
-    /// Available from snapshot, None for newly placed orders or if this is the first order.
-    pub fn prev_order_id(&self) -> Option<types::OrderId> {
-        self.prev_order_id
-    }
+    /// Available from snapshot, None for newly placed orders or if this is the
+    /// first order.
+    pub fn prev_order_id(&self) -> Option<types::OrderId> { self.prev_order_id }
 
     /// Next order ID in the FIFO queue at this price level.
-    /// Available from snapshot, None for newly placed orders or if this is the last order.
-    pub fn next_order_id(&self) -> Option<types::OrderId> {
-        self.next_order_id
+    /// Available from snapshot, None for newly placed orders or if this is the
+    /// last order.
+    pub fn next_order_id(&self) -> Option<types::OrderId> { self.next_order_id }
+}
+
+impl std::fmt::Display for Order {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            // Short order representation
+            let mut short = format!(
+                "{} {:#} #{} 👤{}",
+                self.size(),
+                self.r#type(),
+                self.order_id(),
+                self.account_id(),
+            );
+            if self.expiry_block > 0 {
+                short.push_str(format!(" ⏳{}", self.expiry_block).as_str());
+            }
+            write!(f, "[{}]", short)
+        } else {
+            write!(
+                f,
+                "[{}@{} {:#} #{} acc:{} rq:{} exp:{}{} lev:{}]",
+                self.size(),
+                self.price(),
+                self.r#type(),
+                self.order_id(),
+                self.account_id(),
+                self.request_id().unwrap_or_default(),
+                self.expiry_block(),
+                if self.is_expired() { " (expired)" } else { "" },
+                self.leverage(),
+            )
+        }
+    }
+}
+
+#[cfg(feature = "display")]
+impl tabled::Tabled for Order {
+    const LENGTH: usize = 11;
+
+    fn fields(&self) -> Vec<std::borrow::Cow<'_, str>> {
+        use colored::Colorize;
+
+        use crate::types::OrderSide;
+
+        vec![
+            match self.r#type.side() {
+                OrderSide::Ask => self.price().to_string().red().to_string().into(),
+                OrderSide::Bid => self.price().to_string().green().to_string().into(),
+            },
+            match self.r#type.side() {
+                OrderSide::Ask => self.size().to_string().red().to_string().into(),
+                OrderSide::Bid => self.size().to_string().green().to_string().into(),
+            },
+            match self.r#type.side() {
+                OrderSide::Ask => self.r#type().to_string().red().to_string().into(),
+                OrderSide::Bid => self.r#type().to_string().green().to_string().into(),
+            },
+            self.order_id().to_string().into(),
+            self.account_id().to_string().into(),
+            if let Some(request_id) = self.request_id() {
+                request_id.to_string().into()
+            } else {
+                "-".to_string().into()
+            },
+            if self.expiry_block() > 0 {
+                if self.expiry_block() < self.instant().block_number() {
+                    (self.expiry_block().to_string() + " (expired)")
+                        .bright_red()
+                        .to_string()
+                        .into()
+                } else {
+                    self.expiry_block().to_string().into()
+                }
+            } else {
+                "-".to_string().into()
+            },
+            self.leverage().to_string().into(),
+            if self.post_only.unwrap_or_default() { "+" } else { "" }
+                .to_string()
+                .into(),
+            if self.fill_or_kill.unwrap_or_default() { "+" } else { "" }
+                .to_string()
+                .into(),
+            if self.immediate_or_cancel.unwrap_or_default() { "+" } else { "" }
+                .to_string()
+                .into(),
+        ]
+    }
+
+    fn headers() -> Vec<std::borrow::Cow<'static, str>> {
+        vec![
+            "Price".into(),
+            "Size".into(),
+            "Type".into(),
+            "Order ID".into(),
+            "Account ID".into(),
+            "Request ID".into(),
+            "Expiry Block".into(),
+            "Leverage".into(),
+            "PO".into(),
+            "FoK".into(),
+            "IoC".into(),
+        ]
     }
 }

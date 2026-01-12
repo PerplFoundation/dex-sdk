@@ -18,10 +18,17 @@
 //! * Funding events processing is to follow.
 //!
 //! * Current version relies on log polling to implement reliably continuous
-//!   stream of events. Future versions could improve indexing latency by utilizing
-//!   WebSocket subscriptions and/or Monad [`execution events`].
+//!   stream of events. Future versions could improve indexing latency by
+//!   utilizing WebSocket subscriptions and/or Monad [`execution events`].
 //!
 //! * Test coverage is far below reasonable.
+//!
+//! # Features
+//!
+//! | Feature | Default | Description |
+//! | --- | --- | --- |
+//! | `display` | yes | Enables [`std::fmt::Display`] implementation for state types. |
+//! | `testing` | yes | Enables [`testing`] module. |
 //!
 //! # Testing
 //!
@@ -59,7 +66,7 @@ impl Chain {
             collateral_token: address!("0xdF5B718d8FcC173335185a2a1513eE8151e3c027"),
             deployed_at_block: 62953,
             exchange: address!("0x9C216D1Ab3e0407b3d6F1d5e9EfFe6d01C326ab7"),
-            perpetuals: vec![16, 32, 48, 64],
+            perpetuals: vec![16, 32, 48, 64, 256],
         }
     }
 
@@ -70,32 +77,16 @@ impl Chain {
         exchange: Address,
         perpetuals: Vec<types::PerpetualId>,
     ) -> Self {
-        Self {
-            chain_id,
-            collateral_token,
-            deployed_at_block,
-            exchange,
-            perpetuals,
-        }
+        Self { chain_id, collateral_token, deployed_at_block, exchange, perpetuals }
     }
 
-    pub fn chain_id(&self) -> u64 {
-        self.chain_id
-    }
+    pub fn chain_id(&self) -> u64 { self.chain_id }
 
-    pub fn collateral_token(&self) -> Address {
-        self.collateral_token
-    }
+    pub fn collateral_token(&self) -> Address { self.collateral_token }
 
-    pub fn deployed_at_block(&self) -> u64 {
-        self.deployed_at_block
-    }
+    pub fn deployed_at_block(&self) -> u64 { self.deployed_at_block }
 
-    pub fn exchange(&self) -> Address {
-        self.exchange
-    }
+    pub fn exchange(&self) -> Address { self.exchange }
 
-    pub fn perpetuals(&self) -> &[types::PerpetualId] {
-        &self.perpetuals
-    }
+    pub fn perpetuals(&self) -> &[types::PerpetualId] { &self.perpetuals }
 }

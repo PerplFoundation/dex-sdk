@@ -1,26 +1,30 @@
 //! Order book implementation with intrusive linked lists.
 //!
 //! This module provides the order book data structure that tracks orders
-//! at each price level with FIFO time-priority ordering using doubly-linked lists.
+//! at each price level with FIFO time-priority ordering using doubly-linked
+//! lists.
 
 mod error;
 mod level;
 mod order;
+#[cfg(feature = "display")]
+mod view;
 
 #[cfg(test)]
 mod tests;
-
-pub use error::{OrderBookError, OrderBookResult};
-pub use level::BookLevel;
-pub use order::BookOrder;
 
 use std::{
     cmp::Reverse,
     collections::{BTreeMap, HashMap},
 };
 
+pub use error::{OrderBookError, OrderBookResult};
 use fastnum::{UD64, UD128};
 use itertools::{FoldWhile, Itertools};
+pub use level::BookLevel;
+pub use order::BookOrder;
+#[cfg(feature = "display")]
+pub use view::OrderBookView;
 
 use crate::{state::Order, types};
 
@@ -40,38 +44,40 @@ pub struct OrderBook {
 }
 
 impl OrderBook {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
+    pub(crate) fn new() -> Self { Self::default() }
 
     // === L2 API ===
 
     /// Asks sorted away from the spread.
-    pub fn asks(&self) -> &BTreeMap<UD64, BookLevel> {
-        &self.asks
-    }
+    pub fn asks(&self) -> &BTreeMap<UD64, BookLevel> { &self.asks }
 
     /// Bids sorted away from the spread.
-    pub fn bids(&self) -> &BTreeMap<Reverse<UD64>, BookLevel> {
-        &self.bids
-    }
+    pub fn bids(&self) -> &BTreeMap<Reverse<UD64>, BookLevel> { &self.bids }
 
     /// Best ask price/size.
     pub fn best_ask(&self) -> Option<(UD64, UD64)> {
-        self.asks.first_key_value().map(|(k, v)| (*k, v.size()))
+        self.asks
+            .iter()
+            .find(|(_, lvl)| lvl.size() > UD64::ZERO)
+            .map(|(k, v)| (*k, v.size()))
     }
 
     /// Best bid price/size.
     pub fn best_bid(&self) -> Option<(UD64, UD64)> {
-        self.bids.first_key_value().map(|(k, v)| (k.0, v.size()))
+        self.bids
+            .iter()
+            .find(|(_, lvl)| lvl.size() > UD64::ZERO)
+            .map(|(k, v)| (k.0, v.size()))
     }
 
-    /// Ask impact price for the requested size, along with the fillable size and size-averaged price.
+    /// Ask impact price for the requested size, along with the fillable size
+    /// and size-averaged price.
     pub fn ask_impact(&self, want_size: UD64) -> Option<(UD64, UD64, UD64)> {
         Self::impact(self.asks.iter(), want_size)
     }
 
-    /// Bid impact price for the requested size, along with the fillable size and size-averaged price.
+    /// Bid impact price for the requested size, along with the fillable size
+    /// and size-averaged price.
     pub fn bid_impact(&self, want_size: UD64) -> Option<(UD64, UD64, UD64)> {
         Self::impact(self.bids.iter().map(|(k, v)| (&k.0, v)), want_size)
     }
@@ -79,23 +85,14 @@ impl OrderBook {
     // === L3 API ===
 
     /// Get L3 level at a specific ask price.
-    pub fn ask_level(&self, price: UD64) -> Option<&BookLevel> {
-        self.asks.get(&price)
-    }
+    pub fn ask_level(&self, price: UD64) -> Option<&BookLevel> { self.asks.get(&price) }
 
     /// Get L3 level at a specific bid price.
-    pub fn bid_level(&self, price: UD64) -> Option<&BookLevel> {
-        self.bids.get(&Reverse(price))
-    }
+    pub fn bid_level(&self, price: UD64) -> Option<&BookLevel> { self.bids.get(&Reverse(price)) }
 
     /// Get a specific order by ID (O(1) via HashMap lookup).
     pub fn get_order(&self, order_id: types::OrderId) -> Option<&BookOrder> {
         self.orders.get(&order_id)
-    }
-
-    /// Get the underlying Order by ID.
-    pub fn get_order_data(&self, order_id: types::OrderId) -> Option<&Order> {
-        self.get_order(order_id).map(|o| o.order())
     }
 
     /// Iterator over all L3 orders on the ask side in price-time priority.
@@ -112,22 +109,25 @@ impl OrderBook {
             .flat_map(|level| self.level_orders(level))
     }
 
-    /// Iterator over orders at a specific level (follows the linked list).
-    pub(crate) fn level_orders<'a>(&'a self, level: &'a BookLevel) -> LevelOrdersIter<'a> {
-        LevelOrdersIter {
-            orders: &self.orders,
-            current: level.head(),
-        }
-    }
-
     /// Total number of orders in the book.
-    pub fn total_orders(&self) -> usize {
-        self.orders.len()
-    }
+    pub fn total_orders(&self) -> usize { self.orders.len() }
 
     /// Access to all orders in the book keyed by order ID.
-    pub fn all_orders(&self) -> &HashMap<types::OrderId, BookOrder> {
-        &self.orders
+    pub fn all_orders(&self) -> &HashMap<types::OrderId, BookOrder> { &self.orders }
+
+    /// Iterator over orders at a specific level (follows the linked list).
+    pub(crate) fn level_orders<'a>(&'a self, level: &'a BookLevel) -> LevelOrdersIter<'a> {
+        LevelOrdersIter { orders: &self.orders, current: level.head() }
+    }
+
+    #[cfg(feature = "display")]
+    pub fn view<'a>(
+        &'a self,
+        depth: Option<usize>,
+        orders_per_level: Option<usize>,
+        show_expired: bool,
+    ) -> OrderBookView<'a> {
+        OrderBookView::new(self, depth, orders_per_level, show_expired)
     }
 
     // === Mutation methods ===
@@ -145,16 +145,10 @@ impl OrderBook {
 
         // Validate order
         if order.size() == UD64::ZERO {
-            return Err(OrderBookError::InvalidOrderSize {
-                order_id,
-                size: order.size(),
-            });
+            return Err(OrderBookError::InvalidOrderSize { order_id, size: order.size() });
         }
         if order.price() == UD64::ZERO {
-            return Err(OrderBookError::InvalidOrderPrice {
-                order_id,
-                price: order.price(),
-            });
+            return Err(OrderBookError::InvalidOrderPrice { order_id, price: order.price() });
         }
 
         // Check if order already exists
@@ -183,6 +177,7 @@ impl OrderBook {
     }
 
     /// Update an order's size (same price level, keeps queue position).
+    /// Expected to be called only for non-expired orders.
     ///
     /// # Errors
     ///
@@ -192,30 +187,24 @@ impl OrderBook {
     pub(crate) fn update_order(
         &mut self,
         order: &Order,
-        _prev_order: &Order,
+        prev_order: &BookOrder,
     ) -> OrderBookResult<()> {
         let order_id = order.order_id();
 
         // Validate new size
         if order.size() == UD64::ZERO {
-            return Err(OrderBookError::InvalidOrderSize {
-                order_id,
-                size: order.size(),
-            });
+            return Err(OrderBookError::InvalidOrderSize { order_id, size: order.size() });
         }
 
-        // Find the order
-        let l3_order = self
-            .orders
-            .get_mut(&order_id)
-            .ok_or(OrderBookError::OrderNotFound { order_id })?;
-
-        let old_size = l3_order.size();
-        let price = l3_order.price();
-        let side = l3_order.r#type().side();
+        let old_size = prev_order.size();
+        let price = prev_order.price();
+        let side = prev_order.r#type().side();
 
         // Update the order data
-        l3_order.update_order(*order);
+        self.orders
+            .get_mut(&order_id)
+            .ok_or(OrderBookError::OrderNotFound { order_id })?
+            .update_order(*order);
 
         // Update level cached size
         let level = self
@@ -234,21 +223,13 @@ impl OrderBook {
     ///
     /// Returns an error if:
     /// - The order doesn't exist in the book
-    pub(crate) fn remove_order_by_id(
-        &mut self,
-        order_id: types::OrderId,
-    ) -> OrderBookResult<Order> {
-        // Get order info before removal
-        let l3_order = self
-            .orders
-            .get(&order_id)
-            .ok_or(OrderBookError::OrderNotFound { order_id })?;
-
-        let prev_id = l3_order.prev();
-        let next_id = l3_order.next();
-        let price = l3_order.price();
-        let size = l3_order.size();
-        let side = l3_order.r#type().side();
+    pub(crate) fn remove_order(&mut self, prev_order: &BookOrder) -> OrderBookResult<Order> {
+        let order_id = prev_order.order_id();
+        let prev_id = prev_order.prev();
+        let next_id = prev_order.next();
+        let price = prev_order.price();
+        let size = prev_order.size();
+        let side = prev_order.r#type().side();
 
         // Unlink from list
         self.unlink_node(prev_id, next_id);
@@ -263,7 +244,10 @@ impl OrderBook {
         if level.tail() == Some(order_id) {
             level.set_tail(prev_id);
         }
-        level.sub_size(size);
+        if !prev_order.is_expired() {
+            // Expired orders already removed from the cached level size/count
+            level.sub_size(size);
+        }
         let should_remove_level = level.is_empty();
 
         // Prune empty level
@@ -277,7 +261,7 @@ impl OrderBook {
             .remove(&order_id)
             .ok_or(OrderBookError::OrderNotFound { order_id })?;
 
-        Ok(*removed.order())
+        Ok(*removed)
     }
 
     /// Move an order to the back of the queue (for size increases).
@@ -289,21 +273,15 @@ impl OrderBook {
     pub(crate) fn move_to_back(
         &mut self,
         order: &Order,
-        _prev_order: &Order,
+        prev_order: &BookOrder,
     ) -> OrderBookResult<()> {
         let order_id = order.order_id();
 
-        // Find the order
-        let l3_order = self
-            .orders
-            .get(&order_id)
-            .ok_or(OrderBookError::OrderNotFound { order_id })?;
-
-        let prev_id = l3_order.prev();
-        let next_id = l3_order.next();
-        let price = l3_order.price();
-        let old_size = l3_order.size();
-        let side = l3_order.r#type().side();
+        let prev_id = prev_order.prev();
+        let next_id = prev_order.next();
+        let price = prev_order.price();
+        let old_size = prev_order.size();
+        let side = prev_order.r#type().side();
 
         // If already at tail, just update the order data
         let is_at_tail = self
@@ -320,7 +298,12 @@ impl OrderBook {
             let level = self
                 .get_level_mut(side, price)
                 .ok_or(OrderBookError::LevelNotFound { price, side })?;
-            level.update_size(old_size, order.size());
+            if prev_order.is_expired() {
+                // Expired order was removed from the cached level size/count
+                level.add_size(order.size());
+            } else {
+                level.update_size(old_size, order.size());
+            }
             return Ok(());
         }
 
@@ -350,6 +333,8 @@ impl OrderBook {
             l3_order.set_prev(old_tail);
             l3_order.set_next(None);
             l3_order.update_order(*order);
+        } else {
+            return Err(OrderBookError::OrderNotFound { order_id });
         }
 
         // Update level tail and size - need to re-borrow
@@ -357,12 +342,18 @@ impl OrderBook {
             .get_level_mut(side, price)
             .ok_or(OrderBookError::LevelNotFound { price, side })?;
         level.set_tail(Some(order_id));
-        level.update_size(old_size, order.size());
+        if prev_order.is_expired() {
+            // Expired order was removed from the cached level size/count
+            level.add_size(order.size());
+        } else {
+            level.update_size(old_size, order.size());
+        }
 
         Ok(())
     }
 
-    /// Add orders from a snapshot, reconstructing FIFO order from linked list pointers.
+    /// Add orders from a snapshot, reconstructing FIFO order from linked list
+    /// pointers.
     ///
     /// Uses the `prev_order_id`/`next_order_id` fields to determine the correct
     /// queue position within each price level.
@@ -380,16 +371,10 @@ impl OrderBook {
             let order_id = order.order_id();
 
             if order.size() == UD64::ZERO {
-                return Err(OrderBookError::InvalidOrderSize {
-                    order_id,
-                    size: order.size(),
-                });
+                return Err(OrderBookError::InvalidOrderSize { order_id, size: order.size() });
             }
             if order.price() == UD64::ZERO {
-                return Err(OrderBookError::InvalidOrderPrice {
-                    order_id,
-                    price: order.price(),
-                });
+                return Err(OrderBookError::InvalidOrderPrice { order_id, price: order.price() });
             }
 
             // Validate that referenced orders exist in this snapshot
@@ -449,7 +434,9 @@ impl OrderBook {
             level.set_head(head.copied());
             level.set_tail(tail.copied());
             for &id in &order_ids {
-                if let Some(order) = self.orders.get(&id) {
+                if let Some(order) = self.orders.get(&id)
+                    && !order.is_expired()
+                {
                     level.add_size(order.size());
                 }
             }
@@ -457,14 +444,29 @@ impl OrderBook {
             match side {
                 types::OrderSide::Ask => {
                     self.asks.insert(price, level);
-                }
+                },
                 types::OrderSide::Bid => {
                     self.bids.insert(Reverse(price), level);
-                }
+                },
             }
         }
 
         Ok(())
+    }
+
+    /// Check if any orders are expired and update cached L2 book state.
+    pub(crate) fn check_expired(&mut self, instant: types::StateInstant) {
+        let mut update_levels = vec![];
+        for order in self.orders.values_mut() {
+            if order.update_if_expired(instant) {
+                update_levels.push((order.r#type().side(), order.price(), order.size()));
+            }
+        }
+        for (side, price, size) in update_levels {
+            if let Some(level) = self.get_level_mut(side, price) {
+                level.sub_size(size);
+            }
+        }
     }
 
     // === Linked list helpers ===
@@ -498,10 +500,10 @@ impl OrderBook {
         match side {
             types::OrderSide::Ask => {
                 self.asks.remove(&price);
-            }
+            },
             types::OrderSide::Bid => {
                 self.bids.remove(&Reverse(price));
-            }
+            },
         }
     }
 
@@ -585,6 +587,13 @@ impl OrderBook {
         } else {
             None
         }
+    }
+}
+
+#[cfg(feature = "display")]
+impl std::fmt::Display for OrderBook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.view(None, None, true).fmt(f)
     }
 }
 

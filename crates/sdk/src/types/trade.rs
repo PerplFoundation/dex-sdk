@@ -51,9 +51,7 @@ pub struct Trade {
 
 impl Trade {
     /// Total size filled across all makers.
-    pub fn total_size(&self) -> UD64 {
-        self.maker_fills.iter().map(|f| f.size).sum()
-    }
+    pub fn total_size(&self) -> UD64 { self.maker_fills.iter().map(|f| f.size).sum() }
 
     /// Volume-weighted average price across all maker fills.
     ///
@@ -71,7 +69,28 @@ impl Trade {
     }
 
     /// Total maker fees paid across all fills.
-    pub fn total_maker_fees(&self) -> UD64 {
-        self.maker_fills.iter().map(|f| f.fee).sum()
+    pub fn total_maker_fees(&self) -> UD64 { self.maker_fills.iter().map(|f| f.fee).sum() }
+
+    /// Volume-weighted average price, total size and total fees for a specific
+    /// maker.
+    ///
+    /// Returns `None` if the maker has no fills in this trade.
+    pub fn maker_total(&self, account_id: super::AccountId) -> Option<(UD64, UD64, UD64)> {
+        let mut total_value = UD64::ZERO;
+        let mut total_size = UD64::ZERO;
+        let mut total_fee = UD64::ZERO;
+        for fill in self
+            .maker_fills
+            .iter()
+            .filter(|f| f.maker_account_id == account_id)
+        {
+            total_value += fill.price * fill.size;
+            total_size += fill.size;
+            total_fee += fill.fee
+        }
+        if total_size == UD64::ZERO {
+            return None;
+        }
+        Some((total_value / total_size, total_size, total_fee))
     }
 }
