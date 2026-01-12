@@ -9,7 +9,7 @@ use crossterm::{
     terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures::StreamExt;
-use perpl_sdk::{Chain, state::Exchange, stream, types};
+use perpl_sdk::{Chain, state::Exchange, stream};
 use tokio_util::sync::CancellationToken;
 
 #[allow(clippy::too_many_arguments)]
@@ -17,7 +17,6 @@ pub(crate) async fn render<P: Provider + Clone>(
     chain: Chain,
     provider: P,
     mut exchange: Exchange,
-    perp_id: types::PerpetualId,
     depth: usize,
     orders_per_level: usize,
     show_expired: bool,
@@ -41,7 +40,7 @@ pub(crate) async fn render<P: Provider + Clone>(
         let block_events = res?;
         exchange.apply_events(&block_events)?;
 
-        let perpetual = exchange.perpetuals().get(&perp_id).unwrap();
+        let perpetual = exchange.perpetuals().values().last().unwrap();
 
         stdout.queue(Clear(ClearType::All))?;
         stdout.queue(MoveTo(0, 0))?;

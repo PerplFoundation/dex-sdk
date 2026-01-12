@@ -25,11 +25,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub num_blocks: Option<u64>,
 
-    /// Account addresses or IDs to show state/trace for
+    /// Account addresses or IDs, exactly one required for `show account`.
     #[arg(long, global = true)]
     pub accounts: Vec<types::AccountAddressOrID>,
 
-    /// Perpetual IDs to show state/trace for
+    /// Perpetual IDs to show state/trace for, exactly one required for `show
+    /// book`.
     #[arg(long, global = true)]
     pub perps: Vec<types::PerpetualId>,
 }
@@ -54,20 +55,12 @@ pub enum Commands {
 pub enum ShowCommands {
     /// Render live state of particular account
     Account {
-        /// Account address or ID
-        #[arg(short, long)]
-        account: types::AccountAddressOrID,
-
         /// Number of most recent trades to show (0 = don't show trades)
         #[arg(long, default_value = "10")]
         num_trades: usize,
     },
     /// Render live state of particular perpetual order book
     Book {
-        /// Perpetual ID
-        #[arg(short, long)]
-        perp: types::PerpetualId,
-
         /// Number of price levels to display (0 = all)
         #[arg(short, long, default_value = "10")]
         depth: usize,

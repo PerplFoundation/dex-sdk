@@ -37,12 +37,16 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         return Err(anyhow::anyhow!("unknown perpetual ID: {}", unknown_perp));
     }
 
-    let mut chain = Chain::custom(
+    let chain = Chain::custom(
         provider.get_chain_id().await?,
         Address::ZERO,
         0,
         cli.exchange.unwrap_or(Chain::testnet().exchange()),
-        if !cli.perps.is_empty() { cli.perps } else { Chain::testnet().perpetuals().to_vec() },
+        if !cli.perps.is_empty() {
+            cli.perps.clone()
+        } else {
+            Chain::testnet().perpetuals().to_vec()
+        },
     );
 
     let mut builder = SnapshotBuilder::new(&chain, provider.clone());
@@ -51,7 +55,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     if !cli.accounts.is_empty() {
-        builder = builder.with_accounts(cli.accounts);
+        builder = builder.with_accounts(cli.accounts.clone());
     } else {
         builder = builder.with_all_positions();
     }
@@ -59,21 +63,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let builder = match &cli.command {
         Commands::Snapshot | Commands::Trace => Some(builder),
         Commands::Show { command } => match command {
-            ShowCommands::Account { account, num_trades: _ } => {
-                Some(builder.with_accounts(vec![*account]))
-            },
-            ShowCommands::Book { perp, depth: _, orders_per_level: _, show_expired: _ } => {
-                if !Chain::testnet().perpetuals().contains(perp) {
-                    return Err(anyhow::anyhow!("unknown perpetual ID: {}", perp));
+            ShowCommands::Account { num_trades: _ } => {
+                if cli.accounts.len() != 1 {
+                    return Err(anyhow::anyhow!("exactly one account should be provided, see `--accounts`"));
                 }
-                chain = Chain::custom(
-                    chain.chain_id(),
-                    chain.collateral_token(),
-                    chain.deployed_at_block(),
-                    chain.exchange(),
-                    vec![*perp],
-                );
-                Some(builder.with_perpetuals(vec![*perp]))
+                Some(builder)
+            },
+            ShowCommands::Book { depth: _, orders_per_level: _, show_expired: _ } => {
+                if cli.perps.len() != 1 {
+                    return Err(anyhow::anyhow!("exactly one perp should be provided, see `--perps`"));
+                }
+                Some(builder)
             },
             ShowCommands::Trades => None,
         },
@@ -106,7 +106,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 .await?
         },
         Commands::Show { command } => match command {
-            ShowCommands::Account { account: _, num_trades } => {
+            ShowCommands::Account { num_trades } => {
                 account::render(
                     chain,
                     provider,
@@ -117,12 +117,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 )
                 .await?
             },
-            ShowCommands::Book { perp, depth, orders_per_level, show_expired } => {
+            ShowCommands::Book { depth, orders_per_level, show_expired } => {
                 book::render(
                     chain,
                     provider,
                     exchange.unwrap(),
-                    *perp,
                     *depth,
                     *orders_per_level,
                     *show_expired,
