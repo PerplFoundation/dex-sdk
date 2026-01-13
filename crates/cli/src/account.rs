@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::Write,
-    ops::Deref,
     pin::pin,
 };
 
@@ -139,11 +138,11 @@ pub(crate) async fn render<P: Provider + Clone>(
                 .filter(|o| o.account_id() == account.id())
                 .collect::<Vec<_>>();
             let mut table = Table::new(
-                ask_orders.iter().rev().map(|o| (*o).deref()).chain(
+                ask_orders.iter().rev().map(|o| &*(**o)).chain(
                     perp.l3_book()
                         .bid_orders()
                         .filter(|o| o.account_id() == account.id())
-                        .map(|o| (*o).deref()),
+                        .map(|o| &*(*o)),
                 ),
             );
             table.with(Style::sharp());

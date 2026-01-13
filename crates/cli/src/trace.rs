@@ -97,7 +97,7 @@ pub(crate) async fn render<P: Provider + Clone>(
             }
 
             // Remain state events
-            while let Some(state_events) = state_event_iter.next() {
+            for state_events in state_event_iter.by_ref() {
                 for event in state_events.event() {
                     println!("{}", format!("  > {:?}", event).bright_green());
                 }

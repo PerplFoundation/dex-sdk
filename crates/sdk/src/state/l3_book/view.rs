@@ -1,4 +1,4 @@
-use std::{iter, ops::Deref};
+use std::iter;
 
 use colored::Colorize;
 use fastnum::UD64;
@@ -70,10 +70,10 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                         level_orders.push('\n');
                     }
                     if !order.is_expired() {
-                        level_orders.push_str(format!("{:#} ", order.deref()).as_str());
+                        level_orders.push_str(format!("{:#} ", &*(*order)).as_str());
                     } else {
                         level_orders.push_str(
-                            format!("{:#} ", order.deref())
+                            format!("{:#} ", &*(*order))
                                 .strikethrough()
                                 .to_string()
                                 .as_str(),
@@ -189,8 +189,8 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                 ask_orders
                     .iter()
                     .rev()
-                    .map(|o| (*o).deref())
-                    .chain(self.book.bid_orders().map(|o| (*o).deref())),
+                    .map(|o| &*(**o))
+                    .chain(self.book.bid_orders().map(|o| &*(*o))),
             );
             spread_panel(&mut table, num_ask_orders);
             table.with(Style::sharp());

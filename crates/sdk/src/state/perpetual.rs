@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use alloy::primitives::{B256, I256, U256};
 use fastnum::{D64, D256, UD64, UD128};
 
@@ -357,7 +355,7 @@ impl Perpetual {
 
     /// Get a specific order by ID.
     pub fn get_order(&self, order_id: types::OrderId) -> Option<&Order> {
-        self.l3_book.get_order(order_id).map(|o| o.deref())
+        self.l3_book.get_order(order_id).map(|o| &*(*o))
     }
 
     /// Total number of orders in the book.
