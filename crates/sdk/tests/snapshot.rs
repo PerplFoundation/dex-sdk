@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use fastnum::{UD64, udec64, udec128};
 use perpl_sdk::{state, testing, types};
@@ -17,7 +17,7 @@ async fn test_full_book_snapshot() {
     let leverage = udec64!(10);
     let mut pending_txs = vec![];
     for (chunk, levels) in (1..32768)
-        .map(|offs| (UD64::from(100000u64 + offs), UD64::from(100000u64 - offs)))
+        .map(|offs| (UD64::from(100100u64 + offs / 100 * 100), UD64::from(99900u64 - offs / 100 * 100)))
         .collect::<Vec<_>>()
         .chunks(50)
         .enumerate()
@@ -65,15 +65,21 @@ async fn test_full_book_snapshot() {
             .collect();
 
         pending_txs.push(btc_perp.orders(maker.id, orders).await);
-        if chunk == 500 {
+        if chunk % 200 == 0 {
             pending_txs.push(btc_perp.set_mark_price(udec64!(100000)).await);
         }
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    futures::future::join_all(pending_txs.into_iter().map(|ptx| ptx.get_receipt())).await;
+    let receipts =
+        futures::future::join_all(pending_txs.into_iter().map(|ptx| ptx.get_receipt())).await;
+    for (i, r) in receipts.iter().enumerate() {
+        assert!(r.as_ref().unwrap().status(), "#{}: {:#?}", i, r);
+    }
     println!("book filled in: {:?}", started_at.elapsed());
 
     // Do some trades
-    btc_perp
+    btc_perp.set_mark_price(udec64!(100000)).await.get_receipt().await.unwrap();
+    let receipt = btc_perp
         .orders(
             taker.id,
             vec![
@@ -131,6 +137,7 @@ async fn test_full_book_snapshot() {
         .get_receipt()
         .await
         .unwrap();
+    assert!(receipt.status(), "{:#?}", receipt);
 
     // Take the snapshot
     let started_at = Instant::now();
@@ -163,7 +170,7 @@ async fn test_full_book_snapshot() {
     assert_eq!(perp.taker_fee(), udec64!(0.00035));
     assert_eq!(perp.initial_margin(), udec64!(10));
     assert_eq!(perp.maintenance_margin(), udec64!(20));
-    assert_eq!(perp.last_price(), udec64!(99990));
+    assert_eq!(perp.last_price(), udec64!(99900));
     assert_eq!(perp.mark_price(), udec64!(100000));
     assert_eq!(perp.funding_start_block(), 8571);
     assert_eq!(perp.open_interest(), udec128!(0.09));
@@ -180,15 +187,15 @@ async fn test_full_book_snapshot() {
         .all(|o| o.account_id() == maker.id && o.size() == udec64!(0.001));
     assert!(all_asks_valid && all_bids_valid);
 
-    assert_eq!(perp.l3_book().best_ask(), Some((udec64!(100101), udec64!(0.001))));
-    assert_eq!(perp.l3_book().best_bid(), Some((udec64!(99989), udec64!(0.001))));
+    assert_eq!(perp.l3_book().best_ask(), Some((udec64!(100200), udec64!(0.099))));
+    assert_eq!(perp.l3_book().best_bid(), Some((udec64!(99900), udec64!(0.089))));
 
     assert_eq!(
         perp.l3_book().ask_impact(udec64!(1)),
-        Some((udec64!(101100), udec64!(1), udec64!(100600.5)))
+        Some((udec64!(101200), udec64!(1), udec64!(100651)))
     );
     assert_eq!(
         perp.l3_book().bid_impact(udec64!(1)),
-        Some((udec64!(98990), udec64!(1), udec64!(99489.5)))
+        Some((udec64!(98900), udec64!(1), udec64!(99439)))
     );
 }

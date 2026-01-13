@@ -127,7 +127,7 @@ impl<'e> TestPerp<'e> {
                     .unwrap()
                     .value(),
             )
-            .gas(1000000)
+            .gas(5000000)
             .send()
             .await
             .map_err::<DexError, _>(DexError::from)
@@ -164,7 +164,7 @@ impl<'e> TestPerp<'e> {
                     .unwrap()
                     .value(),
             )
-            .gas(1000000 * requests.len() as u64)
+            .gas(150000000)
             .send()
             .await
             .map_err::<DexError, _>(DexError::from)
