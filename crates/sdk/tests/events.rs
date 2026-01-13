@@ -1,16 +1,14 @@
-use std::{num::NonZeroU16, pin::pin, sync::Arc};
+use std::num::NonZeroU16;
 
 use fastnum::{udec64, udec128};
-use futures::StreamExt;
 use perpl_sdk::{
     state::{
         self, AccountEvent, AccountEventType, OrderEvent, OrderEventType, PositionEvent,
         PositionEventType,
     },
-    stream, testing,
+    testing,
     types::{self, RequestType::*},
 };
-use tokio::sync::{RwLock, mpsc};
 
 fn oid(n: u16) -> types::OrderId { NonZeroU16::new(n).expect("test order id must be non-zero") }
 
@@ -54,20 +52,14 @@ async fn test_snapshot_and_events() {
     o(maker.id, 1, None, OpenShort, udec64!(100000), udec64!(1)).await;
     o(taker.id, 2, None, OpenLong, udec64!(100000), udec64!(0.1)).await;
 
-    // Snapshot
-    let snapshot = Arc::new(RwLock::new(
-        state::SnapshotBuilder::new(&exchange.chain(), exchange.provider.clone())
-            .with_all_positions()
-            .build()
-            .await
-            .unwrap(),
-    ));
+    // Take snapshot
+    let (indexer, mut state) = testing::Indexer::new(&exchange).await;
 
-    assert_eq!(snapshot.read().await.perpetuals().len(), 1);
-    assert_eq!(snapshot.read().await.accounts().len(), 2);
+    assert_eq!(state.snapshot().perpetuals().len(), 1);
+    assert_eq!(state.snapshot().accounts().len(), 2);
 
     {
-        let snapshot = snapshot.read().await;
+        let snapshot = state.snapshot().clone();
         let perp = snapshot.perpetuals().get(&btc_perp.id).unwrap();
         assert_eq!(perp.id(), btc_perp.id);
         assert_eq!(perp.name(), "BTC".to_string());
@@ -106,24 +98,8 @@ async fn test_snapshot_and_events() {
         assert_eq!(taker_pos.size(), udec64!(0.1));
     }
 
-    // Spin up event stream consumption in background to make sure stream is
-    // actually following the tip of the chain
-    let (results_tx, mut results_rx) = mpsc::unbounded_channel();
-    tokio::spawn({
-        let (chain, provider, snapshot) =
-            (exchange.chain().clone(), exchange.provider.clone(), snapshot.clone());
-        async move {
-            let mut stream = pin!(
-                stream::raw(&chain, provider, snapshot.read().await.instant(), tokio::time::sleep)
-                    .take(20)
-            );
-            while let Some(batch) = stream.next().await {
-                let batch = batch.unwrap();
-                let result = snapshot.write().await.apply_events(&batch).unwrap();
-                results_tx.send(result).unwrap();
-            }
-        }
-    });
+    // Start processing events
+    tokio::spawn(indexer.run(tokio::time::sleep));
 
     // A bit more activity
     o(maker.id, 10, Some(oid(1)), Change, udec64!(100100), udec64!(1)).await;
@@ -134,72 +110,74 @@ async fn test_snapshot_and_events() {
     o(taker.id, 21, None, CloseLong, udec64!(100100), udec64!(0.2)).await;
 
     // Collect and (partially) validate produced events
-    while let Some(block_events) = results_rx.recv().await {
-        if let Some(block_events) = block_events {
-            for event in block_events.events().iter().map(|e| e.event()).flatten() {
-                match event {
-                    state::StateEvents::Account(AccountEvent {
-                        account_id: 1,
-                        request_id: Some(10),
-                        r#type: AccountEventType::BalanceUpdated(balance),
-                    }) => assert_eq!(*balance, udec128!(998998.9)),
-                    state::StateEvents::Account(AccountEvent {
-                        account_id: 1,
-                        request_id: Some(11),
-                        r#type: AccountEventType::BalanceUpdated(balance),
-                    }) => assert_eq!(*balance, udec128!(997995.899)),
-                    state::StateEvents::Account(AccountEvent {
-                        account_id: 2,
-                        request_id: Some(11),
-                        r#type: AccountEventType::BalanceUpdated(balance),
-                    }) => assert_eq!(*balance, udec128!(97990.9965)),
+    while let Some(block_events) = state.next_state_events().await {
+        for event in block_events.events().iter().map(|e| e.event()).flatten() {
+            match event {
+                state::StateEvents::Account(AccountEvent {
+                    account_id: 1,
+                    request_id: Some(10),
+                    r#type: AccountEventType::BalanceUpdated(balance),
+                }) => assert_eq!(*balance, udec128!(998998.9)),
+                state::StateEvents::Account(AccountEvent {
+                    account_id: 1,
+                    request_id: Some(11),
+                    r#type: AccountEventType::BalanceUpdated(balance),
+                }) => assert_eq!(*balance, udec128!(997995.899)),
+                state::StateEvents::Account(AccountEvent {
+                    account_id: 2,
+                    request_id: Some(11),
+                    r#type: AccountEventType::BalanceUpdated(balance),
+                }) => assert_eq!(*balance, udec128!(97990.9965)),
 
-                    state::StateEvents::Order(OrderEvent {
-                        perpetual_id: 16,
-                        account_id: 1,
-                        request_id: Some(10),
-                        order_id: Some(order_id),
-                        r#type: OrderEventType::Updated { price, size, expiry_block },
-                    }) if *order_id == oid(1) => {
-                        assert_eq!(*price, Some(udec64!(100100)));
-                        assert_eq!(*size, Some(udec64!(1)));
-                        assert_eq!(*expiry_block, None);
-                    },
-                    state::StateEvents::Order(OrderEvent {
-                        perpetual_id: 16,
-                        account_id: 1,
-                        request_id: Some(11),
-                        order_id: Some(order_id),
-                        r#type: OrderEventType::Filled { fill_price, fill_size, fee, is_maker },
-                    }) if *order_id == oid(1) => {
-                        assert_eq!(*fill_price, udec64!(100100));
-                        assert_eq!(*fill_size, udec64!(0.1));
-                        assert_eq!(*fee, udec64!(1.001));
-                        assert_eq!(*is_maker, true);
-                    },
+                state::StateEvents::Order(OrderEvent {
+                    perpetual_id: 16,
+                    account_id: 1,
+                    request_id: Some(10),
+                    order_id: Some(order_id),
+                    r#type: OrderEventType::Updated { price, size, expiry_block },
+                }) if *order_id == oid(1) => {
+                    assert_eq!(*price, Some(udec64!(100100)));
+                    assert_eq!(*size, Some(udec64!(1)));
+                    assert_eq!(*expiry_block, None);
+                },
+                state::StateEvents::Order(OrderEvent {
+                    perpetual_id: 16,
+                    account_id: 1,
+                    request_id: Some(11),
+                    order_id: Some(order_id),
+                    r#type: OrderEventType::Filled { fill_price, fill_size, fee, is_maker },
+                }) if *order_id == oid(1) => {
+                    assert_eq!(*fill_price, udec64!(100100));
+                    assert_eq!(*fill_size, udec64!(0.1));
+                    assert_eq!(*fee, udec64!(1.001));
+                    assert_eq!(*is_maker, true);
+                },
 
-                    state::StateEvents::Position(PositionEvent {
-                        perpetual_id: 16,
-                        account_id: 2,
-                        request_id: Some(11),
-                        r#type:
-                            PositionEventType::Increased { entry_price, prev_size, new_size, deposit },
-                    }) => {
-                        assert_eq!(*entry_price, udec64!(100050));
-                        assert_eq!(*prev_size, udec64!(0.1));
-                        assert_eq!(*new_size, udec64!(0.2));
-                        assert_eq!(*deposit, udec128!(2002));
-                    },
+                state::StateEvents::Position(PositionEvent {
+                    perpetual_id: 16,
+                    account_id: 2,
+                    request_id: Some(11),
+                    r#type:
+                        PositionEventType::Increased { entry_price, prev_size, new_size, deposit },
+                }) => {
+                    assert_eq!(*entry_price, udec64!(100050));
+                    assert_eq!(*prev_size, udec64!(0.1));
+                    assert_eq!(*new_size, udec64!(0.2));
+                    assert_eq!(*deposit, udec128!(2002));
+                },
 
-                    _ => (),
-                }
+                _ => (),
             }
+        }
+
+        if state.request_id_seen(21) {
+            break;
         }
     }
 
     // Validate updated snapshot
     {
-        let snapshot = snapshot.read().await;
+        let snapshot = state.snapshot().clone();
         let perp = snapshot.perpetuals().get(&btc_perp.id).unwrap();
         assert_eq!(perp.last_price(), udec64!(100100));
         assert_eq!(perp.open_interest(), udec128!(0));

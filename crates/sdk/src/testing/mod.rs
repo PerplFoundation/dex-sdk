@@ -7,19 +7,27 @@
 //! [`TestPerp`] then can be used to configure perpetual contracts and post
 //! orders, while [`TestAccount`] provides basic information about exchange
 //! account.
+//!
+//! [`Indexer`] wraps snapshot creation and event processing, while providing
+//! convenience methods for synchronization in tests.
+mod account;
+mod indexer;
+mod perp;
 
 use std::{sync::Arc, time::Duration};
 
+pub use account::*;
 use alloy::{
     hex::ToHexExt,
-    network::Ethereum,
     node_bindings::{Anvil, AnvilInstance},
-    primitives::{Address, I256, U256, address, hex},
-    providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder, ext::AnvilApi},
+    primitives::{Address, U256, address, hex},
+    providers::{DynProvider, Provider, ProviderBuilder, ext::AnvilApi},
     rpc::client::RpcClient,
 };
 use dashmap::{DashMap, DashSet};
-use fastnum::{UD64, UD128, udec64};
+use fastnum::{UD64, udec64};
+pub use indexer::*;
+pub use perp::*;
 
 use crate::{
     Chain,
@@ -29,7 +37,7 @@ use crate::{
 };
 
 const CHAIN_ID: u64 = 1337;
-const BLOCK_TIME_SEC: f64 = 0.45;
+const BLOCK_TIME_SEC: f64 = 0.4;
 const POLL_INTERVAL_MS: u64 = 50;
 
 const USD_DECIMALS: u8 = 6;
@@ -51,24 +59,6 @@ pub struct TestExchange {
     perpetual_ids: Arc<DashSet<types::PerpetualId>>,
     account_address: Arc<DashMap<types::AccountId, Address>>,
     anvil: AnvilInstance,
-}
-
-#[derive(Debug)]
-pub struct TestPerp<'e> {
-    pub id: types::PerpetualId,
-    pub name: String,
-    pub price_converter: num::Converter,
-    pub size_converter: num::Converter,
-    pub leverage_converter: num::Converter,
-    exchange: &'e TestExchange,
-}
-
-#[derive(Debug)]
-pub struct TestAccount<'e> {
-    pub id: types::AccountId,
-    pub address: Address,
-
-    exchange: &'e TestExchange,
 }
 
 impl TestExchange {
@@ -371,188 +361,6 @@ impl TestExchange {
         .await
         .unpause()
         .await
-    }
-}
-
-impl<'e> TestPerp<'e> {
-    pub async fn with_mark_price(self, price: UD64) -> Self {
-        self.exchange
-            .exchange
-            .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
-            .from(self.exchange.price_admin)
-            .gas(500000)
-            .send()
-            .await
-            .map_err::<DexError, _>(DexError::from)
-            .unwrap()
-            .get_receipt()
-            .await
-            .unwrap();
-        self
-    }
-
-    pub async fn with_min_post(self, min: U256) -> Self {
-        self.exchange
-            .exchange
-            .setMinPost(min)
-            .send()
-            .await
-            .map_err::<DexError, _>(DexError::from)
-            .unwrap()
-            .get_receipt()
-            .await
-            .unwrap();
-        self
-    }
-
-    pub async fn with_min_settle(self, min: U256) -> Self {
-        self.exchange
-            .exchange
-            .setMinSettle(min)
-            .send()
-            .await
-            .map_err::<DexError, _>(DexError::from)
-            .unwrap()
-            .get_receipt()
-            .await
-            .unwrap();
-        self
-    }
-
-    pub async fn unpause(self) -> Self {
-        self.exchange
-            .exchange
-            .setContractPaused(U256::from(self.id), false)
-            .gas(500000)
-            .send()
-            .await
-            .map_err::<DexError, _>(DexError::from)
-            .unwrap()
-            .get_receipt()
-            .await
-            .unwrap();
-        self
-    }
-
-    pub async fn set_mark_price(&self, price: UD64) -> PendingTransactionBuilder<Ethereum> {
-        self.exchange
-            .exchange
-            .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
-            .from(self.exchange.price_admin)
-            .gas(500000)
-            .send()
-            .await
-            .map_err::<DexError, _>(DexError::from)
-            .unwrap()
-    }
-
-    pub async fn set_funding_rate(
-        &self,
-        price: u32,
-        rate: i32,
-    ) -> PendingTransactionBuilder<Ethereum> {
-        self.exchange
-            .exchange
-            .setFundingSum(U256::from(self.id), I256::try_from(rate).unwrap(), price, true, true)
-            .from(self.exchange.anvil.addresses()[2]) // From Price Admin
-            .gas(500000)
-            .send()
-            .await
-            .map_err::<DexError, _>(DexError::from)
-            .unwrap()
-    }
-
-    pub async fn order(
-        &self,
-        account_id: types::AccountId,
-        request: types::OrderRequest,
-    ) -> PendingTransactionBuilder<Ethereum> {
-        self.exchange
-            .exchange
-            .execOrder(request.to_order_desc(
-                self.price_converter,
-                self.size_converter,
-                self.leverage_converter,
-                Some(self.exchange.collateral_converter),
-            ))
-            .from(
-                *self
-                    .exchange
-                    .account_address
-                    .get(&account_id)
-                    .unwrap()
-                    .value(),
-            )
-            .gas(1000000)
-            .send()
-            .await
-            .map_err::<DexError, _>(DexError::from)
-            .unwrap()
-    }
-
-    pub async fn orders(
-        &self,
-        account_id: types::AccountId,
-        requests: Vec<types::OrderRequest>,
-    ) -> PendingTransactionBuilder<Ethereum> {
-        self.exchange
-            .exchange
-            .execOpsAndOrders(
-                vec![],
-                requests
-                    .iter()
-                    .map(|req| {
-                        req.to_order_desc(
-                            self.price_converter,
-                            self.size_converter,
-                            self.leverage_converter,
-                            Some(self.exchange.collateral_converter),
-                        )
-                    })
-                    .collect(),
-                true,
-            )
-            .from(
-                *self
-                    .exchange
-                    .account_address
-                    .get(&account_id)
-                    .unwrap()
-                    .value(),
-            )
-            .gas(250000 * requests.len() as u64)
-            .send()
-            .await
-            .map_err::<DexError, _>(DexError::from)
-            .unwrap()
-    }
-}
-
-impl<'e> TestAccount<'e> {
-    pub async fn balance(&self) -> UD128 {
-        let acc = self
-            .exchange
-            .exchange
-            .getAccountById(U256::from(self.id))
-            .call()
-            .await
-            .unwrap();
-        self.exchange
-            .collateral_converter
-            .from_unsigned(acc.balanceCNS)
-    }
-
-    pub async fn locked_balance(&self) -> UD128 {
-        let acc = self
-            .exchange
-            .exchange
-            .getAccountById(U256::from(self.id))
-            .call()
-            .await
-            .unwrap();
-        self.exchange
-            .collateral_converter
-            .from_unsigned(acc.lockedBalanceCNS)
     }
 }
 

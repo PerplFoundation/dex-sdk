@@ -1,14 +1,14 @@
 use alloy::primitives::TxHash;
 
 /// Events from a specific block.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct BlockEvents<T> {
     instant: super::StateInstant,
     events: Vec<T>,
 }
 
 /// Event along with transaction context.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct EventContext<T> {
     pub(crate) tx_hash: TxHash,
     pub(crate) tx_index: u64,

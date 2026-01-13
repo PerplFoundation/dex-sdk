@@ -44,6 +44,7 @@ pub mod error;
 pub mod num;
 pub mod state;
 pub mod stream;
+#[cfg(feature = "testing")]
 pub mod testing;
 pub mod types;
 

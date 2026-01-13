@@ -153,7 +153,7 @@ impl Order {
 
     pub(crate) fn update_if_expired(&mut self, instant: types::StateInstant) -> bool {
         if self.expiry_block != 0
-            && self.expiry_block < instant.block_number()
+            && self.expiry_block <= instant.block_number()
             && !self.is_expired()
         {
             // Just updating instant so `is_expired` returns true
@@ -361,7 +361,7 @@ impl Order {
     /// Check if the order is expired.
     /// NOTE: Valid only after the end of expiry block processing.
     pub fn is_expired(&self) -> bool {
-        self.expiry_block != 0 && self.expiry_block < self.instant.block_number()
+        self.expiry_block != 0 && self.expiry_block <= self.instant.block_number()
     }
 
     /// Leverage of the order.
@@ -453,7 +453,7 @@ impl tabled::Tabled for Order {
                 "-".to_string().into()
             },
             if self.expiry_block() > 0 {
-                if self.expiry_block() < self.instant().block_number() {
+                if self.is_expired() {
                     (self.expiry_block().to_string() + " (expired)")
                         .bright_red()
                         .to_string()
