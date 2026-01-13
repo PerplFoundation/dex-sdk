@@ -1,0 +1,19 @@
+[package]
+name = "perpl-cli"
+description = "Perpl DEX CLI"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+perpl_sdk = { package = "perpl-sdk", path = "../sdk", features = ["display"] }
+
+alloy.workspace = true
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive"] }
+colored.workspace = true
+crossterm.workspace = true
+fastnum.workspace = true
+futures.workspace = true
+tabled.workspace = true
+tokio = { workspace = true, features = ["signal", "time"] }
+tokio-util.workspace = true

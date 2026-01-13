@@ -1,0 +1,28 @@
+[package]
+name = "perpl-sdk"
+build = "build.rs"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+alloy.workspace = true
+alloy-sol-types.workspace = true
+chrono.workspace = true
+colored = { workspace = true, optional = true }
+dashmap.workspace = true
+derive_more.workspace = true
+fastnum.workspace = true
+futures.workspace = true
+itertools.workspace = true
+tabled = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+alloy = { workspace = true, features = ["node-bindings"] }
+tabled = { workspace = true }
+tokio = { workspace = true }
+
+[features]
+default = ["display", "testing"]
+display = ["tabled", "colored"]
+testing = ["alloy/node-bindings"]
