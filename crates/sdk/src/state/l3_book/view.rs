@@ -54,8 +54,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
         };
 
         if f.alternate() {
-            // Compact representation with only non-expired orders as an alternate
-            // representation
+            // Configured compact representation as an alternate representation
 
             let level_orders = |level: &BookLevel| {
                 let mut level_orders = String::with_capacity(64 * level.num_orders() as usize); // Guesstimate
@@ -63,7 +62,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                     .book
                     .level_orders(level)
                     .filter(|o| !o.is_expired() || self.show_expired)
-                    .take(self.orders_per_level.unwrap_or(level.num_orders() as usize))
+                    .take(self.orders_per_level.unwrap_or(usize::MAX))
                     .enumerate()
                 {
                     if i > 0 && i % 4 == 0 {
@@ -74,7 +73,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                     } else {
                         level_orders.push_str(
                             format!("{:#} ", &*(*order))
-                                .strikethrough()
+                                .bright_red()
                                 .to_string()
                                 .as_str(),
                         );
@@ -93,7 +92,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                 .book
                 .asks
                 .iter()
-                .filter(|(_, lvl)| lvl.num_orders() > 0)
+                .filter(|(_, lvl)| lvl.num_orders() > 0 || self.show_expired)
             {
                 num_ask_levels += 1;
                 num_ask_orders += level.num_orders();
@@ -116,7 +115,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                 .book
                 .bids
                 .iter()
-                .filter(|(_, lvl)| lvl.num_orders() > 0)
+                .filter(|(_, lvl)| lvl.num_orders() > 0 || self.show_expired)
             {
                 num_bid_levels += 1;
                 num_bid_orders += level.num_orders();

@@ -15,44 +15,44 @@ pub struct Cli {
     #[arg(long, global = true, default_value_t = DEFAULT_RPC_PROVIDER.to_string() )]
     pub rpc: String,
 
-    /// RPC throttling (req/sec), defaults to 15 for default RPC provider and
-    /// none for custom
+    /// RPC throttling (req/sec) [default: 15 for default RPC provider and
+    /// none for custom]
     #[arg(long, global = true)]
     pub rpc_throttle: Option<u32>,
 
-    /// Exchange smart contract address
+    /// Exchange smart contract address [default: testnet smart contract]
     #[arg(long, global = true)]
     pub exchange: Option<Address>,
 
-    /// Block number to fetch state at or start tracing from
+    /// Block number to fetch state at or start tracing from [default: latest
+    /// block]
     #[arg(long, global = true)]
     pub block: Option<u64>,
 
-    /// Number of blocks to trace or show, defaults to follow until terminated
-    /// (Ctrl+C)
+    /// Number of blocks to trace or show [default: unlimited, until terminated
+    /// by (Ctrl+C)]
     #[arg(long, global = true)]
     pub num_blocks: Option<u64>,
 
-    /// Account addresses or IDs, exactly one required for `show account`.
+    /// Account addresses or ID to snaphot/trace/show [default: all accounts for
+    /// `snapshot`/`trace`, required for `show account`]
     #[arg(long, global = true)]
-    pub accounts: Vec<types::AccountAddressOrID>,
+    pub account: Vec<types::AccountAddressOrID>,
 
-    /// Perpetual IDs to show state/trace for, exactly one required for `show
-    /// book`.
+    /// Perpetual ID to show state/trace for [default: all perpetuals
+    /// for `snapshot`/`trace`/`show trades`, required for `show book`]
     #[arg(long, global = true)]
-    pub perps: Vec<types::PerpetualId>,
+    pub perp: Vec<types::PerpetualId>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Take a single snapshot of the exchange state at a particular block and
-    /// render it according to the provided display options
+    /// Take a snapshot of exchange state at a particular block height
     Snapshot,
-    /// Take and render an initial snapshot then trace events from the provided
-    /// block range and render smart contract events and derived SDK events per
-    /// transaction, along with per-block state changes
+    /// Take an initial snapshot, then trace all events, then print the final
+    /// state
     Trace,
-    /// Render live state of particular account, perpetual order book or trades
+    /// Show live state of account, perpetual order book or recent trades
     Show {
         #[command(subcommand)]
         command: ShowCommands,
@@ -61,13 +61,13 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug)]
 pub enum ShowCommands {
-    /// Render live state of particular account
+    /// Show account state
     Account {
         /// Number of most recent trades to show (0 = don't show trades)
         #[arg(long, default_value_t = 10)]
         num_trades: usize,
     },
-    /// Render live state of particular perpetual order book
+    /// Show state of perpetual order book
     Book {
         /// Number of price levels to display (0 = all)
         #[arg(short, long, default_value_t = 10)]
@@ -81,6 +81,6 @@ pub enum ShowCommands {
         #[arg(long, default_value_t = false)]
         show_expired: bool,
     },
-    /// Render live trades
+    /// Show recent trades
     Trades,
 }

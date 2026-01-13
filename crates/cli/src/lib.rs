@@ -36,11 +36,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             .await
             .context("connecting to RPC")?
     };
-    client.set_poll_interval(Duration::from_millis(250));
+    client.set_poll_interval(Duration::from_millis(100));
     let provider = ProviderBuilder::new().connect_client(client);
 
     if let Some(unknown_perp) = cli
-        .perps
+        .perp
         .iter()
         .find(|perp_id| !Chain::testnet().perpetuals().contains(perp_id))
     {
@@ -52,8 +52,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Address::ZERO,
         0,
         cli.exchange.unwrap_or(Chain::testnet().exchange()),
-        if !cli.perps.is_empty() {
-            cli.perps.clone()
+        if !cli.perp.is_empty() {
+            cli.perp.clone()
         } else {
             Chain::testnet().perpetuals().to_vec()
         },
@@ -64,8 +64,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         builder = builder.at_block(BlockId::number(block));
     }
 
-    if !cli.accounts.is_empty() {
-        builder = builder.with_accounts(cli.accounts.clone());
+    if !cli.account.is_empty() {
+        builder = builder.with_accounts(cli.account.clone());
     } else {
         builder = builder.with_all_positions();
     }
@@ -74,17 +74,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Snapshot | Commands::Trace => Some(builder),
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades: _ } => {
-                if cli.accounts.len() != 1 {
+                if cli.account.len() != 1 {
                     return Err(anyhow::anyhow!(
-                        "exactly one account should be provided, see `--accounts`"
+                        "exactly one account should be provided, see `--account`"
                     ));
                 }
                 Some(builder)
             },
             ShowCommands::Book { depth: _, orders_per_level: _, show_expired: _ } => {
-                if cli.perps.len() != 1 {
+                if cli.perp.len() != 1 {
                     return Err(anyhow::anyhow!(
-                        "exactly one perp should be provided, see `--perps`"
+                        "exactly one perp should be provided, see `--perp`"
                     ));
                 }
                 Some(builder)

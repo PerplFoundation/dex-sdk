@@ -95,12 +95,12 @@ pub(crate) async fn render<P: Provider + Clone>(
                 }
                 state_event_iter.next();
             }
+        }
 
-            // Remain state events
-            for state_events in state_event_iter.by_ref() {
-                for event in state_events.event() {
-                    println!("{}", format!("  > {:?}", event).bright_green());
-                }
+        // Remaining state events
+        for state_events in state_event_iter.by_ref() {
+            for event in state_events.event() {
+                println!("{}", format!("  > {:?}", event).bright_green());
             }
         }
 
