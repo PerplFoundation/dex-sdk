@@ -17,7 +17,9 @@ async fn test_full_book_snapshot() {
     let leverage = udec64!(10);
     let mut pending_txs = vec![];
     for (chunk, levels) in (1..32768)
-        .map(|offs| (UD64::from(100100u64 + offs / 100 * 100), UD64::from(99900u64 - offs / 100 * 100)))
+        .map(|offs| {
+            (UD64::from(100100u64 + offs / 100 * 100), UD64::from(99900u64 - offs / 100 * 100))
+        })
         .collect::<Vec<_>>()
         .chunks(50)
         .enumerate()
@@ -78,7 +80,12 @@ async fn test_full_book_snapshot() {
     println!("book filled in: {:?}", started_at.elapsed());
 
     // Do some trades
-    btc_perp.set_mark_price(udec64!(100000)).await.get_receipt().await.unwrap();
+    btc_perp
+        .set_mark_price(udec64!(100000))
+        .await
+        .get_receipt()
+        .await
+        .unwrap();
     let receipt = btc_perp
         .orders(
             taker.id,

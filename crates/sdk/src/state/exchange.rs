@@ -665,6 +665,7 @@ impl Exchange {
                                 None,
                                 Some(new_size),
                                 None,
+                                None,
                             ))
                             .expect("order exists");
                             StateEvents::order(
@@ -890,6 +891,7 @@ impl Exchange {
                             instant,
                             ctx,
                             price_update,
+                            size_update,
                             size_update,
                             expiry_block_update,
                         );

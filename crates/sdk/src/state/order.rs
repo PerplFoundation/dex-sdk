@@ -49,6 +49,7 @@ pub struct Order {
     price: UD64, // SC allocates 24 bits + base price
     #[debug("{size}")]
     size: UD64, // SC allocates 40 bits
+    placed_size: Option<UD64>, // SC allocates 40 bits
     expiry_block: u64,
     #[debug("{leverage}")]
     leverage: UD64,
@@ -86,6 +87,7 @@ impl Order {
             account_id: order.accountId,
             price: base_price + price_converter.from_unsigned(order.priceONS.to()),
             size: size_converter.from_unsigned(order.lotLNS.to()),
+            placed_size: None,
             expiry_block: order.expiryBlock as u64,
             leverage: leverage_converter.from_u64(order.leverageHdths as u64),
             post_only: None,
@@ -112,6 +114,7 @@ impl Order {
             account_id: ctx.account_id,
             price: price_converter.from_unsigned(ctx.price),
             size,
+            placed_size: Some(size),
             expiry_block: ctx.expiry_block,
             leverage: leverage_converter.from_unsigned(ctx.leverage),
             post_only: Some(ctx.post_only),
@@ -129,6 +132,7 @@ impl Order {
         ctx: &Option<event::OrderContext>,
         price: Option<UD64>,
         size: Option<UD64>,
+        placed_size: Option<UD64>,
         expiry_block: Option<u64>,
     ) -> Self {
         Self {
@@ -139,6 +143,7 @@ impl Order {
             account_id: self.account_id,
             price: price.unwrap_or(self.price),
             size: size.unwrap_or(self.size),
+            placed_size: placed_size.or(self.placed_size),
             expiry_block: expiry_block.unwrap_or(self.expiry_block),
             leverage: self.leverage,
             post_only: self.post_only,
@@ -174,6 +179,7 @@ impl Order {
             account_id: 0,
             price,
             size,
+            placed_size: Some(size),
             expiry_block: 0,
             leverage: UD64::ZERO,
             post_only: None,
@@ -203,6 +209,7 @@ impl Order {
             account_id,
             price,
             size,
+            placed_size: Some(size),
             expiry_block: 0,
             leverage: UD64::ZERO,
             post_only: None,
@@ -234,6 +241,7 @@ impl Order {
             account_id,
             price,
             size,
+            placed_size: Some(size),
             expiry_block: 0,
             leverage: UD64::ZERO,
             post_only: None,
@@ -255,6 +263,7 @@ impl Order {
             account_id: self.account_id,
             price: self.price,
             size,
+            placed_size: self.placed_size,
             expiry_block: self.expiry_block,
             leverage: self.leverage,
             post_only: self.post_only,
@@ -276,6 +285,7 @@ impl Order {
             account_id: self.account_id,
             price,
             size: self.size,
+            placed_size: self.placed_size,
             expiry_block: self.expiry_block,
             leverage: self.leverage,
             post_only: self.post_only,
@@ -297,6 +307,7 @@ impl Order {
             account_id: self.account_id,
             price: self.price,
             size: self.size,
+            placed_size: self.placed_size,
             expiry_block,
             leverage: self.leverage,
             post_only: self.post_only,
@@ -323,6 +334,7 @@ impl Order {
             account_id: self.account_id,
             price: self.price,
             size: self.size,
+            placed_size: self.placed_size,
             expiry_block: self.expiry_block,
             leverage: self.leverage,
             post_only: self.post_only,
@@ -352,8 +364,18 @@ impl Order {
     /// Limit price of the order.
     pub fn price(&self) -> UD64 { self.price }
 
-    /// Size of the order.
+    /// Current size of the order.
     pub fn size(&self) -> UD64 { self.size }
+
+    /// Size of the order that was placed.
+    /// Available only from real-time events, not from the initial snapshot.
+    pub fn placed_size(&self) -> Option<UD64> { self.placed_size }
+
+    /// Filled size of the order.
+    /// Available only from real-time events, not from the initial snapshot.
+    pub fn filled_size(&self) -> Option<UD64> {
+        self.placed_size.map(|placed_size| placed_size - self.size)
+    }
 
     /// Expiry block of the order, zero if was not specified.
     pub fn expiry_block(&self) -> u64 { self.expiry_block }

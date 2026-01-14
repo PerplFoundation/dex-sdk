@@ -80,6 +80,7 @@ async fn test_snapshot_and_events() {
         assert_eq!(order.r#type(), types::OrderType::OpenShort);
         assert_eq!(order.price(), udec64!(100000));
         assert_eq!(order.size(), udec64!(0.9));
+        assert_eq!(order.placed_size(), None);
 
         let maker = snapshot.accounts().get(&maker.id).unwrap();
         assert_eq!(maker.positions().len(), 1);
@@ -188,6 +189,8 @@ async fn test_snapshot_and_events() {
         assert_eq!(order.r#type(), types::OrderType::OpenLong);
         assert_eq!(order.price(), udec64!(100100));
         assert_eq!(order.size(), udec64!(0.8));
+        assert_eq!(order.placed_size(), Some(udec64!(1)));
+        assert_eq!(order.filled_size(), Some(udec64!(0.2)));
 
         let maker = snapshot.accounts().get(&maker.id).unwrap();
         assert_eq!(maker.positions().len(), 0);
