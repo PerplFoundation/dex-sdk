@@ -122,7 +122,7 @@ impl<E: Display, R: SolInterface> From<transports::RpcError<E>> for ProviderErro
                         && (msg.contains("block by number") || msg.contains("getting block")))
                 {
                     Self::InvalidRequest(msg)
-                } else if resp.code == 3 && msg.contains("reverted") {
+                } else if (resp.code == 3 || resp.code == -32603) && msg.contains("reverted") {
                     Self::Reverted(Box::new(RevertReason::from(value)))
                 } else {
                     Self::Transport(value.to_string())
