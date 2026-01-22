@@ -92,6 +92,18 @@ macro_rules! assert_order {
     };
 }
 
+/// Assert order exists in book with expected properties by client order id.
+macro_rules! assert_order_by_client_id {
+    ($book:expr, $client_order_id:expr => { price: $price:expr, size: $size:expr, account_id: $aid:expr }) => {
+        let order = $book
+            .get_order_by_client_id($client_order_id)
+            .expect(&format!("order with client ID {} exists", $client_order_id));
+        assert_eq!(order.price(), udec64!($price), "order {} price", $client_order_id);
+        assert_eq!(order.size(), udec64!($size), "order {} size", $client_order_id);
+        assert_eq!(order.account_id(), $aid, "order {} account_id", $client_order_id);
+    };
+}
+
 /// Assert FIFO order at a price level.
 macro_rules! assert_fifo {
     ($book:expr, ask @ $price:expr => [$($oid:expr),*]) => {
@@ -220,6 +232,16 @@ fn l3_book_get_order_by_id() {
     book.add_order(&ask!(100, 1.0, 1, 42, 7)).unwrap();
 
     assert_order!(book, 42 => { price: 100, size: 1.0, account_id: 7 });
+}
+
+#[test]
+fn l3_book_get_order_by_client_order_id() {
+    // O(1) lookup by order_id via reverse index.
+    let mut book = OrderBook::new();
+    let order = ask!(100, 1.0, 1, 42, 7).with_client_order_id(123);
+    book.add_order(&order).unwrap();
+
+    assert_order_by_client_id!(book, 123 => { price: 100, size: 1.0, account_id: 7 });
 }
 
 #[test]

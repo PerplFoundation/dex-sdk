@@ -331,7 +331,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .into_iter()
             .flatten()
             .map(|ord| {
-                Order::new(
+                Order::from_snapshot(
                     instant,
                     ord,
                     base_price,

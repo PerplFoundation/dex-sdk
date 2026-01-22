@@ -30,9 +30,10 @@ pub enum OrderParseError {
 ///
 /// Exchange does not support concept of client order IDs and does not store any
 /// externally-provided state with orders on-chain, but each order request emits
-/// provided [`Order::request_id`] with it, which gets indexed and stored with
-/// the order, but with the limitation that this data is available only from
-/// events, not with the original snapshot.
+/// provided [`Order::request_id()`] with it, which gets indexed and stored with
+/// the order, with the original request ID preserved as
+/// [`Order::client_order_id()`] but with the limitation that this data is
+/// available only from events, not from the original snapshot.
 ///
 /// See [`crate::abi::dex::Exchange::OrderDesc`] for more details on particular
 /// order parameters and exchange behavior.
@@ -42,6 +43,7 @@ pub enum OrderParseError {
 pub struct Order {
     instant: types::StateInstant,
     request_id: Option<types::RequestId>,
+    client_order_id: Option<types::RequestId>,
     order_id: types::OrderId,
     r#type: types::OrderType,
     account_id: types::AccountId,
@@ -63,7 +65,7 @@ pub struct Order {
 }
 
 impl Order {
-    pub(crate) fn new(
+    pub(crate) fn from_snapshot(
         instant: types::StateInstant,
         order: dex::Exchange::Order,
         base_price: UD64,
@@ -82,6 +84,7 @@ impl Order {
         Ok(Self {
             instant,
             request_id: None,
+            client_order_id: None, // Not available from snapshot
             order_id,
             r#type: order.orderType.into(),
             account_id: order.accountId,
@@ -109,6 +112,8 @@ impl Order {
         Self {
             instant,
             request_id: Some(ctx.request_id),
+            // Original [`request_id`] becomes [`client_order_id`]
+            client_order_id: Some(ctx.request_id),
             order_id,
             r#type: ctx.r#type.into(),
             account_id: ctx.account_id,
@@ -138,6 +143,8 @@ impl Order {
         Self {
             instant,
             request_id: ctx.as_ref().map(|c| c.request_id),
+            // Original [`client_order_id`] is preserved
+            client_order_id: self.client_order_id,
             order_id: self.order_id,
             r#type: self.r#type,
             account_id: self.account_id,
@@ -174,6 +181,7 @@ impl Order {
         Self {
             instant: types::StateInstant::new(0, 0),
             request_id: None,
+            client_order_id: None,
             order_id: NonZeroU16::MIN,
             r#type,
             account_id: 0,
@@ -204,6 +212,7 @@ impl Order {
         Self {
             instant: types::StateInstant::new(block_number, 0),
             request_id: None,
+            client_order_id: None,
             order_id,
             r#type,
             account_id,
@@ -236,6 +245,7 @@ impl Order {
         Self {
             instant: types::StateInstant::new(block_number, 0),
             request_id: None,
+            client_order_id: None,
             order_id,
             r#type,
             account_id,
@@ -258,6 +268,7 @@ impl Order {
         Self {
             instant: self.instant,
             request_id: self.request_id,
+            client_order_id: self.client_order_id,
             order_id: self.order_id,
             r#type: self.r#type,
             account_id: self.account_id,
@@ -280,6 +291,7 @@ impl Order {
         Self {
             instant: self.instant,
             request_id: self.request_id,
+            client_order_id: self.client_order_id,
             order_id: self.order_id,
             r#type: self.r#type,
             account_id: self.account_id,
@@ -302,6 +314,7 @@ impl Order {
         Self {
             instant: self.instant,
             request_id: self.request_id,
+            client_order_id: self.client_order_id,
             order_id: self.order_id,
             r#type: self.r#type,
             account_id: self.account_id,
@@ -329,6 +342,7 @@ impl Order {
         Self {
             instant: self.instant,
             request_id: self.request_id,
+            client_order_id: self.client_order_id,
             order_id: self.order_id,
             r#type: self.r#type,
             account_id: self.account_id,
@@ -345,12 +359,39 @@ impl Order {
         }
     }
 
+    /// Create a copy with updated client order id.
+    #[allow(unused)]
+    pub(crate) fn with_client_order_id(&self, client_order_id: types::RequestId) -> Self {
+        Self {
+            instant: self.instant,
+            request_id: self.request_id,
+            client_order_id: Some(client_order_id),
+            order_id: self.order_id,
+            r#type: self.r#type,
+            account_id: self.account_id,
+            price: self.price,
+            size: self.size,
+            placed_size: self.placed_size,
+            expiry_block: self.expiry_block,
+            leverage: self.leverage,
+            post_only: self.post_only,
+            fill_or_kill: self.fill_or_kill,
+            immediate_or_cancel: self.immediate_or_cancel,
+            prev_order_id: self.prev_order_id,
+            next_order_id: self.next_order_id,
+        }
+    }
+
     /// Instant the order state is consistent with or was last updated at.
     pub fn instant(&self) -> types::StateInstant { self.instant }
 
-    /// ID of the request this order was posted by.
+    /// ID of the request this order was posted or updated by.
     /// Available only from real-time events, not from the initial snapshot.
     pub fn request_id(&self) -> Option<types::RequestId> { self.request_id }
+
+    /// Client order ID = ID of the request this order was placed by.
+    /// Available only from real-time events, not from the initial snapshot.
+    pub fn client_order_id(&self) -> Option<types::RequestId> { self.client_order_id }
 
     /// ID of the order in the book.
     pub fn order_id(&self) -> types::OrderId { self.order_id }
@@ -474,6 +515,11 @@ impl tabled::Tabled for Order {
             } else {
                 "-".to_string().into()
             },
+            if let Some(client_order_id) = self.client_order_id() {
+                client_order_id.to_string().into()
+            } else {
+                "-".to_string().into()
+            },
             if self.expiry_block() > 0 {
                 if self.is_expired() {
                     (self.expiry_block().to_string() + " (expired)")
@@ -507,6 +553,7 @@ impl tabled::Tabled for Order {
             "Order ID".into(),
             "Account ID".into(),
             "Request ID".into(),
+            "Client Order ID".into(),
             "Expiry Block".into(),
             "Leverage".into(),
             "PO".into(),
