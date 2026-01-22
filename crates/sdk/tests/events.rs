@@ -134,6 +134,7 @@ async fn test_snapshot_and_events() {
                     perpetual_id: 16,
                     account_id: 1,
                     request_id: Some(10),
+                    client_order_id: Some(1), // Original request ID
                     order_id: Some(order_id),
                     r#type: OrderEventType::Updated { price, size, expiry_block },
                 }) if *order_id == oid(1) => {
@@ -145,6 +146,7 @@ async fn test_snapshot_and_events() {
                     perpetual_id: 16,
                     account_id: 1,
                     request_id: Some(11),
+                    client_order_id: Some(11),
                     order_id: Some(order_id),
                     r#type: OrderEventType::Filled { fill_price, fill_size, fee, is_maker },
                 }) if *order_id == oid(1) => {

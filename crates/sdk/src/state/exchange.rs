@@ -1498,6 +1498,7 @@ impl Exchange {
                             perpetual_id: perp.id(),
                             account_id: c.account_id,
                             request_id: Some(c.request_id),
+                            client_order_id: Some(c.request_id),
                             order_id: None,
                             r#type: OrderEventType::Filled {
                                 fill_price: perp.price_converter().from_unsigned(e.pricePNS),

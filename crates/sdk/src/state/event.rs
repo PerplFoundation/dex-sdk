@@ -188,6 +188,9 @@ pub struct OrderEvent {
     /// ID of the request resulted in this event, if knonw.
     pub request_id: Option<types::RequestId>,
 
+    /// Client order ID, if knonw.
+    pub client_order_id: Option<types::RequestId>,
+
     /// ID of the order affected, if knonw.
     pub order_id: Option<types::OrderId>,
 
@@ -534,6 +537,7 @@ impl StateEvents {
             perpetual_id: perp.id(),
             account_id: ord.account_id(),
             request_id: ctx.as_ref().map(|c| c.request_id),
+            client_order_id: ord.client_order_id(),
             order_id: Some(ord.order_id()),
             r#type,
         })

@@ -61,6 +61,9 @@ pub struct OrderRequest {
 impl OrderRequest {
     /// Create a new order request with provided parameters.
     ///
+    /// Provided [`request_id`] is stored as [`client_order_id`] once the order
+    /// gets placed.
+    ///
     /// Use [`Self::prepare`] to get [`OrderDesc`]s and then issue transactions
     /// with
     /// [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`] calls.
