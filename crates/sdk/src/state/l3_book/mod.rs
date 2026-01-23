@@ -37,8 +37,8 @@ use crate::{state::Order, types};
 pub struct OrderBook {
     /// Storage for all orders, keyed by OrderId.
     orders: HashMap<types::OrderId, BookOrder>,
-    /// Orders keyed by client order ID.
-    client_orders: HashMap<types::RequestId, types::OrderId>,
+    /// Orders keyed by client order ID, per account ID.
+    client_orders: HashMap<(types::AccountId, types::RequestId), types::OrderId>,
     /// Ask levels sorted by price (ascending, best ask first).
     asks: BTreeMap<UD64, BookLevel>,
     /// Bid levels sorted by price (descending, best bid first).
@@ -98,9 +98,13 @@ impl OrderBook {
     }
 
     /// Get a specific order by client order ID (O(1) via HashMap lookup).
-    pub fn get_order_by_client_id(&self, client_id: types::RequestId) -> Option<&BookOrder> {
+    pub fn get_order_by_client_id(
+        &self,
+        account_id: types::AccountId,
+        client_id: types::RequestId,
+    ) -> Option<&BookOrder> {
         self.client_orders
-            .get(&client_id)
+            .get(&(account_id, client_id))
             .and_then(|order_id| self.orders.get(order_id))
     }
 
@@ -179,7 +183,8 @@ impl OrderBook {
         // Insert into hashmaps
         self.orders.insert(order_id, l3_order);
         if let Some(client_order_id) = order.client_order_id() {
-            self.client_orders.insert(client_order_id, order_id);
+            self.client_orders
+                .insert((order.account_id(), client_order_id), order_id);
         }
 
         // Link at tail
@@ -273,7 +278,8 @@ impl OrderBook {
             .remove(&order_id)
             .ok_or(OrderBookError::OrderNotFound { order_id })?;
         if let Some(client_order_id) = removed.client_order_id() {
-            self.client_orders.remove(&client_order_id);
+            self.client_orders
+                .remove(&(removed.account_id(), client_order_id));
         }
 
         Ok(*removed)
