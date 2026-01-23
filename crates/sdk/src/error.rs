@@ -128,6 +128,9 @@ impl<E: Display, R: SolInterface> From<transports::RpcError<E>> for ProviderErro
                     Self::Transport(value.to_string())
                 }
             },
+            transports::RpcError::DeserError { err, text } if text.is_empty() => {
+                Self::InvalidRequest(err.to_string()) // Monad RPC can return empty response in case of unavailable block
+            },
             transports::RpcError::NullResp => Self::NullResp,
             _ => Self::Transport(value.to_string()),
         }
