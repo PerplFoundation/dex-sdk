@@ -94,7 +94,7 @@ impl Perpetual {
             id,
             name: info.name.clone(),
             symbol: info.symbol.clone(),
-            is_paused: info.paused,
+            is_paused: info.status == 0, // PerpetualStatus::Paused
 
             price_converter,
             size_converter,

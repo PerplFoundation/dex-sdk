@@ -9,7 +9,7 @@
 //! up to date.
 //!
 //! Use [`types::OrderRequest`] to prepare order requests to send them with
-//! [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`].
+//! [`crate::abi::dex::Exchange::ExchangeInstance::execOrders`].
 //!
 //! See `./tests` for examples.
 //!
