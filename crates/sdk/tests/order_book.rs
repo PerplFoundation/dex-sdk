@@ -35,6 +35,7 @@ async fn test_order_book() {
                     udec64!(10),
                     None,
                     None,
+                    1000,
                 ),
             )
             .await

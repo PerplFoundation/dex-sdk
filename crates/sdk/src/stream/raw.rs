@@ -95,6 +95,7 @@ mod tests {
     use crate::Chain;
 
     #[tokio::test]
+    #[ignore = "temporary ignored until updated smart contract is deployed"]
     async fn test_stream_recent_blocks() {
         let client = RpcClient::builder()
             .layer(RetryBackoffLayer::new(10, 100, 200))

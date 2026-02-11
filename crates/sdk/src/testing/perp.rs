@@ -22,7 +22,7 @@ impl<'e> TestPerp<'e> {
     pub async fn with_mark_price(self, price: UD64) -> Self {
         self.exchange
             .exchange
-            .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
+            .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price).to())
             .from(self.exchange.price_admin)
             .gas(500000)
             .send()
@@ -81,7 +81,7 @@ impl<'e> TestPerp<'e> {
     pub async fn set_mark_price(&self, price: UD64) -> PendingTransactionBuilder<Ethereum> {
         self.exchange
             .exchange
-            .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price))
+            .updateMarkPricePNS(U256::from(self.id), self.price_converter.to_unsigned(price).to())
             .from(self.exchange.price_admin)
             .gas(500000)
             .send()
@@ -141,8 +141,7 @@ impl<'e> TestPerp<'e> {
     ) -> PendingTransactionBuilder<Ethereum> {
         self.exchange
             .exchange
-            .execOpsAndOrders(
-                vec![],
+            .execOrders(
                 requests
                     .iter()
                     .map(|req| {

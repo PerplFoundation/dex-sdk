@@ -56,6 +56,7 @@ pub struct OrderRequest {
     leverage: UD64,
     last_exec_block: Option<u64>,
     amount: Option<UD128>,
+    max_slippage_bps: u16,
 }
 
 impl OrderRequest {
@@ -66,7 +67,7 @@ impl OrderRequest {
     ///
     /// Use [`Self::prepare`] to get [`OrderDesc`]s and then issue transactions
     /// with
-    /// [`crate::abi::dex::Exchange::ExchangeInstance::execOpsAndOrders`] calls.
+    /// [`crate::abi::dex::Exchange::ExchangeInstance::execOrders`] calls.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: RequestId,
@@ -83,6 +84,7 @@ impl OrderRequest {
         leverage: UD64,
         last_exec_block: Option<u64>,
         amount: Option<UD128>,
+        max_slippage_bps: u16,
     ) -> Self {
         Self {
             request_id,
@@ -99,6 +101,7 @@ impl OrderRequest {
             leverage,
             last_exec_block,
             amount,
+            max_slippage_bps,
         }
     }
 
@@ -142,6 +145,7 @@ impl OrderRequest {
                 .zip(collateral_converter)
                 .map(|(a, conv)| conv.to_unsigned(a))
                 .unwrap_or_default(),
+            maxSlippageBps: U256::from(self.max_slippage_bps),
         }
     }
 }
