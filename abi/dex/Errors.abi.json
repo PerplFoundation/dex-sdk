@@ -114,7 +114,7 @@
   },
   {
     "type": "error",
-    "name": "BankruptcyPriceExceedsReferencePrice",
+    "name": "BankruptcyPricePreventsDeleverage",
     "inputs": [
       {
         "name": "perpId",
@@ -137,14 +137,9 @@
         "internalType": "uint256"
       },
       {
-        "name": "refPricePNS",
+        "name": "markPricePNS",
         "type": "uint256",
         "internalType": "uint256"
-      },
-      {
-        "name": "refIsMark",
-        "type": "bool",
-        "internalType": "bool"
       }
     ]
   },
@@ -210,7 +205,7 @@
         "internalType": "enum PositionEnum"
       },
       {
-        "name": "referencePricePNS",
+        "name": "markPricePNS",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -307,11 +302,6 @@
         "name": "markPricePNS",
         "type": "uint256",
         "internalType": "uint256"
-      },
-      {
-        "name": "refIsMark",
-        "type": "bool",
-        "internalType": "bool"
       },
       {
         "name": "bsLiqPricePNS",
@@ -459,14 +449,9 @@
         "internalType": "enum PositionEnum"
       },
       {
-        "name": "refPricePNS",
+        "name": "markPricePNS",
         "type": "uint256",
         "internalType": "uint256"
-      },
-      {
-        "name": "refIsMark",
-        "type": "bool",
-        "internalType": "bool"
       },
       {
         "name": "liqPricePNS",
@@ -729,12 +714,17 @@
   },
   {
     "type": "error",
-    "name": "ContractIsPaused",
+    "name": "ContractNotOperational",
     "inputs": [
       {
         "name": "perpId",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "status",
+        "type": "uint8",
+        "internalType": "enum PerpStatusEnum"
       }
     ]
   },
@@ -746,12 +736,17 @@
         "name": "perpId",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "status",
+        "type": "uint8",
+        "internalType": "enum PerpStatusEnum"
       }
     ]
   },
   {
     "type": "error",
-    "name": "CriticalMakerOrderSettlementFailed",
+    "name": "ContractNotUnwindPrepared",
     "inputs": [
       {
         "name": "perpId",
@@ -759,29 +754,9 @@
         "internalType": "uint256"
       },
       {
-        "name": "accountId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "orderId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "pricePNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "lotLNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "resultCode",
-        "type": "uint256",
-        "internalType": "uint256"
+        "name": "status",
+        "type": "uint8",
+        "internalType": "enum PerpStatusEnum"
       }
     ]
   },
@@ -849,7 +824,23 @@
   },
   {
     "type": "error",
-    "name": "DecreaseCollateralParamsDontExist",
+    "name": "DcpBorrowMustBeLessThanUnityDescent",
+    "inputs": [
+      {
+        "name": "dcpBorrowThreshHdths",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "unityDescentThreshHdths",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DecreaseCollateralRequestDoesNotExist",
     "inputs": [
       {
         "name": "perpId",
@@ -1203,14 +1194,9 @@
         "internalType": "uint256"
       },
       {
-        "name": "refPricePNS",
+        "name": "markPricePNS",
         "type": "uint256",
         "internalType": "uint256"
-      },
-      {
-        "name": "refIsMark",
-        "type": "bool",
-        "internalType": "bool"
       }
     ]
   },
@@ -1334,6 +1320,27 @@
       },
       {
         "name": "initMarginFracHdths",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidDenominatorDecimals",
+    "inputs": [
+      {
+        "name": "denominatorDecimals",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "minimum",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maximum",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1545,27 +1552,6 @@
   },
   {
     "type": "error",
-    "name": "InvalidSynthPerpPrice",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "oraclePNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "oracleTimestamp",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "InvalidWithdrawLimitThousandths",
     "inputs": [
       {
@@ -1580,27 +1566,6 @@
       },
       {
         "name": "proposedThousandths",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "LeverageOutOfRange",
-    "inputs": [
-      {
-        "name": "levHdths",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "minLevHdths",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "maxLevHdths",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1736,12 +1701,38 @@
         "internalType": "uint256"
       },
       {
-        "name": "synthPerpPricePNS",
+        "name": "spotOraclePricePNS",
         "type": "uint256",
         "internalType": "uint256"
       },
       {
         "name": "tolerancePer100k",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "MarkPriceAgeExceedsMax",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "markTimestamp",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "timestamp",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxAgeSec",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1822,6 +1813,27 @@
       },
       {
         "name": "shortOiLNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "OpenInterestTooHighForDcp",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "currentOiLNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "thresholdOiLNS",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2086,6 +2098,17 @@
   },
   {
     "type": "error",
+    "name": "PerpetualNotActivated",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "PositionAlreadyInListSevere",
     "inputs": [
       {
@@ -2135,14 +2158,9 @@
         "internalType": "uint256"
       },
       {
-        "name": "refPricePNS",
+        "name": "markPricePNS",
         "type": "uint256",
         "internalType": "uint256"
-      },
-      {
-        "name": "refIsMark",
-        "type": "bool",
-        "internalType": "bool"
       }
     ]
   },
@@ -2180,6 +2198,32 @@
   },
   {
     "type": "error",
+    "name": "PositionTypeMismatch",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "accountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "expected",
+        "type": "uint8",
+        "internalType": "enum PositionEnum"
+      },
+      {
+        "name": "actual",
+        "type": "uint8",
+        "internalType": "enum PositionEnum"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "PostOrderUnderMinimum",
     "inputs": [
       {
@@ -2189,6 +2233,22 @@
       },
       {
         "name": "minAmountCNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PriceLotDecimalSumExceedsCollateralSevere",
+    "inputs": [
+      {
+        "name": "priceDecimals",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "lotDecimals",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2259,6 +2319,27 @@
   },
   {
     "type": "error",
+    "name": "ProposedMarginTolExceedsMax",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "proposedTol",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxTol",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ProposedPriceAgeExceedsMax",
     "inputs": [
       {
@@ -2294,37 +2375,6 @@
       },
       {
         "name": "maxTolPer100k",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "ReferencePriceAgesExceedMax",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "markTimestamp",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "oracleTimestamp",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "timestamp",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "maxAgeSec",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2444,6 +2494,17 @@
   },
   {
     "type": "error",
+    "name": "SenderIsNotToleranceAdministrator",
+    "inputs": [
+      {
+        "name": "sender",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "SumExceedsMaximum",
     "inputs": [
       {
@@ -2465,27 +2526,6 @@
   },
   {
     "type": "error",
-    "name": "SyntheticPriceError",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "linkPricePNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "fundingRatePct100k",
-        "type": "int256",
-        "internalType": "int256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "TakerOrderSettlementFailed",
     "inputs": [
       {
@@ -2499,7 +2539,17 @@
         "internalType": "uint256"
       },
       {
-        "name": "pricePNS",
+        "name": "entryPricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "collatPricePNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "pnlPricePNS",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -2627,17 +2677,12 @@
   },
   {
     "type": "error",
-    "name": "UnsupportedOperation",
+    "name": "UnwindAlreadyInitialized",
     "inputs": [
       {
         "name": "perpId",
         "type": "uint256",
         "internalType": "uint256"
-      },
-      {
-        "name": "opType",
-        "type": "uint8",
-        "internalType": "enum OpDescEnum"
       }
     ]
   },
@@ -2649,12 +2694,33 @@
         "name": "perpId",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "perpStatus",
+        "type": "uint8",
+        "internalType": "enum PerpStatusEnum"
       }
     ]
   },
   {
     "type": "error",
-    "name": "UnwindProcessInitialized",
+    "name": "UnwindNotPrepared",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "perpStatus",
+        "type": "uint8",
+        "internalType": "enum PerpStatusEnum"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnwindProcessInProgress",
     "inputs": [
       {
         "name": "perpId",

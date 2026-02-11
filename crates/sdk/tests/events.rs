@@ -40,6 +40,7 @@ async fn test_snapshot_and_events() {
                     udec64!(10),
                     None,
                     None,
+                    1000,
                 ),
             )
             .await
@@ -123,12 +124,12 @@ async fn test_snapshot_and_events() {
                     account_id: 1,
                     request_id: Some(11),
                     r#type: AccountEventType::BalanceUpdated(balance),
-                }) => assert_eq!(*balance, udec128!(997995.899)),
+                }) => assert_eq!(*balance, udec128!(997996.899)),
                 state::StateEvents::Account(AccountEvent {
                     account_id: 2,
                     request_id: Some(11),
                     r#type: AccountEventType::BalanceUpdated(balance),
-                }) => assert_eq!(*balance, udec128!(97990.9965)),
+                }) => assert_eq!(*balance, udec128!(97981.9965)),
 
                 state::StateEvents::Order(OrderEvent {
                     perpetual_id: 16,
@@ -166,7 +167,7 @@ async fn test_snapshot_and_events() {
                     assert_eq!(*entry_price, udec64!(100050));
                     assert_eq!(*prev_size, udec64!(0.1));
                     assert_eq!(*new_size, udec64!(0.2));
-                    assert_eq!(*deposit, udec128!(2002));
+                    assert_eq!(*deposit, udec128!(2011));
                 },
 
                 _ => (),

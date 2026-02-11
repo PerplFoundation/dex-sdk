@@ -44,6 +44,7 @@ async fn test_full_book_snapshot() {
                         leverage,
                         None,
                         None,
+                        1000,
                     ),
                     types::OrderRequest::new(
                         chunk as u64 * 100 + level as u64 + 1,
@@ -60,6 +61,7 @@ async fn test_full_book_snapshot() {
                         leverage,
                         None,
                         None,
+                        1000,
                     ),
                 ]
             })
@@ -105,6 +107,7 @@ async fn test_full_book_snapshot() {
                     leverage,
                     None,
                     None,
+                    1000,
                 ),
                 types::OrderRequest::new(
                     2,
@@ -121,6 +124,7 @@ async fn test_full_book_snapshot() {
                     leverage,
                     None,
                     None,
+                    1000,
                 ),
                 types::OrderRequest::new(
                     2,
@@ -137,6 +141,7 @@ async fn test_full_book_snapshot() {
                     leverage,
                     None,
                     None,
+                    1000,
                 ),
             ],
         )

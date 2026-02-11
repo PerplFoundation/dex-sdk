@@ -106,8 +106,8 @@ pub enum OrderErrorType {
     /// Close order side mismatches position type.
     CloseOrderPositionMismatch,
 
-    /// Perpetual contract is paused.
-    ContractIsPaused,
+    /// Perpetual contract is not operational.
+    ContractNotOperational,
 
     /// Post-only order crosses the book.
     CrossesBook,
@@ -156,6 +156,9 @@ pub enum OrderErrorType {
 
     /// Specified order size is out of range.
     SizeOutOfRange,
+
+    /// Maximum PnL slippage value exceeds maximum of 65535
+    ValueExceedsMaximum,
 
     /// Another account owns the order.
     WrongAccountForOrder,
