@@ -8,7 +8,6 @@ mod trades;
 use std::time::Duration;
 
 use alloy::{
-    primitives::Address,
     providers::{Provider, ProviderBuilder},
     rpc::{client::RpcClient, types::BlockId},
     transports::layers::{RetryBackoffLayer, ThrottleLayer},
@@ -21,18 +20,24 @@ use tokio_util::sync::CancellationToken;
 use crate::args::{Commands, ShowCommands};
 
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
-    let client = if cli.rpc == args::DEFAULT_RPC_PROVIDER || cli.rpc_throttle.is_some() {
+    let chain = if cli.testnet { Chain::testnet() } else { Chain::mainnet() };
+    let (rpc, default) = cli.rpc.map(|rpc| (rpc, false)).unwrap_or(if cli.testnet {
+        (args::DEFAULT_TESTNET_RPC_PROVIDER.to_string(), true)
+    } else {
+        (args::DEFAULT_MAINNET_RPC_PROVIDER.to_string(), true)
+    });
+    let client = if default || cli.rpc_throttle.is_some() {
         // Apply throttling with default RPC
         RpcClient::builder()
             .layer(ThrottleLayer::new(cli.rpc_throttle.unwrap_or(args::DEFAULT_RPC_THROTTLING)))
             .layer(RetryBackoffLayer::new(10, 100, 200))
-            .connect(&cli.rpc)
+            .connect(&rpc)
             .await
             .context("connecting to RPC")?
     } else {
         RpcClient::builder()
             .layer(RetryBackoffLayer::new(10, 100, 200))
-            .connect(&cli.rpc)
+            .connect(&rpc)
             .await
             .context("connecting to RPC")?
     };
@@ -42,21 +47,17 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(unknown_perp) = cli
         .perp
         .iter()
-        .find(|perp_id| !Chain::testnet().perpetuals().contains(perp_id))
+        .find(|perp_id| !chain.perpetuals().contains(perp_id))
     {
         return Err(anyhow::anyhow!("unknown perpetual ID: {}", unknown_perp));
     }
 
     let chain = Chain::custom(
         provider.get_chain_id().await?,
-        Address::ZERO,
-        0,
-        cli.exchange.unwrap_or(Chain::testnet().exchange()),
-        if !cli.perp.is_empty() {
-            cli.perp.clone()
-        } else {
-            Chain::testnet().perpetuals().to_vec()
-        },
+        chain.collateral_token(),
+        chain.deployed_at_block(),
+        cli.exchange.unwrap_or(chain.exchange()),
+        if !cli.perp.is_empty() { cli.perp.clone() } else { chain.perpetuals().to_vec() },
     );
 
     let mut builder = SnapshotBuilder::new(&chain, provider.clone());

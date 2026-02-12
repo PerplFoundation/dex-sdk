@@ -2,7 +2,8 @@ use alloy::primitives::Address;
 use clap::{Parser, Subcommand};
 use perpl_sdk::types;
 
-pub(crate) const DEFAULT_RPC_PROVIDER: &str = "https://testnet-rpc.monad.xyz";
+pub(crate) const DEFAULT_MAINNET_RPC_PROVIDER: &str = "https://rpc.monad.xyz";
+pub(crate) const DEFAULT_TESTNET_RPC_PROVIDER: &str = "https://testnet-rpc.monad.xyz";
 pub(crate) const DEFAULT_RPC_THROTTLING: u32 = 15;
 
 #[derive(Parser, Debug)]
@@ -11,16 +12,21 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 
-    /// RPC endpoint to connect to
-    #[arg(long, global = true, default_value_t = DEFAULT_RPC_PROVIDER.to_string() )]
-    pub rpc: String,
+    /// RPC endpoint to connect to [default: https://rpc.monad.xyz for mainnet, https://testnet-rpc.monad.xyz for testnet]
+    #[arg(long, global = true)]
+    pub rpc: Option<String>,
 
-    /// RPC throttling (req/sec) [default: 15 for default RPC provider and
+    /// Use testnet provider and contract addresses [default: false = mainnet]
+    #[arg(long, global = true)]
+    pub testnet: bool,
+
+    /// RPC throttling (req/sec) [default: 15 for default RPC providers and
     /// none for custom]
     #[arg(long, global = true)]
     pub rpc_throttle: Option<u32>,
 
-    /// Exchange smart contract address [default: testnet smart contract]
+    /// Exchange smart contract address [default: mainnet/testnet smart
+    /// contracts]
     #[arg(long, global = true)]
     pub exchange: Option<Address>,
 
