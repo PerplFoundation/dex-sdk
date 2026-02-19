@@ -1,4 +1,4 @@
-use alloy::primitives::Address;
+use alloy::primitives::{Address, TxHash};
 use clap::{Parser, Subcommand};
 use perpl_sdk::types;
 
@@ -53,15 +53,20 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Show live state of account, perpetual order book or recent trades
+    Show {
+        #[command(subcommand)]
+        command: ShowCommands,
+    },
     /// Take a snapshot of exchange state at a particular block height
     Snapshot,
     /// Take an initial snapshot, then trace all events, then print the final
     /// state
     Trace,
-    /// Show live state of account, perpetual order book or recent trades
-    Show {
-        #[command(subcommand)]
-        command: ShowCommands,
+    /// Trace raw events from a particular transaction
+    Tx {
+        /// Transaction hash to trace
+        tx_hash: TxHash,
     },
 }
 
