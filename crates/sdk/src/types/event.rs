@@ -29,7 +29,7 @@ impl<T> BlockEvents<T> {
 }
 
 impl<T> EventContext<T> {
-    pub(crate) fn new(tx_hash: TxHash, tx_index: u64, log_index: u64, event: T) -> Self {
+    pub fn new(tx_hash: TxHash, tx_index: u64, log_index: u64, event: T) -> Self {
         Self { tx_hash, tx_index, log_index, event }
     }
 

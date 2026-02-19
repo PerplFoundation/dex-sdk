@@ -4,6 +4,7 @@ mod book;
 mod snapshot;
 mod trace;
 mod trades;
+mod tx;
 
 use std::time::Duration;
 
@@ -92,6 +93,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             },
             ShowCommands::Trades => None,
         },
+        Commands::Tx { tx_hash: _ } => None,
     };
 
     let exchange = if let Some(builder) = builder {
@@ -116,10 +118,6 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
 
     match &cli.command {
         Commands::Snapshot => snapshot::render(exchange.unwrap()),
-        Commands::Trace => {
-            trace::render(chain, provider, exchange.unwrap(), cli.num_blocks, cancellation_token)
-                .await?
-        },
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades } => {
                 account::render(
@@ -149,6 +147,11 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 trades::render(chain, provider, cli.num_blocks, cancellation_token).await?
             },
         },
+        Commands::Trace => {
+            trace::render(chain, provider, exchange.unwrap(), cli.num_blocks, cancellation_token)
+                .await?
+        },
+        Commands::Tx { tx_hash } => tx::render(provider, *tx_hash).await?,
     }
 
     Ok(())
