@@ -311,10 +311,18 @@ impl Exchange {
                         AccountEventType::LockedBalanceUpdated(acc.locked_balance()),
                     )
                 }),
-                self.account(e.recyclerAccountId).map(|acc| {
-                    acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
-                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
-                }),
+                if !e.recyclerAmountCNS.is_zero() {
+                    self.account(e.recyclerAccountId).map(|acc| {
+                        acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
+                        StateEvents::account(
+                            acc,
+                            ctx,
+                            AccountEventType::BalanceUpdated(acc.balance()),
+                        )
+                    })
+                } else {
+                    None
+                },
             )
             .collect(),
             ExchangeEvents::ClearingFrozenAccountOrder(e) => chain!(
@@ -334,10 +342,18 @@ impl Exchange {
                         AccountEventType::LockedBalanceUpdated(acc.locked_balance()),
                     )
                 }),
-                self.account(e.recyclerAccountId).map(|acc| {
-                    acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
-                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
-                }),
+                if !e.recyclerAmountCNS.is_zero() {
+                    self.account(e.recyclerAccountId).map(|acc| {
+                        acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
+                        StateEvents::account(
+                            acc,
+                            ctx,
+                            AccountEventType::BalanceUpdated(acc.balance()),
+                        )
+                    })
+                } else {
+                    None
+                },
             )
             .collect(),
             ExchangeEvents::ClearingInvalidCloseOrder(e) => chain!(
@@ -357,10 +373,49 @@ impl Exchange {
                         AccountEventType::LockedBalanceUpdated(acc.locked_balance()),
                     )
                 }),
-                self.account(e.recyclerAccountId).map(|acc| {
-                    acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
-                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
+                if !e.recyclerAmountCNS.is_zero() {
+                    self.account(e.recyclerAccountId).map(|acc| {
+                        acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
+                        StateEvents::account(
+                            acc,
+                            ctx,
+                            AccountEventType::BalanceUpdated(acc.balance()),
+                        )
+                    })
+                } else {
+                    None
+                },
+            )
+            .collect(),
+            ExchangeEvents::ClearingRemainingOrderLockBeyondBalance(e) => chain!(
+                if let Some(perp) = self.perpetual(e.perpId) {
+                    let order_id = std::num::NonZeroU16::new(e.orderId.to::<u16>())
+                        .expect("orderId in event cannot be 0");
+                    let order = perp.remove_order(order_id)?;
+                    Some(StateEvents::order(perp, &order, ctx, OrderEventType::Removed))
+                } else {
+                    None
+                },
+                self.account(e.accountId).map(|acc| {
+                    acc.update_locked_balance(instant, cc.from_unsigned(e.lockedBalanceCNS));
+                    StateEvents::account(
+                        acc,
+                        ctx,
+                        AccountEventType::LockedBalanceUpdated(acc.locked_balance()),
+                    )
                 }),
+                if !e.recyclerAmountCNS.is_zero() {
+                    self.account(e.recyclerAccountId).map(|acc| {
+                        acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
+                        StateEvents::account(
+                            acc,
+                            ctx,
+                            AccountEventType::BalanceUpdated(acc.balance()),
+                        )
+                    })
+                } else {
+                    None
+                },
             )
             .collect(),
             ExchangeEvents::ClearingSelfMatchingOrder(e) => chain!(
@@ -380,10 +435,18 @@ impl Exchange {
                         AccountEventType::LockedBalanceUpdated(acc.locked_balance()),
                     )
                 }),
-                self.account(e.recyclerAccountId).map(|acc| {
-                    acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
-                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
-                }),
+                if !e.recyclerAmountCNS.is_zero() {
+                    self.account(e.recyclerAccountId).map(|acc| {
+                        acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
+                        StateEvents::account(
+                            acc,
+                            ctx,
+                            AccountEventType::BalanceUpdated(acc.balance()),
+                        )
+                    })
+                } else {
+                    None
+                },
             )
             .collect(),
             ExchangeEvents::CloseOrderExceedsPosition(_) => self
@@ -737,10 +800,18 @@ impl Exchange {
                         AccountEventType::LockedBalanceUpdated(acc.locked_balance()),
                     )
                 }),
-                self.account(e.recyclerAccountId).map(|acc| {
-                    acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
-                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
-                }),
+                if !e.recyclerAmountCNS.is_zero() {
+                    self.account(e.recyclerAccountId).map(|acc| {
+                        acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
+                        StateEvents::account(
+                            acc,
+                            ctx,
+                            AccountEventType::BalanceUpdated(acc.balance()),
+                        )
+                    })
+                } else {
+                    None
+                },
             )
             .collect(),
             ExchangeEvents::MarginTolUpdated(_) => vec![],
@@ -1463,6 +1534,7 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::PriceOutOfRange))
                 .into_iter()
                 .collect(),
+            ExchangeEvents::PriceSetDuringTriggerExec(_) => vec![],
             ExchangeEvents::PriceTolUpdated(_) => vec![],
             ExchangeEvents::ProtocolBalanceDeposit(_) => vec![],
             ExchangeEvents::ProtocolBalanceWithdraw(_) => vec![],
@@ -1544,6 +1616,7 @@ impl Exchange {
             ExchangeEvents::TransferProtocolToPerp(_) => vec![],
             ExchangeEvents::TransferProtocolToRecycleBal(_) => vec![],
             ExchangeEvents::TriggerDescIdTooLow(_) => vec![],
+            ExchangeEvents::TriggerOrderExecution(_) => vec![],
             ExchangeEvents::TriggerOrderRequest(_) => vec![],
             ExchangeEvents::UnableToCancelOrder(_) => vec![],
             ExchangeEvents::UnityDescentThreshUpdated(_) => vec![],
