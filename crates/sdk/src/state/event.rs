@@ -623,7 +623,13 @@ impl From<&OrderRequest> for OrderContext {
             perpetual_id: value.perpId.to(),
             account_id: value.accountId.to(),
             request_id: value.orderDescId.to(),
-            order_id: std::num::NonZeroU16::new(value.orderId.to::<u16>()),
+            order_id: if value.orderId <= U256::from(u16::MAX) {
+                std::num::NonZeroU16::new(value.orderId.to::<u16>())
+            } else {
+                // Trigger order requests might have order_id > u16::MAX, but they are not
+                // supported by the SDK yet.
+                None
+            },
             r#type: value.orderType.into(),
             price: value.pricePNS,
             expiry_block: value.expiryBlock.to(),
