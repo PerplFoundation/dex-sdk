@@ -387,36 +387,17 @@ impl Exchange {
                 },
             )
             .collect(),
-            ExchangeEvents::ClearingRemainingOrderLockBeyondBalance(e) => chain!(
-                if let Some(perp) = self.perpetual(e.perpId) {
-                    let order_id = std::num::NonZeroU16::new(e.orderId.to::<u16>())
-                        .expect("orderId in event cannot be 0");
-                    let order = perp.remove_order(order_id)?;
-                    Some(StateEvents::order(perp, &order, ctx, OrderEventType::Removed))
-                } else {
-                    None
-                },
-                self.account(e.accountId).map(|acc| {
-                    acc.update_locked_balance(instant, cc.from_unsigned(e.lockedBalanceCNS));
-                    StateEvents::account(
-                        acc,
-                        ctx,
-                        AccountEventType::LockedBalanceUpdated(acc.locked_balance()),
-                    )
-                }),
-                if !e.recyclerAmountCNS.is_zero() {
-                    self.account(e.recyclerAccountId).map(|acc| {
-                        acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
-                        StateEvents::account(
-                            acc,
-                            ctx,
-                            AccountEventType::BalanceUpdated(acc.balance()),
-                        )
-                    })
-                } else {
-                    None
-                },
-            )
+            ExchangeEvents::ClearingRemainingOrderLockBeyondBalance(e) => chain!(if !e
+                .recyclerAmountCNS
+                .is_zero()
+            {
+                self.account(e.recyclerAccountId).map(|acc| {
+                    acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
+                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
+                })
+            } else {
+                None
+            },)
             .collect(),
             ExchangeEvents::ClearingSelfMatchingOrder(e) => chain!(
                 if let Some(perp) = self.perpetual(e.perpId) {
