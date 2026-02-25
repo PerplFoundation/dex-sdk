@@ -1,5 +1,6 @@
 mod account;
 pub mod args;
+mod block;
 mod book;
 mod snapshot;
 mod trace;
@@ -73,6 +74,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     let builder = match &cli.command {
+        Commands::Block { block_number: _ } => None,
         Commands::Snapshot | Commands::Trace => Some(builder),
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades: _ } => {
@@ -117,6 +119,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     });
 
     match &cli.command {
+        Commands::Block { block_number } => block::render(&chain, provider, *block_number).await?,
         Commands::Snapshot => snapshot::render(exchange.unwrap()),
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades } => {

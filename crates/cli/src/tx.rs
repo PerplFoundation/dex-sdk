@@ -52,7 +52,7 @@ pub(crate) async fn render<P: Provider + Clone>(
         }
     }
 
-    println!("");
+    println!();
 
     Ok(())
 }
