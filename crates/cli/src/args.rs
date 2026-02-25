@@ -53,6 +53,11 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    /// Trace raw events from a particular block
+    Block {
+        /// Block number to trace
+        block_number: u64,
+    },
     /// Show live state of account, perpetual order book or recent trades
     Show {
         #[command(subcommand)]
