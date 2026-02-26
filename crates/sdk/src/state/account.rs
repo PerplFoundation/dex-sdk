@@ -91,7 +91,13 @@ impl Account {
     pub fn locked_balance(&self) -> UD128 { self.locked_balance }
 
     /// The balance of collateral tokens available for trading.
-    pub fn available_balance(&self) -> UD128 { self.balance - self.locked_balance }
+    pub fn available_balance(&self) -> UD128 {
+        if self.locked_balance > self.balance {
+            // Valid scenario from the smart contract perspective
+            return UD128::ZERO;
+        }
+        self.balance - self.locked_balance
+    }
 
     /// Total unrealized PnL of all positions of the account.
     pub fn unrealized_pnl(&self) -> D256 { self.positions.values().map(|p| p.pnl()).sum() }
