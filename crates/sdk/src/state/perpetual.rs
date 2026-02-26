@@ -336,6 +336,11 @@ impl Perpetual {
                 .is_some_and(|bl| bl > self.state_instant.block_number())
     }
 
+    /// The next funding rate, if scheduled.
+    pub fn next_funding_rate(&self) -> Option<D64> {
+        if self.has_next_funding_rate() { self.next_funding_rate } else { None }
+    }
+
     /// Starting block number of funding intervals.
     /// Use [`Exchange::funding_interval_blocks`] to get interval "duration" in
     /// blocks.
@@ -654,14 +659,24 @@ impl std::fmt::Display for Perpetual {
                     },
                 ),
                 format!(
-                    "Funding Rate: {}\nnext: {} @ #{}",
+                    "Funding Rate: {}\nnext: {}",
                     if self.funding_rate().is_negative() {
                         self.funding_rate().to_string().red()
                     } else {
                         self.funding_rate().to_string().green()
                     },
-                    self.next_funding_rate.unwrap_or_default(),
-                    self.next_funding_event_block.unwrap_or_default(),
+                    if let Some((nfr, nfb)) = self
+                        .next_funding_rate()
+                        .zip(self.next_funding_event_block())
+                    {
+                        if nfr.is_negative() {
+                            format!("{} @ #{}", nfr, nfb).red()
+                        } else {
+                            format!("{} @ #{}", nfr, nfb).green()
+                        }
+                    } else {
+                        "TBA".to_string().dimmed()
+                    },
                 ),
                 format!(
                     "Open Interest: {}\namount: ${}",
