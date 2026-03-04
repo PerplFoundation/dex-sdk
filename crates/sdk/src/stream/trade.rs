@@ -265,7 +265,11 @@ impl NormalizationConfig {
         let instance = ExchangeInstance::new(chain.exchange(), provider);
 
         // Fetch exchange info for collateral decimals
-        let exchange_info = instance.getExchangeInfo().call().await?;
+        let exchange_info = instance
+            .getExchangeInfo()
+            .call()
+            .await
+            .map_err(|err| DexError::Provider(err.into()))?;
         let collateral_converter = num::Converter::new(exchange_info.collateralDecimals.to());
 
         // Fetch perpetual info for each perpetual
@@ -274,7 +278,8 @@ impl NormalizationConfig {
             let perp_info = instance
                 .getPerpetualInfo(U256::from(*perp_id))
                 .call()
-                .await?;
+                .await
+                .map_err(|err| DexError::Provider(err.into()))?;
             perpetuals.insert(
                 *perp_id,
                 PerpetualConverters {

@@ -108,7 +108,7 @@ impl TestExchange {
             .mint(owner, usd(1_000_000_000))
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -117,7 +117,7 @@ impl TestExchange {
         // Exchange implementation and upgradeable proxy
         let exchange_impl = Exchange::deploy(provider.clone())
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap();
         let init_calldata = exchange_impl
             .initialize(*token.address())
@@ -125,7 +125,7 @@ impl TestExchange {
             .clone();
         let proxy = ERC1967Proxy::deploy(provider.clone(), *exchange_impl.address(), init_calldata)
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap();
         let exchange = Exchange::new(*proxy.address(), provider.clone());
 
@@ -134,7 +134,7 @@ impl TestExchange {
             .setWhitelistingEnabled(false)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -145,7 +145,7 @@ impl TestExchange {
             .setAdministrator(admin, true)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -154,7 +154,7 @@ impl TestExchange {
             .setPriceAdministrator(price_admin, true)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -198,7 +198,7 @@ impl TestExchange {
                 .mint(address, target_balance - cur_balance)
                 .send()
                 .await
-                .map_err::<DexError, _>(DexError::from)
+                .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
                 .unwrap()
                 .get_receipt()
                 .await
@@ -209,7 +209,7 @@ impl TestExchange {
             .from(address)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -220,7 +220,7 @@ impl TestExchange {
             .from(address)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -261,7 +261,7 @@ impl TestExchange {
             )
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -271,7 +271,7 @@ impl TestExchange {
             .setIgnOracle(U256::from(perp_id), true)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await

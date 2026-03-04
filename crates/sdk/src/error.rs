@@ -14,8 +14,6 @@ use crate::{
     types,
 };
 
-pub type DexError = ProviderError<ExchangeErrors>;
-
 /// Call/transaction revert reason decoded by
 /// the provided known ABI or in a generic raw form
 /// if can not be decoded.
@@ -50,6 +48,12 @@ pub enum ProviderError<R> {
 
     #[error("transaction timed out")]
     Timeout,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DexError {
+    #[error("provider error: {0}")]
+    Provider(#[from] ProviderError<ExchangeErrors>),
 
     #[error("block out of order, expected: {0}, got: {1}")]
     BlockOutOfOrder(u64, u64),
@@ -63,11 +67,11 @@ pub enum ProviderError<R> {
     #[error("position not found, acc: {0}, perp: {1}")]
     PositionNotFound(types::AccountId, types::PerpetualId),
 
-    #[error("order book error: {0}")]
-    OrderBook(#[from] OrderBookError),
+    #[error("perp {0} order book error: {1}")]
+    OrderBook(types::PerpetualId, OrderBookError),
 
-    #[error("order parse error: {0}")]
-    OrderParse(#[from] OrderParseError),
+    #[error("perp {0} order parse error: {1}")]
+    OrderParse(types::PerpetualId, OrderParseError),
 
     #[error("invalid argument: {0}")]
     InvalidArgument(String),

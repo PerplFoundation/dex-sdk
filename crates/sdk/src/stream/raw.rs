@@ -3,7 +3,12 @@ use std::time::Duration;
 use alloy::{eips::BlockId, providers::Provider, rpc::types::Filter, sol_types::SolEventInterface};
 use futures::{Stream, stream};
 
-use crate::{Chain, abi::dex::Exchange::ExchangeEvents, error::DexError, types};
+use crate::{
+    Chain,
+    abi::dex::Exchange::ExchangeEvents,
+    error::{DexError, ProviderError},
+    types,
+};
 
 pub type RawEvent = types::EventContext<ExchangeEvents>;
 pub type RawBlockEvents = types::BlockEvents<RawEvent>;
@@ -49,10 +54,10 @@ where
                 provider.get_block(BlockId::number(block_num)).into_future(),
                 provider.get_logs(&filter)
             )
-            .map_err(DexError::from)
+            .map_err(ProviderError::from)
             .and_then(|(block, logs)| {
                 let block_header = block
-                    .ok_or(DexError::InvalidRequest("block is not available yet".to_string()))?
+                    .ok_or(ProviderError::InvalidRequest("block is not available yet".to_string()))?
                     .header;
                 let mut events = Vec::with_capacity(logs.len());
                 for log in &logs {
@@ -61,7 +66,7 @@ where
                         log.transaction_index.unwrap_or_default(),
                         log.log_index.unwrap_or_default(),
                         ExchangeEvents::decode_log(&log.inner)
-                            .map_err(DexError::from)?
+                            .map_err(ProviderError::from)?
                             .data,
                     ));
                 }
@@ -72,14 +77,14 @@ where
             });
             if result.is_ok() {
                 block_num += 1;
-                return Some((result, (provider, block_num)));
+                return Some((result.map_err(DexError::Provider), (provider, block_num)));
             }
-            if matches!(result, Err(DexError::InvalidRequest(_))) {
+            if matches!(result, Err(ProviderError::InvalidRequest(_))) {
                 // Block is not available yet
                 sleep(provider.client().poll_interval()).await;
                 continue;
             }
-            return Some((result, (provider, block_num)));
+            return Some((result.map_err(DexError::Provider), (provider, block_num)));
         }
     })
 }
