@@ -1,6 +1,11 @@
 use alloy::{eips::BlockId, providers::Provider, sol_types::SolEventInterface};
 use colored::Colorize;
-use perpl_sdk::{Chain, abi::dex::Exchange::ExchangeEvents, error::DexError, stream::RawEvent};
+use perpl_sdk::{
+    Chain,
+    abi::dex::Exchange::ExchangeEvents,
+    error::{DexError, ProviderError},
+    stream::RawEvent,
+};
 
 pub(crate) async fn render<P: Provider + Clone>(
     chain: &Chain,
@@ -11,8 +16,8 @@ pub(crate) async fn render<P: Provider + Clone>(
     let receipts = provider
         .get_block_receipts(BlockId::number(block_number))
         .await
-        .map_err(DexError::from)?
-        .ok_or(DexError::InvalidRequest("Block not found".to_string()))?;
+        .map_err(|err| DexError::Provider(err.into()))?
+        .ok_or(DexError::Provider(ProviderError::InvalidRequest("Block not found".to_string())))?;
 
     let mut events = Vec::with_capacity(receipts.iter().map(|r| r.inner.logs().len()).sum());
     for receipt in receipts {
@@ -27,7 +32,7 @@ pub(crate) async fn render<P: Provider + Clone>(
                 log.transaction_index.unwrap_or_default(),
                 log.log_index.unwrap_or_default(),
                 ExchangeEvents::decode_log(&log.inner)
-                    .map_err(DexError::from)?
+                    .map_err(|err| DexError::Provider(err.into()))?
                     .data,
             ));
         }

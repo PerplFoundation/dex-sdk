@@ -387,18 +387,24 @@ impl Exchange {
                 },
             )
             .collect(),
-            ExchangeEvents::ClearingRemainingOrderLockBeyondBalance(e) => chain!(if !e
-                .recyclerAmountCNS
-                .is_zero()
-            {
-                self.account(e.recyclerAccountId).map(|acc| {
-                    acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
-                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
-                })
-            } else {
-                None
-            },)
-            .collect(),
+            ExchangeEvents::ClearingRemainingOrderLockBeyondBalance(e) => {
+                if let Some(ctx) = ctx {
+                    ctx.clearing_remaining_order = true;
+                }
+                chain!(if !e.recyclerAmountCNS.is_zero() {
+                    self.account(e.recyclerAccountId).map(|acc| {
+                        acc.update_balance(instant, cc.from_unsigned(e.recyclerBalanceCNS));
+                        StateEvents::account(
+                            acc,
+                            ctx,
+                            AccountEventType::BalanceUpdated(acc.balance()),
+                        )
+                    })
+                } else {
+                    None
+                },)
+                .collect()
+            },
             ExchangeEvents::ClearingSelfMatchingOrder(e) => chain!(
                 if let Some(perp) = self.perpetual(e.perpId) {
                     let order_id = std::num::NonZeroU16::new(e.orderId.to::<u16>())
@@ -691,7 +697,7 @@ impl Exchange {
                     let fill_size = perp.size_converter().from_unsigned(e.lotLNS);
                     let fee = cc.from_unsigned(e.feeCNS);
                     perp.update_last_price(instant, fill_price);
-                    if let Some(ctx) = ctx {
+                    let clearing_remaining_order = if let Some(ctx) = ctx {
                         ctx.maker_fills.push(types::MakerFill {
                             log_index: event.log_index(),
                             maker_account_id: order.account_id(),
@@ -700,9 +706,12 @@ impl Exchange {
                             size: fill_size,
                             fee,
                         });
-                    }
+                        ctx.clearing_remaining_order
+                    } else {
+                        false
+                    };
                     vec![
-                        if order.size() > fill_size {
+                        if order.size() > fill_size && !clearing_remaining_order {
                             let new_size = order.size() - fill_size;
                             perp.update_order(order.updated(
                                 instant,

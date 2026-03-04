@@ -27,7 +27,7 @@ impl<'e> TestPerp<'e> {
             .gas(500000)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -41,7 +41,7 @@ impl<'e> TestPerp<'e> {
             .setMinPost(min)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -55,7 +55,7 @@ impl<'e> TestPerp<'e> {
             .setMinSettle(min)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -70,7 +70,7 @@ impl<'e> TestPerp<'e> {
             .gas(500000)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
             .get_receipt()
             .await
@@ -86,7 +86,7 @@ impl<'e> TestPerp<'e> {
             .gas(500000)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
     }
 
@@ -102,7 +102,7 @@ impl<'e> TestPerp<'e> {
             .gas(500000)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
     }
 
@@ -130,7 +130,7 @@ impl<'e> TestPerp<'e> {
             .gas(5000000)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
     }
 
@@ -166,7 +166,7 @@ impl<'e> TestPerp<'e> {
             .gas(150000000)
             .send()
             .await
-            .map_err::<DexError, _>(DexError::from)
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap()
     }
 }

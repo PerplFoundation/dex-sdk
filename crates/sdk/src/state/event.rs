@@ -615,6 +615,7 @@ pub(crate) struct OrderContext {
     pub(crate) fill_or_kill: bool,
     pub(crate) immediate_or_cancel: bool,
     pub(crate) maker_fills: Vec<types::MakerFill>,
+    pub(crate) clearing_remaining_order: bool,
 }
 
 impl From<&OrderRequest> for OrderContext {
@@ -638,6 +639,7 @@ impl From<&OrderRequest> for OrderContext {
             fill_or_kill: value.fillOrKill,
             immediate_or_cancel: value.immediateOrCancel,
             maker_fills: vec![],
+            clearing_remaining_order: false,
         }
     }
 }

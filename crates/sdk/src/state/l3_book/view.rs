@@ -35,12 +35,12 @@ impl<'a> OrderBookView<'a> {
 
 impl<'a> std::fmt::Display for OrderBookView<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let spread_panel = |table: &mut Table, num_ask_rows: usize| {
+        let spread_panel = |table: &mut Table, row_idx: usize| {
             if let Some(((best_ask, _), (best_bid, _))) =
                 self.book.best_ask().zip(self.book.best_bid())
             {
                 table.with(Panel::horizontal(
-                    num_ask_rows + 1,
+                    row_idx,
                     format!(
                         "Best ASK: {} :: Best BID: {} :: Spread: {} ({:.2} %)",
                         best_ask,
@@ -49,7 +49,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                         (best_ask - best_bid) / (best_ask + best_bid / 2) * 100
                     ),
                 ));
-                table.modify(Row::from(num_ask_rows + 1), Alignment::right());
+                table.modify(Row::from(row_idx), Alignment::right());
             }
         };
 
@@ -172,7 +172,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
             table.modify(Rows::first(), Alignment::right());
 
             // Spread
-            spread_panel(&mut table, self.depth.unwrap_or(num_ask_levels) + 1); // +1 for header
+            spread_panel(&mut table, self.depth.unwrap_or(num_ask_levels).min(num_ask_levels) + 2);
 
             if let Some(max_width) = f.width() {
                 table.with(Width::wrap(max_width));
@@ -191,7 +191,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                     .map(|o| &*(**o))
                     .chain(self.book.bid_orders().map(|o| &*(*o))),
             );
-            spread_panel(&mut table, num_ask_orders);
+            spread_panel(&mut table, num_ask_orders + 1);
             table.with(Style::sharp());
             writeln!(f, "{}", table)
         }

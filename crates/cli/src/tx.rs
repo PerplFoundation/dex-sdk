@@ -1,6 +1,10 @@
 use alloy::{primitives::TxHash, providers::Provider, sol_types::SolEventInterface};
 use colored::Colorize;
-use perpl_sdk::{abi::dex::Exchange::ExchangeEvents, error::DexError, stream::RawEvent};
+use perpl_sdk::{
+    abi::dex::Exchange::ExchangeEvents,
+    error::{DexError, ProviderError},
+    stream::RawEvent,
+};
 
 pub(crate) async fn render<P: Provider + Clone>(
     provider: P,
@@ -9,8 +13,10 @@ pub(crate) async fn render<P: Provider + Clone>(
     let receipt = provider
         .get_transaction_receipt(tx_hash)
         .await
-        .map_err(DexError::from)?
-        .ok_or(DexError::InvalidRequest("Transaction not found".to_string()))?;
+        .map_err(|err| DexError::Provider(err.into()))?
+        .ok_or(DexError::Provider(ProviderError::InvalidRequest(
+            "Transaction not found".to_string(),
+        )))?;
 
     let mut events = Vec::with_capacity(receipt.inner.logs().len());
     for log in receipt.inner.logs() {
@@ -19,7 +25,7 @@ pub(crate) async fn render<P: Provider + Clone>(
             log.transaction_index.unwrap_or_default(),
             log.log_index.unwrap_or_default(),
             ExchangeEvents::decode_log(&log.inner)
-                .map_err(DexError::from)?
+                .map_err(|err| DexError::Provider(err.into()))?
                 .data,
         ));
     }

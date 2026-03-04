@@ -39,7 +39,7 @@ pub use position::*;
 use crate::{
     Chain,
     abi::dex::{self, Exchange::getExchangeInfoReturn},
-    error::DexError,
+    error::{DexError, ProviderError},
     num, types,
 };
 
@@ -185,9 +185,11 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .provider
             .get_block(self.block_id)
             .await
-            .map_err(DexError::from)?
+            .map_err(|err| DexError::Provider(err.into()))?
             .map(|b| b.into_header())
-            .ok_or(DexError::InvalidRequest("block not found".to_string()))?;
+            .ok_or(DexError::Provider(ProviderError::InvalidRequest(
+                "block not found".to_string(),
+            )))?;
         self.block_id = BlockId::number(block_header.number);
         Ok(types::StateInstant::new(block_header.number, block_header.timestamp))
     }
@@ -221,7 +223,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             is_halted_call.call().into_future(),
             num_of_accounts_call.call().into_future(),
         )
-        .map_err(DexError::from)
+        .map_err(|err| DexError::Provider(err.into()))
     }
 
     async fn perpetuals(
@@ -251,7 +253,8 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         });
 
         let mut perpetuals = futures::future::try_join_all(perpetual_futs)
-            .await?
+            .await
+            .map_err(|err| DexError::Provider(err.into()))?
             .into_iter()
             .map(|(perp_id, perp_info, maker_fee, taker_fee, margins)| {
                 let perp = Perpetual::new(
@@ -282,7 +285,8 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             .getOrderIdIndex(pid)
             .block(self.block_id)
             .call()
-            .await?;
+            .await
+            .map_err(|err| DexError::Provider(err.into()))?;
 
         let order_ids = order_id_index
             .leaves
@@ -327,7 +331,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         // ordering
         let orders: Vec<Order> = futures::future::try_join_all(order_batch_futs)
             .await
-            .map_err(DexError::from)?
+            .map_err(|err| DexError::Provider(err.into()))?
             .into_iter()
             .flatten()
             .map(|ord| {
@@ -340,7 +344,8 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                     leverage_converter,
                 )
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|err| DexError::OrderParse(perp.id(), err))?;
 
         perp.add_orders_from_snapshot(orders)
     }
@@ -353,20 +358,20 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
     ) -> Result<HashMap<types::AccountId, Account>, DexError> {
         let account_futs = self.accounts.iter().map(|acc| async move {
             let acc_info = match acc {
-                types::AccountAddressOrID::Address(addr) => {
-                    self.instance
-                        .getAccountByAddr(*addr)
-                        .block(self.block_id)
-                        .call()
-                        .await?
-                },
-                types::AccountAddressOrID::ID(id) => {
-                    self.instance
-                        .getAccountById(U256::from(*id))
-                        .block(self.block_id)
-                        .call()
-                        .await?
-                },
+                types::AccountAddressOrID::Address(addr) => self
+                    .instance
+                    .getAccountByAddr(*addr)
+                    .block(self.block_id)
+                    .call()
+                    .await
+                    .map_err(|err| DexError::Provider(err.into()))?,
+                types::AccountAddressOrID::ID(id) => self
+                    .instance
+                    .getAccountById(U256::from(*id))
+                    .block(self.block_id)
+                    .call()
+                    .await
+                    .map_err(|err| DexError::Provider(err.into()))?,
             };
             let perps_with_positions = perpetuals_with_position(&acc_info.positions);
             let position_futs = perps_with_positions.iter().map(|perp_id| async {
@@ -376,6 +381,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                     .call()
                     .await
                     .map(|pos_info| (*perp_id, pos_info))
+                    .map_err(|err| DexError::Provider(err.into()))
             });
             let positions = futures::future::try_join_all(position_futs).await?;
             Ok::<_, DexError>((acc_info.accountId, acc_info, positions))
@@ -440,7 +446,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
 
             futures::future::try_join_all(pos_batch_futs)
                 .await
-                .map_err(DexError::from)?
+                .map_err(|err| DexError::Provider(err.into()))?
                 .into_iter()
                 .flatten()
                 .for_each(|pos| {

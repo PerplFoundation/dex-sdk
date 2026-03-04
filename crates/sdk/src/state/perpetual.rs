@@ -406,7 +406,9 @@ impl Perpetual {
     }
 
     pub(crate) fn add_order(&mut self, order: Order) -> Result<(), DexError> {
-        self.l3_book.add_order(&order)?;
+        self.l3_book
+            .add_order(&order)
+            .map_err(|err| DexError::OrderBook(self.id, err))?;
         Ok(())
     }
 
@@ -416,7 +418,9 @@ impl Perpetual {
     /// Uses the `prev_order_id`/`next_order_id` fields from the snapshot to
     /// determine the correct queue position within each price level.
     pub(crate) fn add_orders_from_snapshot(&mut self, orders: Vec<Order>) -> Result<(), DexError> {
-        self.l3_book.add_orders_from_snapshot(&orders)?;
+        self.l3_book
+            .add_orders_from_snapshot(&orders)
+            .map_err(|err| DexError::OrderBook(self.id, err))?;
         Ok(())
     }
 
@@ -429,20 +433,30 @@ impl Perpetual {
 
         if prev.price() != order.price() {
             // Price changed: remove from old level, add to new level (back of queue)
-            self.l3_book.remove_order(&prev)?;
-            self.l3_book.add_order(&order)?;
+            self.l3_book
+                .remove_order(&prev)
+                .map_err(|err| DexError::OrderBook(self.id, err))?;
+            self.l3_book
+                .add_order(&order)
+                .map_err(|err| DexError::OrderBook(self.id, err))?;
         } else if order.size() > prev.size() {
             // Size INCREASED at same price: move to back of queue (loses priority)
-            self.l3_book.move_to_back(&order, &prev)?;
+            self.l3_book
+                .move_to_back(&order, &prev)
+                .map_err(|err| DexError::OrderBook(self.id, err))?;
         } else if prev.expiry_block() > 0
             && prev.expiry_block() < order.instant().block_number()
             && prev.expiry_block() != order.expiry_block()
         {
             // Expired order got new expiry: move to back of queue (loses priority)
-            self.l3_book.move_to_back(&order, &prev)?;
+            self.l3_book
+                .move_to_back(&order, &prev)
+                .map_err(|err| DexError::OrderBook(self.id, err))?;
         } else {
             // Size decreased or unchanged: keep queue position
-            self.l3_book.update_order(&order, &prev)?;
+            self.l3_book
+                .update_order(&order, &prev)
+                .map_err(|err| DexError::OrderBook(self.id, err))?;
         }
         Ok(())
     }
@@ -453,7 +467,9 @@ impl Perpetual {
             .get_order(order_id)
             .cloned()
             .ok_or(DexError::OrderNotFound(self.id, order_id))?;
-        self.l3_book.remove_order(&order).map_err(|err| err.into())
+        self.l3_book
+            .remove_order(&order)
+            .map_err(|err| DexError::OrderBook(self.id, err))
     }
 
     pub(crate) fn update_paused(&mut self, instant: types::StateInstant, paused: bool) {
