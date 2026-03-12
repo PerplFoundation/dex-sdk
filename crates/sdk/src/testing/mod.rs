@@ -71,6 +71,7 @@ impl TestExchange {
             .args(vec!["--base-fee", "100000000000"])
             .args(vec!["--order", "fifo"])
             .args(vec!["--max-persisted-states", "1000"])
+            .args(vec!["--slots-in-an-epoch", "0"])
             .try_spawn()
             .unwrap();
         let client = RpcClient::builder().http(anvil.endpoint_url());
