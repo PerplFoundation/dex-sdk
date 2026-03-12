@@ -48,14 +48,23 @@ where
             .to_block(block_num);
         loop {
             // Anvil node, and maybe some RPC providers, produce empty response instead of
-            // error in case the block in the filter does not exist yet,
-            // so checking the block presence explicitly
+            // error in case the block in the filter does not exist yet.
+            // Checking the block presence explicitly, and also checking requested block
+            // number against `safe` block tag as Monad RPC assumes `latest` ==
+            // `Proposed` since v0.13.0 and `Proposed` is not safe enough to
+            // preserve state consistency.
             let result = futures::try_join!(
+                provider.get_block(BlockId::safe()).into_future(),
                 provider.get_block(BlockId::number(block_num)).into_future(),
                 provider.get_logs(&filter)
             )
             .map_err(ProviderError::from)
-            .and_then(|(block, logs)| {
+            .and_then(|(safe_block, block, logs)| {
+                if safe_block.is_none_or(|sb| sb.header.number < block_num) {
+                    return Err(ProviderError::InvalidRequest(
+                        "block is not available yet".to_string(),
+                    ));
+                }
                 let block_header = block
                     .ok_or(ProviderError::InvalidRequest("block is not available yet".to_string()))?
                     .header;
