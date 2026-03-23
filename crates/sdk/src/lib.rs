@@ -67,7 +67,7 @@ impl Chain {
             collateral_token: address!("0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a"),
             deployed_at_block: 54773010,
             exchange: address!("0x34B6552d57a35a1D042CcAe1951BD1C370112a6F"),
-            perpetuals: vec![1, 10, 20],
+            perpetuals: vec![1, 10, 20, 30],
         }
     }
 
