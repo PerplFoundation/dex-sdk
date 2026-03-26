@@ -86,13 +86,15 @@ impl OrderBook {
 
     /// Ask impact price for the requested notional amount, along with the
     /// fillable size, size-averaged price, and filled notional.
-    pub fn ask_impact_notional(&self, want_notional: UD64) -> Option<(UD64, UD64, UD64, UD128)> {
+    /// CAREFUL: See [`impact_notional`](Self::impact_notional) for partial-fill semantics.
+    pub fn ask_impact_notional(&self, want_notional: UD128) -> Option<(UD64, UD64, UD64, UD128)> {
         Self::impact_notional(self.asks.iter(), want_notional)
     }
 
     /// Bid impact price for the requested notional amount, along with the
     /// fillable size, size-averaged price, and filled notional.
-    pub fn bid_impact_notional(&self, want_notional: UD64) -> Option<(UD64, UD64, UD64, UD128)> {
+    /// CAREFUL: See [`impact_notional`](Self::impact_notional) for partial-fill semantics.
+    pub fn bid_impact_notional(&self, want_notional: UD128) -> Option<(UD64, UD64, UD64, UD128)> {
         Self::impact_notional(self.bids.iter().map(|(k, v)| (&k.0, v)), want_notional)
     }
 
@@ -624,24 +626,20 @@ impl OrderBook {
         }
     }
 
-    /// FAFO - CAREFUL: Untested
-    /// 
     /// Gets the impact price for a market order of the requested notional amount,
     /// along with the fillable size, size-averaged price, and filled notional amount.
     /// `want_notional` is the target cumulative notional (sum of price * size).
-    /// 
-    /// NOTE: want_notional in the smart contract can technically be as large as
-    /// 80-bits (CNS), however for this use case that is impractical and 64-bits
-    /// is sufficient.
-    /// 
+    ///
+    /// CAREFUL: Returns whatever values can be filled, up to `want_notional`. It is
+    /// incumbent upon the caller to check that the returned `filled_notional` meets
+    /// or exceeds the value specified for `want_notional`.
     fn impact_notional<'a>(
         mut side: impl Iterator<Item = (&'a UD64, &'a BookLevel)>,
-        want_notional: UD64,
+        want_notional: UD128,
     ) -> Option<(UD64, UD64, UD64, UD128)> {
-        let want: UD128 = want_notional.resize();
         let (price, _, filled_size, filled_notional) = side
             .fold_while(
-                (UD64::ZERO, want, UD64::ZERO, UD128::ZERO),
+                (UD64::ZERO, want_notional, UD64::ZERO, UD128::ZERO),
                 |(_, remaining, filled_size, filled_notional), (price, level)| {
                     let level_size = level.size();
                     let level_notional = price.resize() * level_size.resize();
@@ -665,7 +663,7 @@ impl OrderBook {
                 },
             )
             .into_inner();
-        if filled_size.is_zero() || filled_notional < want {
+        if filled_size.is_zero() {
             None
         } else {
             let ctx = Context::default().with_rounding_mode(RoundingMode::HalfUp);

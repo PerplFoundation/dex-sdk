@@ -1073,6 +1073,7 @@ fn level_not_found_on_move_to_back() {
 //   - filled_notional: total notional filled (sum of price * size per level)
 
 use fastnum::udec128;
+use fastnum::UD128;
 
 /// Build an `OrderBook` with ask and/or bid inventory at specified price levels.
 ///
@@ -1124,13 +1125,13 @@ fn book_with_inventory(
 #[test]
 fn impact_notional_empty_book_ask() {
     let book = OrderBook::new();
-    assert_eq!(book.ask_impact_notional(udec64!(1000)), None);
+    assert_eq!(book.ask_impact_notional(udec128!(1000)), None);
 }
 
 #[test]
 fn impact_notional_empty_book_bid() {
     let book = OrderBook::new();
-    assert_eq!(book.bid_impact_notional(udec64!(1000)), None);
+    assert_eq!(book.bid_impact_notional(udec128!(1000)), None);
 }
 
 // 2. Cross-talk: only opposing inventory → None
@@ -1138,13 +1139,13 @@ fn impact_notional_empty_book_bid() {
 #[test]
 fn impact_notional_crosstalk_ask_with_only_bid_inventory() {
     let book = book_with_inventory(&[], &[(100, &[10])]);
-    assert_eq!(book.ask_impact_notional(udec64!(500)), None);
+    assert_eq!(book.ask_impact_notional(udec128!(500)), None);
 }
 
 #[test]
 fn impact_notional_crosstalk_bid_with_only_ask_inventory() {
     let book = book_with_inventory(&[(100, &[10])], &[]);
-    assert_eq!(book.bid_impact_notional(udec64!(500)), None);
+    assert_eq!(book.bid_impact_notional(udec128!(500)), None);
 }
 
 // 3. Inventory exists, want_notional = 0 → None
@@ -1152,13 +1153,13 @@ fn impact_notional_crosstalk_bid_with_only_ask_inventory() {
 #[test]
 fn impact_notional_zero_notional_ask() {
     let book = book_with_inventory(&[(100, &[10])], &[]);
-    assert_eq!(book.ask_impact_notional(UD64::ZERO), None);
+    assert_eq!(book.ask_impact_notional(UD128::ZERO), None);
 }
 
 #[test]
 fn impact_notional_zero_notional_bid() {
     let book = book_with_inventory(&[], &[(100, &[10])]);
-    assert_eq!(book.bid_impact_notional(UD64::ZERO), None);
+    assert_eq!(book.bid_impact_notional(UD128::ZERO), None);
 }
 
 // 4. Single level, half inventory
@@ -1170,7 +1171,7 @@ fn impact_notional_zero_notional_bid() {
 #[test]
 fn impact_notional_single_level_half_ask() {
     let book = book_with_inventory(&[(100, &[10, 20, 30])], &[]);
-    let result = book.ask_impact_notional(udec64!(3000));
+    let result = book.ask_impact_notional(udec128!(3000));
     assert_eq!(
         result,
         Some((udec64!(100), udec64!(30), udec64!(100), udec128!(3000)))
@@ -1180,7 +1181,7 @@ fn impact_notional_single_level_half_ask() {
 #[test]
 fn impact_notional_single_level_half_bid() {
     let book = book_with_inventory(&[], &[(100, &[10, 20, 30])]);
-    let result = book.bid_impact_notional(udec64!(3000));
+    let result = book.bid_impact_notional(udec128!(3000));
     assert_eq!(
         result,
         Some((udec64!(100), udec64!(30), udec64!(100), udec128!(3000)))
@@ -1194,7 +1195,7 @@ fn impact_notional_single_level_half_bid() {
 #[test]
 fn impact_notional_single_level_full_ask() {
     let book = book_with_inventory(&[(100, &[10, 20, 30])], &[]);
-    let result = book.ask_impact_notional(udec64!(6000));
+    let result = book.ask_impact_notional(udec128!(6000));
     assert_eq!(
         result,
         Some((udec64!(100), udec64!(60), udec64!(100), udec128!(6000)))
@@ -1204,27 +1205,36 @@ fn impact_notional_single_level_full_ask() {
 #[test]
 fn impact_notional_single_level_full_bid() {
     let book = book_with_inventory(&[], &[(100, &[10, 20, 30])]);
-    let result = book.bid_impact_notional(udec64!(6000));
+    let result = book.bid_impact_notional(udec128!(6000));
     assert_eq!(
         result,
         Some((udec64!(100), udec64!(60), udec64!(100), udec128!(6000)))
     );
 }
 
-// 6. Single level, exceeding inventory → None
+// 6. Single level, exceeding inventory → partial fill
 //
-// Want: 7000, but only 6000 available.
+// Want: 7000, but only 6000 available. Returns all inventory.
+// filled_size = 60, filled_notional = 6000, vwap = 6000/60 = 100.
 
 #[test]
 fn impact_notional_single_level_exceeding_ask() {
     let book = book_with_inventory(&[(100, &[10, 20, 30])], &[]);
-    assert_eq!(book.ask_impact_notional(udec64!(7000)), None);
+    let result = book.ask_impact_notional(udec128!(7000));
+    assert_eq!(
+        result,
+        Some((udec64!(100), udec64!(60), udec64!(100), udec128!(6000)))
+    );
 }
 
 #[test]
 fn impact_notional_single_level_exceeding_bid() {
     let book = book_with_inventory(&[], &[(100, &[10, 20, 30])]);
-    assert_eq!(book.bid_impact_notional(udec64!(7000)), None);
+    let result = book.bid_impact_notional(udec128!(7000));
+    assert_eq!(
+        result,
+        Some((udec64!(100), udec64!(60), udec64!(100), udec128!(6000)))
+    );
 }
 
 // 7. Multiple levels, reaching into third level
@@ -1247,7 +1257,7 @@ fn impact_notional_multi_level_partial_ask() {
         &[(100, &[10]), (200, &[20]), (300, &[30])],
         &[],
     );
-    let result = book.ask_impact_notional(udec64!(8000));
+    let result = book.ask_impact_notional(udec128!(8000));
     assert_eq!(
         result,
         Some((udec64!(300), udec64!(40), udec64!(200), udec128!(8000)))
@@ -1260,17 +1270,19 @@ fn impact_notional_multi_level_partial_bid() {
         &[],
         &[(300, &[10]), (200, &[20]), (100, &[30])],
     );
-    let result = book.bid_impact_notional(udec64!(8000));
+    let result = book.bid_impact_notional(udec128!(8000));
     assert_eq!(
         result,
         Some((udec64!(100), udec64!(40), udec64!(200), udec128!(8000)))
     );
 }
 
-// 8. Multiple levels, exceeding all inventory → None
+// 8. Multiple levels, exceeding all inventory → partial fill
 //
-// Ask: total notional = 14000, want 15000 → None.
-// Bid: total notional = 10000, want 11000 → None.
+// Ask levels: 100×10 + 200×20 + 300×30 = total notional 14000, want 15000.
+//   filled_size = 60, filled_notional = 14000, vwap = 14000/60 ≈ 233.33.
+// Bid levels: 300×10 + 200×20 + 100×30 = total notional 10000, want 11000.
+//   filled_size = 60, filled_notional = 10000, vwap = 10000/60 ≈ 166.67.
 
 #[test]
 fn impact_notional_multi_level_exceeding_ask() {
@@ -1278,7 +1290,11 @@ fn impact_notional_multi_level_exceeding_ask() {
         &[(100, &[10]), (200, &[20]), (300, &[30])],
         &[],
     );
-    assert_eq!(book.ask_impact_notional(udec64!(15000)), None);
+    let result = book.ask_impact_notional(udec128!(15000));
+    let (price, filled_size, _vwap, filled_notional) = result.unwrap();
+    assert_eq!(price, udec64!(300));
+    assert_eq!(filled_size, udec64!(60));
+    assert_eq!(filled_notional, udec128!(14000));
 }
 
 #[test]
@@ -1287,5 +1303,26 @@ fn impact_notional_multi_level_exceeding_bid() {
         &[],
         &[(300, &[10]), (200, &[20]), (100, &[30])],
     );
-    assert_eq!(book.bid_impact_notional(udec64!(11000)), None);
+    let result = book.bid_impact_notional(udec128!(11000));
+    let (price, filled_size, _vwap, filled_notional) = result.unwrap();
+    assert_eq!(price, udec64!(100));
+    assert_eq!(filled_size, udec64!(60));
+    assert_eq!(filled_notional, udec128!(10000));
+}
+
+// 9. want_notional exceeding UD64 range → partial fill
+//
+// Verifies that UD128 want_notional values beyond UD64::MAX are accepted.
+// Book has limited inventory so the result is a partial fill.
+
+#[test]
+fn impact_notional_ud128_range_want() {
+    let book = book_with_inventory(&[(100, &[10, 20, 30])], &[]);
+    // 2^65 ≈ 36_893_488_147_419_103_232, well beyond UD64::MAX
+    let large_want: UD128 = udec128!(36893488147419103232);
+    let result = book.ask_impact_notional(large_want);
+    let (price, filled_size, _vwap, filled_notional) = result.unwrap();
+    assert_eq!(price, udec64!(100));
+    assert_eq!(filled_size, udec64!(60));
+    assert_eq!(filled_notional, udec128!(6000));
 }
