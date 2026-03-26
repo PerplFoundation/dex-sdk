@@ -19,7 +19,7 @@ use std::{
 };
 
 pub use error::{OrderBookError, OrderBookResult};
-use fastnum::{UD64, UD128};
+use fastnum::{UD64, UD128, decimal::{Context, RoundingMode}};
 use itertools::{FoldWhile, Itertools};
 pub use level::BookLevel;
 pub use order::BookOrder;
@@ -82,6 +82,20 @@ impl OrderBook {
     /// and size-averaged price.
     pub fn bid_impact(&self, want_size: UD64) -> Option<(UD64, UD64, UD64)> {
         Self::impact(self.bids.iter().map(|(k, v)| (&k.0, v)), want_size)
+    }
+
+    /// Ask impact price for the requested notional amount, along with the
+    /// fillable size, size-averaged price, and filled notional.
+    /// CAREFUL: See [`impact_notional`](Self::impact_notional) for partial-fill semantics.
+    pub fn ask_impact_notional(&self, want_notional: UD128) -> Option<(UD64, UD64, UD64, UD128)> {
+        Self::impact_notional(self.asks.iter(), want_notional)
+    }
+
+    /// Bid impact price for the requested notional amount, along with the
+    /// fillable size, size-averaged price, and filled notional.
+    /// CAREFUL: See [`impact_notional`](Self::impact_notional) for partial-fill semantics.
+    pub fn bid_impact_notional(&self, want_notional: UD128) -> Option<(UD64, UD64, UD64, UD128)> {
+        Self::impact_notional(self.bids.iter().map(|(k, v)| (&k.0, v)), want_notional)
     }
 
     // === L3 API ===
@@ -577,6 +591,8 @@ impl OrderBook {
         level.add_size(size);
     }
 
+    /// Gets the impact price for a market order of the requested size, along
+    /// with the fillable size and size-averaged price.
     fn impact<'a>(
         mut side: impl Iterator<Item = (&'a UD64, &'a BookLevel)>,
         want_size: UD64,
@@ -607,6 +623,52 @@ impl OrderBook {
             Some((price, filled, (price_size / filled.resize()).resize()))
         } else {
             None
+        }
+    }
+
+    /// Gets the impact price for a market order of the requested notional amount,
+    /// along with the fillable size, size-averaged price, and filled notional amount.
+    /// `want_notional` is the target cumulative notional (sum of price * size).
+    ///
+    /// CAREFUL: Returns whatever values can be filled, up to `want_notional`. It is
+    /// incumbent upon the caller to check that the returned `filled_notional` meets
+    /// or exceeds the value specified for `want_notional`.
+    fn impact_notional<'a>(
+        mut side: impl Iterator<Item = (&'a UD64, &'a BookLevel)>,
+        want_notional: UD128,
+    ) -> Option<(UD64, UD64, UD64, UD128)> {
+        let (price, _, filled_size, filled_notional) = side
+            .fold_while(
+                (UD64::ZERO, want_notional, UD64::ZERO, UD128::ZERO),
+                |(_, remaining, filled_size, filled_notional), (price, level)| {
+                    let level_size = level.size();
+                    let level_notional = price.resize() * level_size.resize();
+                    if remaining > level_notional {
+                        FoldWhile::Continue((
+                            *price,
+                            remaining - level_notional,
+                            filled_size + level_size,
+                            filled_notional + level_notional,
+                        ))
+                    } else {
+                        let partial_size: UD64 =
+                            (remaining / price.resize()).resize();
+                        FoldWhile::Done((
+                            *price,
+                            UD128::ZERO,
+                            filled_size + partial_size,
+                            filled_notional + remaining,
+                        ))
+                    }
+                },
+            )
+            .into_inner();
+        if filled_size.is_zero() {
+            None
+        } else {
+            let ctx = Context::default().with_rounding_mode(RoundingMode::HalfUp);
+            let vwap: UD64 = (filled_notional.with_ctx(ctx) / filled_size.resize().with_ctx(ctx)).resize();
+            Some((price, filled_size, vwap, filled_notional))
         }
     }
 }

@@ -25,4 +25,9 @@ tokio = { workspace = true }
 [features]
 default = ["display", "testing"]
 display = ["tabled", "colored"]
+# Separate from `testing` (which is in `default` and enables alloy/node-bindings)
+# so that downstream crates can opt in to test builders (Perpetual::for_test,
+# with_bid, with_ask, etc.) via dev-dependencies without exposing internal
+# mutation methods in production builds.
+test-utils = []
 testing = ["alloy/node-bindings"]
