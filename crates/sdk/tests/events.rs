@@ -109,7 +109,7 @@ async fn test_snapshot_and_events() {
     o(maker.id, 12, Some(oid(1)), Cancel, udec64!(0), udec64!(0)).await;
 
     o(maker.id, 20, None, OpenLong, udec64!(100100), udec64!(1)).await;
-    o(taker.id, 21, None, CloseLong, udec64!(100100), udec64!(0.2)).await;
+    o(taker.id, 21, None, OpenShort, udec64!(100100), udec64!(0.2)).await;
 
     // Collect and (partially) validate produced events
     while let Some(block_events) = state.next_state_events().await {

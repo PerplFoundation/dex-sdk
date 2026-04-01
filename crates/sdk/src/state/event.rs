@@ -602,6 +602,7 @@ impl StateEvents {
 }
 
 /// Order request context.
+#[derive(Debug)]
 pub(crate) struct OrderContext {
     pub(crate) perpetual_id: types::PerpetualId,
     pub(crate) account_id: types::AccountId,
