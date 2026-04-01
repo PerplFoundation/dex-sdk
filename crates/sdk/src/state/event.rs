@@ -616,7 +616,7 @@ pub(crate) struct OrderContext {
     pub(crate) immediate_or_cancel: bool,
     pub(crate) maker_fills: Vec<types::MakerFill>,
     pub(crate) clearing_remaining_order: bool,
-    pub(crate) position_closed_at: Option<u64>,
+    pub(crate) position_closed_at_log_index: Option<u64>,
 }
 
 impl From<&OrderRequest> for OrderContext {
@@ -641,7 +641,7 @@ impl From<&OrderRequest> for OrderContext {
             immediate_or_cancel: value.immediateOrCancel,
             maker_fills: vec![],
             clearing_remaining_order: false,
-            position_closed_at: None,
+            position_closed_at_log_index: None,
         }
     }
 }
