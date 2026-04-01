@@ -1875,7 +1875,7 @@ use std::collections::HashMap;
             order_id: order_id_opt,
             r#type: request_type,
             price,
-            expiry_block: 10_000,
+            expiry_block: 100_000_000,
             leverage: U256::from(5),
             post_only: false,
             fill_or_kill: false,
@@ -1898,7 +1898,7 @@ use std::collections::HashMap;
         ExchangeEvents::OrderPlaced(OrderPlaced {
             orderId: U256::from(order_id),
             lotLNS: U256::from(1),
-            lockedBalanceCNS: U256::from(10),
+            lockedBalanceCNS: U256::ZERO,
             amountCNS: I256::ZERO,
             balanceCNS: U256::ZERO,
         })
@@ -1930,11 +1930,11 @@ use std::collections::HashMap;
         })
     }
 
-    fn event_maker_order_filled(account_id: u64) -> ExchangeEvents {
+    fn event_maker_order_filled(account_id: u64, order_id: u64) -> ExchangeEvents {
         ExchangeEvents::MakerOrderFilled(MakerOrderFilled {
             perpId: U256::from(TEST_PERP_ID),
             accountId: U256::from(account_id),
-            orderId: U256::from(1),
+            orderId: U256::from(order_id),
             pricePNS: U256::ZERO,
             lotLNS: U256::ZERO,
             feeCNS: U256::ZERO,
@@ -1980,7 +1980,7 @@ use std::collections::HashMap;
     fn test_smart_contract_position_closed() {
         let (mut exchange, mut order_context) = smart_contract_position_closed_inner();
 
-        let maker_order_filled = event_maker_order_filled(1);
+        let maker_order_filled = event_maker_order_filled(1, 1);
         apply_event(&mut exchange, maker_order_filled, &mut order_context, 5);
 
         // PositionClosed -> MakerOrderFilled implies Close Position
@@ -2000,7 +2000,7 @@ use std::collections::HashMap;
         let perp = perps.get(&TEST_PERP_ID).expect("UT");
         assert!(perp.get_order(OrderId::new(1).expect("UT")).is_some());
 
-        let maker_order_filled = event_maker_order_filled(1);
+        let maker_order_filled = event_maker_order_filled(1, 1);
         apply_event(&mut exchange, maker_order_filled, &mut order_context, 6);
 
         // PositionClosed -> Any -> MakerOrderFilled does not imply Close Position
