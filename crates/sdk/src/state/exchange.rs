@@ -706,7 +706,8 @@ impl Exchange {
                             size: fill_size,
                             fee,
                         });
-                        ctx.clearing_remaining_order
+                        let position_closed_by_smart_contract = Some(event.log_index() - 1) == ctx.position_closed_at;
+                        ctx.clearing_remaining_order | position_closed_by_smart_contract
                     } else {
                         false
                     };
@@ -1091,6 +1092,11 @@ impl Exchange {
                         .positions_mut()
                         .remove(&perp.id())
                         .ok_or(DexError::PositionNotFound(acc.id(), perp.id()))?;
+
+                    if let Some(ctx) = ctx {
+                        ctx.position_closed_at = Some(event.log_index());
+                    }
+
                     chain!(
                         Some(StateEvents::position(
                             &pos,
