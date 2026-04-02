@@ -5,7 +5,7 @@ use itertools::chain;
 
 use super::*;
 use crate::{Chain, abi::dex::Exchange::ExchangeEvents, stream, types::EventContext};
-use crate::types::RequestType;
+use crate::types::OrderType;
 
 pub type StateBlockEvents = types::BlockEvents<types::EventContext<Vec<StateEvents>>>;
 
@@ -708,7 +708,12 @@ impl Exchange {
                             fee,
                         });
                         let position_closed_by_smart_contract = if event.log_index() > 0 {
-                            Some(event.log_index() - 1) == ctx.position_closed_at_log_index
+                            match order.r#type() {
+                                OrderType::CloseLong|OrderType::CloseShort => {
+                                    Some(event.log_index() - 1) == ctx.position_closed_at_log_index
+                                }
+                                _ => false
+                            }
                         } else {
                             false
                         };
@@ -1099,12 +1104,7 @@ impl Exchange {
                         .ok_or(DexError::PositionNotFound(acc.id(), perp.id()))?;
 
                     if let Some(ctx) = ctx {
-                        match ctx.r#type {
-                            RequestType::CloseLong|RequestType::CloseShort => {
-                                ctx.position_closed_at_log_index = Some(event.log_index());
-                            }
-                            _ => {}
-                        }
+                        ctx.position_closed_at_log_index = Some(event.log_index());
                     }
 
                     chain!(
