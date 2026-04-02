@@ -1,14 +1,20 @@
 use std::collections::HashMap;
-use alloy::primitives::{TxHash};
-use alloy::primitives::{I256, U256};
+
+use alloy::primitives::{I256, TxHash, U256};
 use fastnum::udec128;
-use crate::{types, Chain};
-use crate::abi::dex::Exchange::{AccountCreated, ExchangeEvents, MaintenanceMarginFractionUpdated, MakerOrderFilled, OrderPlaced, PositionClosed, PositionOpened};
-use crate::num::Converter;
-use crate::state::{Exchange, OrderContext, Perpetual};
-use crate::stream::RawEvent;
-use crate::types::{OrderId, RequestId, RequestType, StateInstant};
-use crate::types::RequestType::CloseLong;
+
+use crate::{
+    Chain,
+    abi::dex::Exchange::{
+        AccountCreated, ExchangeEvents, MaintenanceMarginFractionUpdated, MakerOrderFilled,
+        OrderPlaced, PositionClosed, PositionOpened,
+    },
+    num::Converter,
+    state::{Exchange, OrderContext, Perpetual},
+    stream::RawEvent,
+    types,
+    types::{OrderId, RequestId, RequestType, RequestType::CloseLong, StateInstant},
+};
 
 const TEST_PERP_ID: u32 = 123456789;
 
@@ -20,12 +26,28 @@ fn create_test_exchange() -> Exchange {
     let perpetuals = HashMap::from([(TEST_PERP_ID, Perpetual::for_testing(TEST_PERP_ID))]);
     let accounts = HashMap::new();
 
-    Exchange::new(chain, instant, collateral_converter, 100, udec128!(0.001), udec128!(0.001), udec128!(0.001), perpetuals, accounts, false, true)
+    Exchange::new(
+        chain,
+        instant,
+        collateral_converter,
+        100,
+        udec128!(0.001),
+        udec128!(0.001),
+        udec128!(0.001),
+        perpetuals,
+        accounts,
+        false,
+        true,
+    )
 }
 
-fn create_test_order_context(request_id: RequestId, order_id_opt: Option<OrderId>,
-                             account_id: types::AccountId, request_type: RequestType,
-                             price: U256) -> OrderContext {
+fn create_test_order_context(
+    request_id: RequestId,
+    order_id_opt: Option<OrderId>,
+    account_id: types::AccountId,
+    request_type: RequestType,
+    price: U256,
+) -> OrderContext {
     OrderContext {
         perpetual_id: TEST_PERP_ID,
         account_id,
@@ -45,11 +67,17 @@ fn create_test_order_context(request_id: RequestId, order_id_opt: Option<OrderId
 }
 
 fn event_account_created(id: u64) -> ExchangeEvents {
-    ExchangeEvents::AccountCreated(AccountCreated { account: Default::default(), id: U256::from(id) })
+    ExchangeEvents::AccountCreated(AccountCreated {
+        account: Default::default(),
+        id: U256::from(id),
+    })
 }
 
 fn event_maintenance_margin(margin_fraction_hdths: u64) -> ExchangeEvents {
-    ExchangeEvents::MaintenanceMarginFractionUpdated(MaintenanceMarginFractionUpdated { perpId: U256::from(TEST_PERP_ID), maintMarginFracHdths: U256::from(margin_fraction_hdths) })
+    ExchangeEvents::MaintenanceMarginFractionUpdated(MaintenanceMarginFractionUpdated {
+        perpId: U256::from(TEST_PERP_ID),
+        maintMarginFracHdths: U256::from(margin_fraction_hdths),
+    })
 }
 
 fn event_order_placed(order_id: u64) -> ExchangeEvents {
@@ -102,10 +130,17 @@ fn event_maker_order_filled(account_id: u64, order_id: u64) -> ExchangeEvents {
     })
 }
 
-fn apply_event(exchange: &mut Exchange, exchange_event: ExchangeEvents, order_context: &mut Option<OrderContext>, log_index: u64) {
+fn apply_event(
+    exchange: &mut Exchange,
+    exchange_event: ExchangeEvents,
+    order_context: &mut Option<OrderContext>,
+    log_index: u64,
+) {
     let instant = StateInstant::new(0, 0);
     let raw_event = RawEvent::new(TxHash::ZERO, 0, log_index, exchange_event);
-    exchange.apply_raw_event(instant, &raw_event, order_context).expect("UT");
+    exchange
+        .apply_raw_event(instant, &raw_event, order_context)
+        .expect("UT");
 }
 
 fn smart_contract_position_closed_inner() -> (Exchange, Option<OrderContext>) {

@@ -4,8 +4,12 @@ use fastnum::{D256, UD64, UD128};
 use itertools::chain;
 
 use super::*;
-use crate::{Chain, abi::dex::Exchange::ExchangeEvents, stream, types::EventContext};
-use crate::types::OrderType;
+use crate::{
+    Chain,
+    abi::dex::Exchange::ExchangeEvents,
+    stream,
+    types::{EventContext, OrderType},
+};
 
 pub type StateBlockEvents = types::BlockEvents<types::EventContext<Vec<StateEvents>>>;
 
@@ -709,10 +713,10 @@ impl Exchange {
                         });
                         let position_closed_by_smart_contract = if event.log_index() > 0 {
                             match order.r#type() {
-                                OrderType::CloseLong|OrderType::CloseShort => {
+                                OrderType::CloseLong | OrderType::CloseShort => {
                                     Some(event.log_index() - 1) == ctx.position_closed_at_log_index
-                                }
-                                _ => false
+                                },
+                                _ => false,
                             }
                         } else {
                             false
