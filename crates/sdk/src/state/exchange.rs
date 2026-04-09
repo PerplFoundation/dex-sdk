@@ -4,7 +4,12 @@ use fastnum::{D256, UD64, UD128};
 use itertools::chain;
 
 use super::*;
-use crate::{Chain, abi::dex::Exchange::ExchangeEvents, stream, types::EventContext};
+use crate::{
+    Chain,
+    abi::dex::Exchange::ExchangeEvents,
+    stream,
+    types::{EventContext, OrderType},
+};
 
 pub type StateBlockEvents = types::BlockEvents<types::EventContext<Vec<StateEvents>>>;
 
@@ -199,7 +204,7 @@ impl Exchange {
         Ok(Some(StateBlockEvents::new(self.instant, state_events)))
     }
 
-    fn apply_raw_event(
+    pub(crate) fn apply_raw_event(
         &mut self,
         instant: types::StateInstant,
         event: &stream::RawEvent,
@@ -706,7 +711,17 @@ impl Exchange {
                             size: fill_size,
                             fee,
                         });
-                        ctx.clearing_remaining_order
+                        let position_closed_by_smart_contract = if event.log_index() > 0 {
+                            match order.r#type() {
+                                OrderType::CloseLong | OrderType::CloseShort => {
+                                    Some(event.log_index() - 1) == ctx.position_closed_at_log_index
+                                },
+                                _ => false,
+                            }
+                        } else {
+                            false
+                        };
+                        ctx.clearing_remaining_order | position_closed_by_smart_contract
                     } else {
                         false
                     };
@@ -1091,6 +1106,11 @@ impl Exchange {
                         .positions_mut()
                         .remove(&perp.id())
                         .ok_or(DexError::PositionNotFound(acc.id(), perp.id()))?;
+
+                    if let Some(ctx) = ctx {
+                        ctx.position_closed_at_log_index = Some(event.log_index());
+                    }
+
                     chain!(
                         Some(StateEvents::position(
                             &pos,
