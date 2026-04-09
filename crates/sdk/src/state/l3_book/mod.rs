@@ -19,7 +19,10 @@ use std::{
 };
 
 pub use error::{OrderBookError, OrderBookResult};
-use fastnum::{UD64, UD128, decimal::{Context, RoundingMode}};
+use fastnum::{
+    UD64, UD128,
+    decimal::{Context, RoundingMode},
+};
 use itertools::{FoldWhile, Itertools};
 pub use level::BookLevel;
 pub use order::BookOrder;
@@ -86,14 +89,16 @@ impl OrderBook {
 
     /// Ask impact price for the requested notional amount, along with the
     /// fillable size, size-averaged price, and filled notional.
-    /// CAREFUL: See [`impact_notional`](Self::impact_notional) for partial-fill semantics.
+    /// CAREFUL: See [`impact_notional`](Self::impact_notional) for partial-fill
+    /// semantics.
     pub fn ask_impact_notional(&self, want_notional: UD128) -> Option<(UD64, UD64, UD64, UD128)> {
         Self::impact_notional(self.asks.iter(), want_notional)
     }
 
     /// Bid impact price for the requested notional amount, along with the
     /// fillable size, size-averaged price, and filled notional.
-    /// CAREFUL: See [`impact_notional`](Self::impact_notional) for partial-fill semantics.
+    /// CAREFUL: See [`impact_notional`](Self::impact_notional) for partial-fill
+    /// semantics.
     pub fn bid_impact_notional(&self, want_notional: UD128) -> Option<(UD64, UD64, UD64, UD128)> {
         Self::impact_notional(self.bids.iter().map(|(k, v)| (&k.0, v)), want_notional)
     }
@@ -626,13 +631,15 @@ impl OrderBook {
         }
     }
 
-    /// Gets the impact price for a market order of the requested notional amount,
-    /// along with the fillable size, size-averaged price, and filled notional amount.
-    /// `want_notional` is the target cumulative notional (sum of price * size).
+    /// Gets the impact price for a market order of the requested notional
+    /// amount, along with the fillable size, size-averaged price, and
+    /// filled notional amount. `want_notional` is the target cumulative
+    /// notional (sum of price * size).
     ///
-    /// CAREFUL: Returns whatever values can be filled, up to `want_notional`. It is
-    /// incumbent upon the caller to check that the returned `filled_notional` meets
-    /// or exceeds the value specified for `want_notional`.
+    /// CAREFUL: Returns whatever values can be filled, up to `want_notional`.
+    /// It is incumbent upon the caller to check that the returned
+    /// `filled_notional` meets or exceeds the value specified for
+    /// `want_notional`.
     fn impact_notional<'a>(
         mut side: impl Iterator<Item = (&'a UD64, &'a BookLevel)>,
         want_notional: UD128,
@@ -651,8 +658,7 @@ impl OrderBook {
                             filled_notional + level_notional,
                         ))
                     } else {
-                        let partial_size: UD64 =
-                            (remaining / price.resize()).resize();
+                        let partial_size: UD64 = (remaining / price.resize()).resize();
                         FoldWhile::Done((
                             *price,
                             UD128::ZERO,
@@ -667,7 +673,8 @@ impl OrderBook {
             None
         } else {
             let ctx = Context::default().with_rounding_mode(RoundingMode::HalfUp);
-            let vwap: UD64 = (filled_notional.with_ctx(ctx) / filled_size.resize().with_ctx(ctx)).resize();
+            let vwap: UD64 =
+                (filled_notional.with_ctx(ctx) / filled_size.resize().with_ctx(ctx)).resize();
             Some((price, filled_size, vwap, filled_notional))
         }
     }

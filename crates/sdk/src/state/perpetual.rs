@@ -591,9 +591,7 @@ impl Perpetual {
 
     /// Create a minimal Perpetual for testing purposes.
     #[cfg(test)]
-    pub(crate) fn for_testing(id: types::PerpetualId) -> Self {
-        Self::testing(id)
-    }
+    pub(crate) fn for_testing(id: types::PerpetualId) -> Self { Self::testing(id) }
 
     // Only reachable from `for_testing` (#[cfg(test)]) and `for_test`
     // (#[cfg(any(test, feature = "test-utils"))]), so unused in normal builds.
@@ -648,9 +646,7 @@ impl Perpetual {
 /// production builds.
 #[cfg(any(test, feature = "test-utils"))]
 impl Perpetual {
-    pub fn for_test(id: types::PerpetualId) -> Self {
-        Self::testing(id)
-    }
+    pub fn for_test(id: types::PerpetualId) -> Self { Self::testing(id) }
 
     pub fn with_last_price(mut self, price: UD64) -> Self {
         self.last_price = price;
@@ -664,18 +660,9 @@ impl Perpetual {
 
     pub fn with_bid(mut self, price: UD64, size: UD64) -> Self {
         use std::num::NonZeroU16;
-        let order_id = NonZeroU16::new(
-            (self.l3_book.total_orders() + 1) as u16,
-        )
-        .expect("order id overflow");
-        let order = Order::for_l3_testing(
-            types::OrderType::OpenLong,
-            price,
-            size,
-            0,
-            order_id,
-            0,
-        );
+        let order_id =
+            NonZeroU16::new((self.l3_book.total_orders() + 1) as u16).expect("order id overflow");
+        let order = Order::for_l3_testing(types::OrderType::OpenLong, price, size, 0, order_id, 0);
         self.l3_book
             .add_order(&order)
             .expect("failed to add bid order");
@@ -684,18 +671,9 @@ impl Perpetual {
 
     pub fn with_ask(mut self, price: UD64, size: UD64) -> Self {
         use std::num::NonZeroU16;
-        let order_id = NonZeroU16::new(
-            (self.l3_book.total_orders() + 1) as u16,
-        )
-        .expect("order id overflow");
-        let order = Order::for_l3_testing(
-            types::OrderType::OpenShort,
-            price,
-            size,
-            0,
-            order_id,
-            0,
-        );
+        let order_id =
+            NonZeroU16::new((self.l3_book.total_orders() + 1) as u16).expect("order id overflow");
+        let order = Order::for_l3_testing(types::OrderType::OpenShort, price, size, 0, order_id, 0);
         self.l3_book
             .add_order(&order)
             .expect("failed to add ask order");
