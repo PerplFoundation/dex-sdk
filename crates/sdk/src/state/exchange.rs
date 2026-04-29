@@ -712,9 +712,14 @@ impl Exchange {
                             fee,
                         });
                         let position_closed_by_smart_contract = if event.log_index() > 0 {
+                            // Smart contract explicitly removes Close* order if position was
+                            // closed, between `PositionClosed` and `MakerOrderFilled` events
+                            // there can be a `RecycleFeeToAccount` event as well
                             match order.r#type() {
                                 OrderType::CloseLong | OrderType::CloseShort => {
                                     Some(event.log_index() - 1) == ctx.position_closed_at_log_index
+                                        || Some(event.log_index() - 2)
+                                            == ctx.position_closed_at_log_index
                                 },
                                 _ => false,
                             }
@@ -1101,15 +1106,15 @@ impl Exchange {
             ExchangeEvents::PerpPositionBalCreditPositiveSevere(_) => vec![],
             ExchangeEvents::PositionAdministratorUpdated(_) => vec![],
             ExchangeEvents::PositionClosed(e) => {
+                if let Some(ctx) = ctx {
+                    ctx.position_closed_at_log_index = Some(event.log_index());
+                }
+
                 if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
                     let pos = acc
                         .positions_mut()
                         .remove(&perp.id())
                         .ok_or(DexError::PositionNotFound(acc.id(), perp.id()))?;
-
-                    if let Some(ctx) = ctx {
-                        ctx.position_closed_at_log_index = Some(event.log_index());
-                    }
 
                     chain!(
                         Some(StateEvents::position(

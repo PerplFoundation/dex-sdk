@@ -46,8 +46,9 @@ pub mod state;
 pub mod stream;
 #[cfg(feature = "testing")]
 pub mod testing;
+#[cfg(test)]
+mod tests;
 pub mod types;
-#[cfg(test)] mod tests;
 
 use alloy::primitives::{Address, address};
 
