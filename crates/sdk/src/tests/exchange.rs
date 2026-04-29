@@ -7,13 +7,16 @@ use crate::{
     Chain,
     abi::dex::Exchange::{
         AccountCreated, ExchangeEvents, MaintenanceMarginFractionUpdated, MakerOrderFilled,
-        OrderPlaced, PositionClosed, PositionOpened,
+        OrderPlaced, PositionClosed, PositionOpened, RecycleFeeToAccount,
     },
     num::Converter,
     state::{Exchange, OrderContext, Perpetual},
     stream::RawEvent,
-    types,
-    types::{OrderId, RequestId, RequestType, RequestType::CloseLong, StateInstant},
+    types::{
+        self, OrderId, RequestId,
+        RequestType::{self, CloseLong},
+        StateInstant,
+    },
 };
 
 const TEST_PERP_ID: u32 = 123456789;
@@ -130,6 +133,21 @@ fn event_maker_order_filled(account_id: u64, order_id: u64) -> ExchangeEvents {
     })
 }
 
+fn event_recycle_fee_to_account(
+    account_id: u64,
+    order_id: u64,
+    recycle_fee: u64,
+    recycle_balance: u64,
+) -> ExchangeEvents {
+    ExchangeEvents::RecycleFeeToAccount(RecycleFeeToAccount {
+        accountId: U256::from(account_id),
+        perpId: U256::from(TEST_PERP_ID),
+        orderId: U256::from(order_id),
+        recycleFeeCNS: U256::from(recycle_fee),
+        recycleBalanceCNS: U256::from(recycle_balance),
+    })
+}
+
 fn apply_event(
     exchange: &mut Exchange,
     exchange_event: ExchangeEvents,
@@ -183,21 +201,17 @@ fn test_smart_contract_position_closed() {
 }
 
 #[test]
-fn test_smart_contract_position_closed_skipped_due_to_other_event() {
+fn test_smart_contract_position_closed_recycling_fee_to_account() {
     let (mut exchange, mut order_context) = smart_contract_position_closed_inner();
 
-    let position_opened = event_position_opened(1);
-    apply_event(&mut exchange, position_opened, &mut order_context, 5);
-
-    let perps = exchange.perpetuals();
-    let perp = perps.get(&TEST_PERP_ID).expect("UT");
-    assert!(perp.get_order(OrderId::new(1).expect("UT")).is_some());
+    let recycle_fee_to_account = event_recycle_fee_to_account(1, 1, 1, 1);
+    apply_event(&mut exchange, recycle_fee_to_account, &mut order_context, 5);
 
     let maker_order_filled = event_maker_order_filled(1, 1);
     apply_event(&mut exchange, maker_order_filled, &mut order_context, 6);
 
-    // PositionClosed -> Any -> MakerOrderFilled does not imply Close Position
+    // PositionClosed -> Any -> MakerOrderFilled implies Close Position
     let perps = exchange.perpetuals();
     let perp = perps.get(&TEST_PERP_ID).expect("UT");
-    assert!(perp.get_order(OrderId::new(1).expect("UT")).is_some());
+    assert!(perp.get_order(OrderId::new(1).expect("UT")).is_none());
 }

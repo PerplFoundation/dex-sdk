@@ -262,4 +262,23 @@ async fn test_order_book() {
         assert_eq!(bid_level.size(), udec64!(1.5));
         assert_eq!(bid_level.is_empty(), false);
     }
+
+    // Close maker order of reduced size
+    o(maker.id, 80, None, CloseShort, udec64!(99100), udec64!(0.1), None).await; // Placed Close order of full position size
+    o(maker.id, 81, None, OpenLong, udec64!(99900), udec64!(0.05), None).await; // Position reduced
+    o(taker.id, 82, None, OpenShort, udec64!(99100), udec64!(0.1), None).await; // Matches against Maker's Close order and implicitly cancels remaining
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), state.wait_for(None, Some(82)))
+            .await
+            .unwrap()
+    );
+
+    {
+        let snapshot = state.snapshot().clone();
+        let perp = snapshot.perpetuals().get(&btc_perp.id).unwrap();
+        let book = perp.l3_book();
+
+        assert_eq!(book.best_ask(), Some((udec64!(100000), udec64!(0.9))));
+        assert_eq!(book.best_bid(), Some((udec64!(99000), udec64!(1.5))));
+    }
 }
