@@ -7,7 +7,7 @@ version = "0.2.0"
 edition = "2024"
 
 [workspace.dependencies]
-alloy = { version = "1.4.0", default-features = false, features = [
+alloy = { version = "2.0.4", default-features = false, features = [
   "contract",
   "eips",
   "provider-http",
@@ -18,24 +18,24 @@ alloy = { version = "1.4.0", default-features = false, features = [
   "rpc-types",
   "transport-throttle",
 ] }
-alloy-sol-types = { version = "1.5.2", default-features = false, features = [
+alloy-sol-types = { version = "1.5.7", default-features = false, features = [
   "more-tuple-impls",
 ] }
-anyhow = { version = "1.0.100" }
-chrono = { version = "0.4.35", default-features = false, features = ["alloc"] }
-clap = { version = "4", features = ["derive"] }
-colored = { version = "3.0.0" }
+anyhow = { version = "1.0.102" }
+chrono = { version = "0.4.44", default-features = false, features = ["alloc"] }
+clap = { version = "4.6.1", features = ["derive"] }
+colored = { version = "3.1.1" }
 crossterm = { version = "0.29.0" }
 dashmap = { version = "6.1.0" }
 derive_more = { version = "2.1.1", default-features = false, features = [
   "debug",
 ] }
 fastnum = { version = "0.7.4" }
-futures = { version = "0.3.31" }
+futures = { version = "0.3.32" }
 itertools = { version = "0.14.0" }
 tabled = { version = "0.20.0", features = ["ansi"] }
-thiserror = { version = "2.0.17" }
-tokio = { version = "1.49.0", features = [
+thiserror = { version = "2.0.18" }
+tokio = { version = "1.52.2", features = [
   "sync",
   "rt-multi-thread",
   "macros",

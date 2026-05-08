@@ -17,7 +17,7 @@ async fn test_maker_close_order_implicit_removal() {
     let client = RpcClient::builder()
         .layer(ThrottleLayer::new(15))
         .layer(RetryBackoffLayer::new(10, 100, 200))
-        .connect("https://rpc.monad.xyz")
+        .connect("https://rpc-mainnet.monadinfra.com")
         .await
         .unwrap();
     client.set_poll_interval(Duration::from_millis(100));
