@@ -1364,6 +1364,27 @@
   },
   {
     "type": "error",
+    "name": "InvalidFundingSumScalingExp",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "newExp",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxExp",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidLinkReportForContract",
     "inputs": [
       {
@@ -1767,6 +1788,22 @@
   },
   {
     "type": "error",
+    "name": "MismatchedArrayLengths",
+    "inputs": [
+      {
+        "name": "lenA",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "lenB",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "NegativeDepositCheckFailedSevere",
     "inputs": []
   },
@@ -2091,6 +2128,17 @@
       },
       {
         "name": "amountCNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PerpetualActivated",
+    "inputs": [
+      {
+        "name": "perpId",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2462,6 +2510,17 @@
   {
     "type": "error",
     "name": "SenderIsNotAdministrator",
+    "inputs": [
+      {
+        "name": "sender",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SenderIsNotMonitorAdministrator",
     "inputs": [
       {
         "name": "sender",

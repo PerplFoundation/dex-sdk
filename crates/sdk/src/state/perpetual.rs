@@ -26,6 +26,7 @@ pub struct Perpetual {
     leverage_converter: num::Converter,
     fee_converter: num::Converter,
     funding_rate_converter: num::Converter,
+    funding_sum_converter: num::Converter,
     #[debug("{base_price}")]
     base_price: UD64, // SC allocates 32 bits
 
@@ -88,6 +89,11 @@ impl Perpetual {
         let leverage_converter = num::Converter::new(LEVERAGE_SCALE);
         let fee_converter = num::Converter::new(FEE_SCALE);
         let funding_rate_converter = num::Converter::new(FUNDING_RATE_SCALE);
+        // Funding sum converter applies to PNS funding payments/sums, combines scaling
+        // exponent and price decimals
+        let funding_sum_converter = num::Converter::new(
+            info.fundingSumScalingExp.to::<u8>() + info.priceDecimals.to::<u8>(),
+        );
         Self {
             instant,
             state_instant: instant,
@@ -101,6 +107,7 @@ impl Perpetual {
             leverage_converter,
             fee_converter,
             funding_rate_converter,
+            funding_sum_converter,
             base_price: price_converter.from_unsigned(info.basePricePNS),
 
             maker_fee: fee_converter.from_unsigned(maker_fee), // Fees are per 100K
@@ -159,6 +166,9 @@ impl Perpetual {
         let leverage_converter = num::Converter::new(LEVERAGE_SCALE);
         let fee_converter = num::Converter::new(FEE_SCALE);
         let funding_rate_converter = num::Converter::new(FUNDING_RATE_SCALE);
+        // Funding sum scaling exp is configured separately via
+        // `setFundingSumScalingExp` and starts at 0 until that event arrives
+        let funding_sum_converter = num::Converter::new(price_decimals);
         Self {
             instant,
             state_instant: instant,
@@ -172,6 +182,7 @@ impl Perpetual {
             leverage_converter,
             fee_converter,
             funding_rate_converter,
+            funding_sum_converter,
             base_price: price_converter.from_unsigned(base_price),
 
             maker_fee: fee_converter.from_unsigned(maker_fee), // Fees are per 100K
@@ -244,6 +255,11 @@ impl Perpetual {
     /// Converter of funding rates between internal fixed-point and decimal
     /// representations.
     pub fn funding_rate_converter(&self) -> num::Converter { self.funding_rate_converter }
+
+    /// Converter for funding sums / per-unit funding payments.
+    /// Scales by `10^(fundingSumScalingExp + priceDecimals)` as funding
+    /// sums/payments are originaly in price numeric system.
+    pub fn funding_sum_converter(&self) -> num::Converter { self.funding_sum_converter }
 
     /// Maker fee, gets collected only on position opening/increasing.
     pub fn maker_fee(&self) -> UD64 { self.maker_fee }
@@ -551,6 +567,13 @@ impl Perpetual {
         self.instant = instant;
     }
 
+    pub(crate) fn update_funding_sum_scaling_exp(&mut self, instant: types::StateInstant, exp: u8) {
+        // Funding sum converter applies to PNS funding payments/sums,
+        // so combines specified scaling exponent and price decimals
+        self.funding_sum_converter = num::Converter::new(exp + self.price_converter.decimals());
+        self.instant = instant;
+    }
+
     pub(crate) fn update_oracle_feed_id(
         &mut self,
         instant: types::StateInstant,
@@ -609,6 +632,7 @@ impl Perpetual {
             leverage_converter: num::Converter::new(2),
             fee_converter: num::Converter::new(5),
             funding_rate_converter: num::Converter::new(5),
+            funding_sum_converter: num::Converter::new(0),
             base_price: UD64::ZERO,
             maker_fee: UD64::ZERO,
             taker_fee: UD64::ZERO,

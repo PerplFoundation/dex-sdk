@@ -553,7 +553,7 @@ impl Exchange {
                         instant,
                         perp.funding_rate_converter()
                             .from_signed(e.actualRatePct100k),
-                        perp.price_converter()
+                        perp.funding_sum_converter()
                             .from_i64(e.fundingPaymentPNS.as_i64()),
                         e.fundingEventBlock.to(),
                     );
@@ -563,6 +563,17 @@ impl Exchange {
             ExchangeEvents::FundingEventSetTooEarly(_) => vec![],
             ExchangeEvents::FundingPriceExceedsTol(_) => vec![],
             ExchangeEvents::FundingSumAlreadySet(_) => vec![],
+            ExchangeEvents::FundingSumScalingExpUpdated(e) => self
+                .perpetual(e.perpId)
+                .map(|perp| {
+                    perp.update_funding_sum_scaling_exp(instant, e.newExp.to());
+                    StateEvents::perpetual(
+                        perp,
+                        PerpetualEventType::FundingSumScalingExpUpdated(e.newExp.to()),
+                    )
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::IgnoreOracleUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
@@ -882,6 +893,7 @@ impl Exchange {
                 self.min_settle = cc.from_unsigned(e.minSettleCNS);
                 vec![StateEvents::Exchange(ExchangeEvent::MinSettleUpdated(self.min_settle))]
             },
+            ExchangeEvents::MonitorAdministratorUpdated(_) => vec![],
             ExchangeEvents::OracleAgeExceedsMax(_) => vec![],
             ExchangeEvents::OracleDisabled(_) => vec![],
             ExchangeEvents::OrderBatchCompleted(_) => {

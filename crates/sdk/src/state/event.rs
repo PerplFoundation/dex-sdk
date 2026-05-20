@@ -269,6 +269,11 @@ pub enum PerpetualEventType {
         payment_per_unit: D256,
     },
 
+    /// Funding sum scaling exponent updated. The exponent `e` defines the
+    /// divider `10^e` applied when interpreting on-chain funding sums and
+    /// per-unit funding payments for premium PnL calculations.
+    FundingSumScalingExpUpdated(u8),
+
     /// Initial margin requirement updated.
     InitialMarginFractionUpdated(#[debug("{_0}")] UD64),
 

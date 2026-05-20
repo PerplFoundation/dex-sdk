@@ -56,7 +56,7 @@ pub struct OrderRequest {
     leverage: UD64,
     last_exec_block: Option<u64>,
     amount: Option<UD128>,
-    max_slippage_bps: u16,
+    max_neg_pnl_collat_bps: u16,
 }
 
 impl OrderRequest {
@@ -84,7 +84,7 @@ impl OrderRequest {
         leverage: UD64,
         last_exec_block: Option<u64>,
         amount: Option<UD128>,
-        max_slippage_bps: u16,
+        max_neg_pnl_collat_bps: u16,
     ) -> Self {
         Self {
             request_id,
@@ -101,7 +101,7 @@ impl OrderRequest {
             leverage,
             last_exec_block,
             amount,
-            max_slippage_bps,
+            max_neg_pnl_collat_bps,
         }
     }
 
@@ -145,7 +145,7 @@ impl OrderRequest {
                 .zip(collateral_converter)
                 .map(|(a, conv)| conv.to_unsigned(a))
                 .unwrap_or_default(),
-            maxSlippageBps: U256::from(self.max_slippage_bps),
+            maxNegPnlCollatBPS: U256::from(self.max_neg_pnl_collat_bps),
         }
     }
 }
