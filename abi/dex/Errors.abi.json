@@ -1,22 +1,6 @@
 [
   {
     "type": "error",
-    "name": "AbsValueExceedsMaximum",
-    "inputs": [
-      {
-        "name": "value",
-        "type": "int256",
-        "internalType": "int256"
-      },
-      {
-        "name": "maximum",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "AccountDoesNotExist",
     "inputs": [
       {
@@ -50,22 +34,6 @@
         "name": "status",
         "type": "uint8",
         "internalType": "enum FreezeStatusEnum"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "AccountIdAlreadySet",
-    "inputs": [
-      {
-        "name": "proposedAccountId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "accountId",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ]
   },
@@ -534,42 +502,6 @@
   },
   {
     "type": "error",
-    "name": "CantSettleMatchOrder",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "accountId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "orderType",
-        "type": "uint8",
-        "internalType": "enum OrderEnum"
-      },
-      {
-        "name": "pricePNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "lotLNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "reason",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "ChangeExpiredOrderNeedsNewExpiry",
     "inputs": [
       {
@@ -623,6 +555,22 @@
         "name": "orderType",
         "type": "uint8",
         "internalType": "enum OrderEnum"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ConfigEntryLimit",
+    "inputs": [
+      {
+        "name": "requested",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "max",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },
@@ -888,6 +836,27 @@
   },
   {
     "type": "error",
+    "name": "DepositExceedsCNS64",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "accountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "depositCNS",
+        "type": "uint80",
+        "internalType": "uint80"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "DifferenceExceedsInt256",
     "inputs": [
       {
@@ -925,6 +894,28 @@
   },
   {
     "type": "error",
+    "name": "DuplicatePerpIdInConfig",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DuplicatePerpIdInResidueXfers",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ExceedsLastExecutionBlock",
     "inputs": [
       {
@@ -938,32 +929,6 @@
     "type": "error",
     "name": "ExchangeHalted",
     "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ExpiryTimestampOutsideRange",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "value",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "minimum",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "maximum",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
   },
   {
     "type": "error",
@@ -1002,53 +967,6 @@
       },
       {
         "name": "exitBlock",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "FundingIntervalIncorrect",
-    "inputs": [
-      {
-        "name": "proposed",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "required",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "FundingPaymentExceedsMaxPnsSevere",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "positionId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "fundingPaymentPnsPerLot",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "startFundingBlock",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "exitFundingBlock",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1788,22 +1706,6 @@
   },
   {
     "type": "error",
-    "name": "MismatchedArrayLengths",
-    "inputs": [
-      {
-        "name": "lenA",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "lenB",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "NegativeDepositCheckFailedSevere",
     "inputs": []
   },
@@ -2088,6 +1990,17 @@
   },
   {
     "type": "error",
+    "name": "OverflowPremiumCnsSevere",
+    "inputs": [
+      {
+        "name": "premiumPnlCNS",
+        "type": "int256",
+        "internalType": "int256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "PermissionlessCancelOrdersOutOfRange",
     "inputs": [
       {
@@ -2225,22 +2138,6 @@
         "name": "accountId",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "PositionInsufficientFunds",
-    "inputs": [
-      {
-        "name": "unrealizedDeltaPnlCNS",
-        "type": "int256",
-        "internalType": "int256"
-      },
-      {
-        "name": "posValueAboveMarginCNS",
-        "type": "int256",
-        "internalType": "int256"
       }
     ]
   },
@@ -2509,6 +2406,22 @@
   },
   {
     "type": "error",
+    "name": "ResidueTransferEntryLimit",
+    "inputs": [
+      {
+        "name": "requested",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "max",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "SenderIsNotAdministrator",
     "inputs": [
       {
@@ -2668,22 +2581,6 @@
         "name": "maxBytes",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "UintIntSumIsNegative",
-    "inputs": [
-      {
-        "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "addend",
-        "type": "int256",
-        "internalType": "int256"
       }
     ]
   },

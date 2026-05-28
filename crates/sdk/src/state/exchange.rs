@@ -271,7 +271,9 @@ impl Exchange {
             ExchangeEvents::BeaconUpgraded(_) => vec![],
             ExchangeEvents::BlockStatusChanged(_) => vec![],
             ExchangeEvents::BorrowMarginNotMetAfterDecCollateral(_) => vec![],
+            ExchangeEvents::BuyToLiquidateSettled(_) => vec![],
             ExchangeEvents::BuyToLiquidateSlippageExceeded(_) => vec![],
+            ExchangeEvents::BuyToLiquidateStarted(_) => vec![],
             ExchangeEvents::BuyToLiquidateBuyerRestricted(_) => vec![],
             ExchangeEvents::BuyToLiquidateParamsUpdated(_) => vec![],
             ExchangeEvents::BuyToLiquidateThresholdUpdated(_) => vec![],
@@ -894,6 +896,7 @@ impl Exchange {
                 vec![StateEvents::Exchange(ExchangeEvent::MinSettleUpdated(self.min_settle))]
             },
             ExchangeEvents::MonitorAdministratorUpdated(_) => vec![],
+            ExchangeEvents::MonitorPauseAttempted(_) => vec![],
             ExchangeEvents::OracleAgeExceedsMax(_) => vec![],
             ExchangeEvents::OracleDisabled(_) => vec![],
             ExchangeEvents::OrderBatchCompleted(_) => {
@@ -1159,10 +1162,7 @@ impl Exchange {
             ExchangeEvents::PositionCollateralDecreased(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_entry_price = pos.entry_price();
-                    pos.update_entry_price(
-                        instant,
-                        perp.price_converter().from_unsigned(e.endEntryPricePNS),
-                    );
+                    pos.update_entry_price(instant, e.endEntryPricePNS, 0, perp.price_converter());
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.apply_mark_price(instant, perp.mark_price());
                     pos.apply_maintenance_margin(instant, perp.maintenance_margin());
@@ -1270,13 +1270,104 @@ impl Exchange {
                 }),
             )
             .collect(),
+            ExchangeEvents::PositionDeleveragedV2(e) => chain!(
+                if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
+                    let prev_size = pos.size();
+                    pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
+                    pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
+                    pos.apply_mark_price(instant, perp.mark_price());
+                    pos.update_premium_pnl(
+                        instant,
+                        pos.premium_pnl().sub(cc.from_signed(e.fundingCNS)),
+                    );
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    chain!(
+                        Some(StateEvents::position(
+                            pos,
+                            ctx,
+                            PositionEventType::Deleveraged {
+                                force_close: e.forceClose,
+                                r#type: pos.r#type(),
+                                entry_price: pos.entry_price(),
+                                exit_price: perp
+                                    .price_converter()
+                                    .from_unsigned(e.deleveragePricePNS),
+                                prev_size,
+                                new_size: pos.size(),
+                                deposit: pos.deposit(),
+                                delta_pnl: pos.delta_pnl(),
+                                premium_pnl: pos.premium_pnl(),
+                            }
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, prev_size, pos.size());
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                },
+                self.account(e.accountId).map(|acc| {
+                    if e.endLotLNS == U256::ZERO {
+                        acc.positions_mut()
+                            .remove(&e.perpId.to::<types::PerpetualId>());
+                    }
+                    acc.update_balance(instant, cc.from_unsigned(e.balanceCNS));
+                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
+                }),
+            )
+            .collect(),
             ExchangeEvents::PositionDoesNotExist(_) => vec![],
             ExchangeEvents::PositionIncreased(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_size = pos.size();
+                    pos.update_entry_price(instant, e.pricePNS, 0, perp.price_converter());
+                    pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
+                    pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
+                    pos.apply_mark_price(instant, perp.mark_price());
+                    pos.update_premium_pnl(instant, D256::ZERO);
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+
+                    chain!(
+                        Some(StateEvents::position(
+                            pos,
+                            ctx,
+                            PositionEventType::Increased {
+                                entry_price: pos.entry_price(),
+                                prev_size,
+                                new_size: pos.size(),
+                                deposit: pos.deposit(),
+                            }
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, prev_size, pos.size());
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                }
+            },
+            ExchangeEvents::PositionIncreasedV2(e) => {
+                if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
+                    let prev_size = pos.size();
                     pos.update_entry_price(
                         instant,
-                        perp.price_converter().from_unsigned(e.pricePNS),
+                        e.pricePNS,
+                        e.priceResiduePNSQ16.to(),
+                        perp.price_converter(),
                     );
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
@@ -1316,10 +1407,7 @@ impl Exchange {
                     let prev_entry_price = pos.entry_price();
                     let prev_size = pos.size();
                     pos.update_type(instant, PositionType::from(e.positionType));
-                    pos.update_entry_price(
-                        instant,
-                        perp.price_converter().from_unsigned(e.pricePNS),
-                    );
+                    pos.update_entry_price(instant, e.pricePNS, 0, perp.price_converter());
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.apply_mark_price(instant, perp.mark_price());
@@ -1435,7 +1523,51 @@ impl Exchange {
                         perp.id(),
                         acc.id(),
                         PositionType::from(e.positionType),
-                        perp.price_converter().from_unsigned(e.pricePNS),
+                        e.pricePNS,
+                        0,
+                        perp.price_converter(),
+                        perp.size_converter().from_unsigned(e.lotLNS),
+                        cc.from_unsigned(e.depositCNS),
+                        perp.maintenance_margin(),
+                    );
+                    let events = chain!(
+                        Some(StateEvents::position(
+                            &pos,
+                            ctx,
+                            PositionEventType::Opened {
+                                r#type: pos.r#type(),
+                                entry_price: pos.entry_price(),
+                                size: pos.size(),
+                                deposit: pos.deposit(),
+                            }
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, UD64::ZERO, pos.size());
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect();
+                    acc.positions_mut().insert(perp.id(), pos);
+                    events
+                } else {
+                    vec![]
+                }
+            },
+            ExchangeEvents::PositionOpenedV2(e) => {
+                if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
+                    let pos = Position::opened(
+                        instant,
+                        perp.id(),
+                        acc.id(),
+                        PositionType::from(e.positionType),
+                        e.pricePNS,
+                        e.priceResiduePNSQ16.to(),
+                        perp.price_converter(),
                         perp.size_converter().from_unsigned(e.lotLNS),
                         cc.from_unsigned(e.depositCNS),
                         perp.maintenance_margin(),
@@ -1469,6 +1601,47 @@ impl Exchange {
                 }
             },
             ExchangeEvents::PositionUnwound(e) => {
+                if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
+                    let pos = acc
+                        .positions_mut()
+                        .remove(&perp.id())
+                        .ok_or(DexError::PositionNotFound(acc.id(), perp.id()))?;
+                    acc.update_balance(instant, cc.from_unsigned(e.balanceCNS));
+                    chain!(
+                        Some(StateEvents::position(
+                            &pos,
+                            ctx,
+                            PositionEventType::Unwound {
+                                r#type: pos.r#type(),
+                                entry_price: pos.entry_price(),
+                                exit_price: perp.price_converter().from_unsigned(e.pricePNS),
+                                size: pos.size(),
+                                fair_market_value: cc.from_signed(e.positionFmvCNS),
+                                payment: cc.from_unsigned(e.paymentCNS),
+                            }
+                        )),
+                        Some(StateEvents::account(
+                            acc,
+                            ctx,
+                            AccountEventType::BalanceUpdated(acc.balance())
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, pos.size(), UD64::ZERO);
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                }
+            },
+            ExchangeEvents::PositionUnwoundV2(e) => {
+                // Position is being removed; residue field is informational only.
                 if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
                     let pos = acc
                         .positions_mut()
@@ -1542,6 +1715,41 @@ impl Exchange {
                     vec![]
                 }
             },
+            ExchangeEvents::PositionUnwoundWithoutPaymentV2(e) => {
+                // Position is being removed; residue field is informational only.
+                if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
+                    let pos = acc
+                        .positions_mut()
+                        .remove(&perp.id())
+                        .ok_or(DexError::PositionNotFound(acc.id(), perp.id()))?;
+                    chain!(
+                        Some(StateEvents::position(
+                            &pos,
+                            ctx,
+                            PositionEventType::Unwound {
+                                r#type: pos.r#type(),
+                                entry_price: pos.entry_price(),
+                                exit_price: perp.price_converter().from_unsigned(e.pricePNS),
+                                size: pos.size(),
+                                fair_market_value: cc.from_signed(e.positionFmvCNS),
+                                payment: UD128::ZERO,
+                            }
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, pos.size(), UD64::ZERO);
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                }
+            },
             ExchangeEvents::PostOrderUnderMinimum(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::PostOrderUnderMinimum))
@@ -1576,6 +1784,8 @@ impl Exchange {
             ExchangeEvents::ReportExpiresTooSoon(_) => vec![],
             ExchangeEvents::ReportFromFuture(_) => vec![],
             ExchangeEvents::ReportPriceIsNegative(_) => vec![],
+            ExchangeEvents::ResidueBalanceInsufficient(_) => vec![],
+            ExchangeEvents::ResidueTransferred(_) => vec![],
             ExchangeEvents::TakerFeeUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {

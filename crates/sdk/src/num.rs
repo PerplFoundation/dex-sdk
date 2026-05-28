@@ -15,6 +15,14 @@ impl Converter {
 
     pub fn decimals(&self) -> u8 { self.decimals as u8 }
 
+    pub fn scale<const N: usize>(&self) -> UnsignedDecimal<N> {
+        UnsignedDecimal::<N>::from_parts(
+            bint::UInt::ONE,
+            self.decimals,
+            Context::default().with_rounding_mode(RoundingMode::Floor),
+        )
+    }
+
     pub fn from_unsigned<const N: usize>(&self, value: U256) -> UnsignedDecimal<N> {
         let unscaled = bint::UInt::<N>::from_le_slice(value.as_le_slice())
             .expect("Converter: U256 -> UInt::<N>");
