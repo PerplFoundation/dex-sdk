@@ -2,7 +2,7 @@ use alloy::primitives::U256;
 use fastnum::{D64, D256, UD64, UD128, udec64};
 
 use super::num;
-use crate::{abi::dex::Exchange::PositionInfo, types};
+use crate::{abi::dex::Exchange::PositionInfoV2, types};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PositionType {
@@ -36,7 +36,7 @@ impl Position {
     pub(crate) fn new(
         instant: types::StateInstant,
         perpetual_id: types::PerpetualId,
-        info: &PositionInfo,
+        info: &PositionInfoV2,
         collateral_converter: num::Converter,
         price_converter: num::Converter,
         size_converter: num::Converter,

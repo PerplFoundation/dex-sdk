@@ -38,7 +38,12 @@ pub use position::*;
 
 use crate::{
     Chain,
-    abi::dex::{self, Exchange::getExchangeInfoReturn},
+    abi::dex::{
+        self,
+        Exchange::{
+            PerpetualInfo, PerpetualInfoV2, PositionInfo, PositionInfoV2, getExchangeInfoReturn,
+        },
+    },
     error::{DexError, ProviderError},
     num, types,
 };
@@ -135,6 +140,10 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         // Normalize block ID to fetch consistent state
         let instant = self.normalize_block().await?;
 
+        // Probe once to learn whether the deployed contract exposes the V2
+        // getters added in v1.1.7.3b. Older deployments revert on the selector.
+        let supports_v2 = self.supports_v2().await;
+
         // Global exchange parameters and state
         let (
             exchange_info,
@@ -148,17 +157,23 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         let collateral_converter = num::Converter::new(exchange_info.collateralDecimals.to());
 
         // Perpetual contracts parameters, state and active orders
-        let perpetuals = self.perpetuals(instant).await?;
+        let perpetuals = self.perpetuals(instant, supports_v2).await?;
 
         let accounts = if !self.accounts.is_empty() {
             // Accounts parameters, state and open positions if specific accounts requested
-            self.accounts(instant, &perpetuals, collateral_converter)
+            self.accounts(instant, &perpetuals, collateral_converter, supports_v2)
                 .await?
         } else if self.all_positions {
             // All positions with corresponding accounts without parameters and balance
             // snapshot
-            self.position_accounts(instant, &perpetuals, num_of_accounts.to(), collateral_converter)
-                .await?
+            self.position_accounts(
+                instant,
+                &perpetuals,
+                num_of_accounts.to(),
+                collateral_converter,
+                supports_v2,
+            )
+            .await?
         } else {
             HashMap::new()
         };
@@ -176,6 +191,78 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             is_halted,
             self.all_positions,
         ))
+    }
+
+    /// Returns true if the deployed exchange exposes the V2 getter functions
+    /// (added in v1.1.7.3b). Pre-V2 contracts revert on the unknown selector.
+    ///
+    /// Probes via `getPerpetualInfoV2` against a configured perpetual id -
+    /// unlike `getPositionV2`, the perpetual getter does not validate account
+    /// existence, so the probe distinguishes selector presence from state.
+    ///
+    /// TODO: generalize versioning logic once smart contract supports EIP-165
+    async fn supports_v2(&self) -> bool {
+        let Some(perp_id) = self.perpetuals.first() else {
+            // No configured perpetuals means no V2 getters will be called -
+            // detection result is irrelevant. Default to V2 (current SDK).
+            return true;
+        };
+        self.instance
+            .getPerpetualInfoV2(U256::from(*perp_id))
+            .block(self.block_id)
+            .call()
+            .await
+            .is_ok()
+    }
+
+    /// Fetches `PerpetualInfoV2`, falling back to the V0 ABI when the contract
+    /// has not been upgraded yet (the V0 layout omits `fundingSumScalingExp`,
+    /// which is defaulted to zero on the V0 path).
+    async fn fetch_perpetual_info(
+        &self,
+        perp_id: U256,
+        supports_v2: bool,
+    ) -> Result<PerpetualInfoV2, alloy::contract::Error> {
+        if supports_v2 {
+            self.instance
+                .getPerpetualInfoV2(perp_id)
+                .block(self.block_id)
+                .call()
+                .await
+        } else {
+            self.instance
+                .getPerpetualInfo(perp_id)
+                .block(self.block_id)
+                .call()
+                .await
+                .map(perpetual_info_v0_to_v2)
+        }
+    }
+
+    /// Fetches `PositionInfoV2`, falling back to the V0 ABI when the contract
+    /// has not been upgraded yet (the V0 layout omits `priceResiduePNSQ16`,
+    /// which is defaulted to zero on the V0 path).
+    async fn fetch_position_info(
+        &self,
+        perp_id: U256,
+        account_id: U256,
+        supports_v2: bool,
+    ) -> Result<PositionInfoV2, alloy::contract::Error> {
+        if supports_v2 {
+            self.instance
+                .getPositionV2(perp_id, account_id)
+                .block(self.block_id)
+                .call()
+                .await
+                .map(|r| r.positionInfo)
+        } else {
+            self.instance
+                .getPosition(perp_id, account_id)
+                .block(self.block_id)
+                .call()
+                .await
+                .map(|r| position_info_v0_to_v2(r.positionInfo))
+        }
     }
 
     async fn normalize_block(&mut self) -> Result<types::StateInstant, DexError> {
@@ -229,11 +316,11 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
     async fn perpetuals(
         &self,
         instant: types::StateInstant,
+        supports_v2: bool,
     ) -> Result<HashMap<types::PerpetualId, perpetual::Perpetual>, DexError> {
-        let perpetual_futs = self.perpetuals.iter().map(|perp_id| async {
+        let perpetual_futs = self.perpetuals.iter().map(|perp_id| async move {
             let pid = U256::from(*perp_id);
-            let (perp_info_call, maker_fee_call, taker_fee_call, margins_call) = (
-                self.instance.getPerpetualInfo(pid).block(self.block_id),
+            let (maker_fee_call, taker_fee_call, margins_call) = (
                 self.instance.getMakerFee(pid).block(self.block_id),
                 self.instance.getTakerFee(pid).block(self.block_id),
                 self.instance
@@ -242,7 +329,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             );
 
             futures::try_join!(
-                perp_info_call.call().into_future(),
+                self.fetch_perpetual_info(pid, supports_v2),
                 maker_fee_call.call().into_future(),
                 taker_fee_call.call().into_future(),
                 margins_call.call().into_future(),
@@ -355,6 +442,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         instant: types::StateInstant,
         perpetuals: &HashMap<types::PerpetualId, perpetual::Perpetual>,
         collateral_converter: num::Converter,
+        supports_v2: bool,
     ) -> Result<HashMap<types::AccountId, Account>, DexError> {
         let account_futs = self.accounts.iter().map(|acc| async move {
             let acc_info = match acc {
@@ -375,10 +463,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             };
             let perps_with_positions = perpetuals_with_position(&acc_info.positions);
             let position_futs = perps_with_positions.iter().map(|perp_id| async {
-                self.instance
-                    .getPosition(U256::from(*perp_id), acc_info.accountId)
-                    .block(self.block_id)
-                    .call()
+                self.fetch_position_info(U256::from(*perp_id), acc_info.accountId, supports_v2)
                     .await
                     .map(|pos_info| (*perp_id, pos_info))
                     .map_err(|err| DexError::Provider(err.into()))
@@ -406,7 +491,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                                         Position::new(
                                             instant,
                                             perp_id,
-                                            &pos_info.positionInfo,
+                                            &pos_info,
                                             collateral_converter,
                                             perp.price_converter(),
                                             perp.size_converter(),
@@ -429,49 +514,137 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         perpetuals: &HashMap<types::PerpetualId, perpetual::Perpetual>,
         num_accounts: usize,
         collateral_converter: num::Converter,
+        supports_v2: bool,
     ) -> Result<HashMap<types::AccountId, Account>, DexError> {
         let mut accounts: HashMap<types::AccountId, Account> = HashMap::new();
         for (perp_id, perp) in perpetuals {
             let pid = U256::from(*perp_id);
-            let account_id_chunks = (1..num_accounts + 1).chunks(self.positions_per_batch);
-            let pos_batch_futs = account_id_chunks.into_iter().map(|chunk| {
+            let infos = self
+                .fetch_position_infos_for_perp(pid, num_accounts, supports_v2)
+                .await?;
+            for info in infos {
+                if info.lotLNS.is_zero() {
+                    continue;
+                }
+                let position = Position::new(
+                    instant,
+                    *perp_id,
+                    &info,
+                    collateral_converter,
+                    perp.price_converter(),
+                    perp.size_converter(),
+                    perp.maintenance_margin(),
+                );
+                match accounts.entry(info.accountId.to()) {
+                    hash_map::Entry::Occupied(mut e) => {
+                        e.get_mut().positions_mut().insert(*perp_id, position);
+                    },
+                    hash_map::Entry::Vacant(e) => {
+                        e.insert(Account::from_position(instant, position));
+                    },
+                }
+            }
+        }
+
+        Ok(accounts)
+    }
+
+    /// Batches `getPosition`/`getPositionV2` calls for every account id of a
+    /// single perpetual. Normalizes both ABI versions to `PositionInfoV2`.
+    async fn fetch_position_infos_for_perp(
+        &self,
+        perp_id: U256,
+        num_accounts: usize,
+        supports_v2: bool,
+    ) -> Result<Vec<PositionInfoV2>, DexError> {
+        let account_id_chunks = (1..num_accounts + 1).chunks(self.positions_per_batch);
+        if supports_v2 {
+            let batch_futs = account_id_chunks.into_iter().map(|chunk| {
                 let multicall = self
                     .provider
                     .multicall()
                     .block(self.block_id)
                     .dynamic()
-                    .extend(chunk.map(|aid| self.instance.getPosition(pid, U256::from(aid))));
+                    .extend(chunk.map(|aid| self.instance.getPositionV2(perp_id, U256::from(aid))));
                 async move { multicall.aggregate().await }
             });
-
-            futures::future::try_join_all(pos_batch_futs)
+            Ok(futures::future::try_join_all(batch_futs)
                 .await
                 .map_err(|err| DexError::Provider(err.into()))?
                 .into_iter()
                 .flatten()
-                .for_each(|pos| {
-                    if !pos.positionInfo.lotLNS.is_zero() {
-                        let position = Position::new(
-                            instant,
-                            *perp_id,
-                            &pos.positionInfo,
-                            collateral_converter,
-                            perp.price_converter(),
-                            perp.size_converter(),
-                            perp.maintenance_margin(),
-                        );
-                        match accounts.entry(pos.positionInfo.accountId.to()) {
-                            hash_map::Entry::Occupied(mut e) => {
-                                e.get_mut().positions_mut().insert(*perp_id, position);
-                            },
-                            hash_map::Entry::Vacant(e) => {
-                                e.insert(Account::from_position(instant, position));
-                            },
-                        }
-                    }
-                });
+                .map(|r| r.positionInfo)
+                .collect())
+        } else {
+            let batch_futs = account_id_chunks.into_iter().map(|chunk| {
+                let multicall = self
+                    .provider
+                    .multicall()
+                    .block(self.block_id)
+                    .dynamic()
+                    .extend(chunk.map(|aid| self.instance.getPosition(perp_id, U256::from(aid))));
+                async move { multicall.aggregate().await }
+            });
+            Ok(futures::future::try_join_all(batch_futs)
+                .await
+                .map_err(|err| DexError::Provider(err.into()))?
+                .into_iter()
+                .flatten()
+                .map(|r| position_info_v0_to_v2(r.positionInfo))
+                .collect())
         }
+    }
+}
 
-        Ok(accounts)
+fn position_info_v0_to_v2(v0: PositionInfo) -> PositionInfoV2 {
+    PositionInfoV2 {
+        accountId: v0.accountId,
+        nextNodeId: v0.nextNodeId,
+        prevNodeId: v0.prevNodeId,
+        positionType: v0.positionType,
+        depositCNS: v0.depositCNS,
+        pricePNS: v0.pricePNS,
+        lotLNS: v0.lotLNS,
+        entryBlock: v0.entryBlock,
+        pnlCNS: v0.pnlCNS,
+        deltaPnlCNS: v0.deltaPnlCNS,
+        premiumPnlCNS: v0.premiumPnlCNS,
+        priceResiduePNSQ16: U256::ZERO,
+    }
+}
+
+fn perpetual_info_v0_to_v2(v0: PerpetualInfo) -> PerpetualInfoV2 {
+    PerpetualInfoV2 {
+        name: v0.name,
+        symbol: v0.symbol,
+        priceDecimals: v0.priceDecimals,
+        lotDecimals: v0.lotDecimals,
+        linkFeedId: v0.linkFeedId,
+        priceTolPer100K: v0.priceTolPer100K,
+        marginTol: v0.marginTol,
+        marginTolDecimals: v0.marginTolDecimals,
+        refPriceMaxAgeSec: v0.refPriceMaxAgeSec,
+        positionBalanceCNS: v0.positionBalanceCNS,
+        insuranceBalanceCNS: v0.insuranceBalanceCNS,
+        markPNS: v0.markPNS,
+        markTimestamp: v0.markTimestamp,
+        lastPNS: v0.lastPNS,
+        lastTimestamp: v0.lastTimestamp,
+        oraclePNS: v0.oraclePNS,
+        oracleTimestampSec: v0.oracleTimestampSec,
+        longOpenInterestLNS: v0.longOpenInterestLNS,
+        shortOpenInterestLNS: v0.shortOpenInterestLNS,
+        fundingStartBlock: v0.fundingStartBlock,
+        fundingRatePct100k: v0.fundingRatePct100k,
+        absFundingClampPctPer100K: v0.absFundingClampPctPer100K,
+        status: v0.status,
+        basePricePNS: v0.basePricePNS,
+        maxBidPriceONS: v0.maxBidPriceONS,
+        minBidPriceONS: v0.minBidPriceONS,
+        maxAskPriceONS: v0.maxAskPriceONS,
+        minAskPriceONS: v0.minAskPriceONS,
+        numOrders: v0.numOrders,
+        ignOracle: v0.ignOracle,
+        fundingSumScalingExp: U256::ZERO,
     }
 }

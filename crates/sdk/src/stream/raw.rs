@@ -79,6 +79,9 @@ where
                             .data,
                     ));
                 }
+                // Monad RPC does not guarantee logs are returned in block-internal order
+                // (eg block 68747089 from https://rpc-mainnet.monadinfra.com)
+                events.sort_by_key(|e| e.log_index());
                 Ok(RawBlockEvents::new(
                     types::StateInstant::new(block_num, block_header.timestamp),
                     events,
