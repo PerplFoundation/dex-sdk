@@ -2,7 +2,7 @@ use alloy::primitives::{B256, I256, U256};
 use fastnum::{D64, D256, UD64, UD128};
 
 use super::*;
-use crate::{abi::dex::Exchange::PerpetualInfo, types};
+use crate::{abi::dex::Exchange::PerpetualInfoV2, types};
 
 const FEE_SCALE: u8 = 5;
 const FUNDING_RATE_SCALE: u8 = 5;
@@ -78,7 +78,7 @@ impl Perpetual {
     pub(crate) fn new(
         instant: types::StateInstant,
         id: types::PerpetualId,
-        info: &PerpetualInfo,
+        info: &PerpetualInfoV2,
         maker_fee: U256,
         taker_fee: U256,
         initial_margin: U256,
