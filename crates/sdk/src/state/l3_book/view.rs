@@ -46,7 +46,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                         best_ask,
                         best_bid,
                         best_ask - best_bid,
-                        (best_ask - best_bid) / (best_ask + best_bid / 2) * 100
+                        (best_ask - best_bid) / ((best_ask + best_bid) / 2) * 100
                     ),
                 ));
                 table.modify(Row::from(row_idx), Alignment::right());
