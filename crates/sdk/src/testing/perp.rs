@@ -78,6 +78,23 @@ impl<'e> TestPerp<'e> {
         self
     }
 
+    pub async fn set_maintenance_margin(
+        &self,
+        maintenance_margin: UD64,
+    ) -> PendingTransactionBuilder<Ethereum> {
+        self.exchange
+            .exchange
+            .setMaintenanceMarginFraction(
+                U256::from(self.id),
+                self.leverage_converter.to_unsigned(maintenance_margin),
+            )
+            .gas(500000)
+            .send()
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap()
+    }
+
     pub async fn set_mark_price(&self, price: UD64) -> PendingTransactionBuilder<Ethereum> {
         self.exchange
             .exchange

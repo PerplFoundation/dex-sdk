@@ -170,6 +170,7 @@ impl Exchange {
         let mut order_context: Option<OrderContext> = None;
         let mut prev_tx_index: Option<u64> = None;
         let mut state_events = vec![];
+        let mut perp_events = vec![];
         for event in events.events() {
             if prev_tx_index.is_some_and(|idx| idx < event.tx_index()) {
                 // Reset order context at the transaction boundary
@@ -177,14 +178,22 @@ impl Exchange {
             }
             let result = self.apply_raw_event(next_instant, event, &mut order_context)?;
             if !result.is_empty() {
+                // Keep Perpetual events for second pass processing
+                let block_perp_events = result
+                    .iter()
+                    .filter(|e| e.as_perpetual_event().is_some())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !block_perp_events.is_empty() {
+                    perp_events.push(block_perp_events);
+                }
                 state_events.push(event.pass(result));
             }
             prev_tx_index = Some(event.tx_index());
         }
 
-        // Commit instant, can produce its own set of events
+        // Commit instant, can produce its own set of Perpetual events
         self.instant = events.instant();
-        let mut perp_events = vec![];
         for perp in self.perpetuals.values_mut() {
             let result = perp.update_state_instant(self.instant);
             if !result.is_empty() {
