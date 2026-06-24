@@ -51,12 +51,12 @@ use crate::{
 /// Default number of orders to fetch via single call.
 /// Assuming Monad's 8100 gas per storage slot access and 30M gas limit of
 /// `eth_call`, plus some buffer.
-const DEFAULT_ORDERS_PER_BATCH: usize = 3000;
+const DEFAULT_ORDERS_PER_BATCH: usize = 1000;
 
 /// Default number of positions to fetch via single call.
 /// Assuming Monad's 8100 gas per storage slot access and 30M gas limit of
 /// `eth_call`, plus some buffer.
-const DEFAULT_POSITIONS_PER_BATCH: usize = 3000;
+const DEFAULT_POSITIONS_PER_BATCH: usize = 1000;
 
 /// Builds a consistent snapshot of the exchange state
 /// that can be then kept up-to-date by the data from [`crate::stream::raw`].
