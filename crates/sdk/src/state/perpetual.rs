@@ -393,31 +393,37 @@ impl Perpetual {
 
     pub(crate) fn base_price(&self) -> UD64 { self.base_price }
 
-    pub(crate) fn update_state_instant(
-        &mut self,
-        instant: types::StateInstant,
-    ) -> Vec<StateEvents> {
+    pub(crate) fn update_state_instant(&mut self, instant: types::StateInstant) {
         // Update state instant first
         self.state_instant = instant;
 
         // Check for expired orders
         self.l3_book.check_expired(instant);
+    }
 
-        // Check if next funding event is due
-        if let Some(payment) = self.next_funding_payment
-            && self
-                .next_funding_event_block
-                .is_some_and(|fe| fe == instant.block_number())
+    /// If a scheduled funding payment takes effect at `instant` (i.e. this is
+    /// the funding-event block), returns the now-effective rate together with
+    /// the per-unit payment, and consumes the payment so it cannot fire again;
+    /// otherwise returns `None`.
+    ///
+    /// Funding is effective-dated: the payment was scheduled by an earlier
+    /// `FundingEventCompleted` for this later block. The caller
+    /// (`Exchange::apply_events`) must apply this payment to every position on
+    /// its **pre-event** size, before the block's size-changing events are
+    /// processed — matching the contract, which settles a funding-event block
+    /// at the new funding sum regardless of same-block decreases (Bug 44).
+    pub(crate) fn take_funding_payment(
+        &mut self,
+        instant: types::StateInstant,
+    ) -> Option<(D64, D256)> {
+        if self
+            .next_funding_event_block
+            .is_some_and(|fe| fe == instant.block_number())
         {
-            vec![StateEvents::perpetual(
-                self,
-                PerpetualEventType::FundingEvent {
-                    rate: self.funding_rate(),
-                    payment_per_unit: payment,
-                },
-            )]
+            let rate = self.next_funding_rate.unwrap_or(self.prev_funding_rate);
+            self.next_funding_payment.take().map(|payment| (rate, payment))
         } else {
-            vec![]
+            None
         }
     }
 

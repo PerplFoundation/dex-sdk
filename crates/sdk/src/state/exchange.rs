@@ -1,6 +1,6 @@
 use std::iter;
 
-use fastnum::{D256, UD64, UD128};
+use fastnum::{D64, D256, UD64, UD128};
 use itertools::chain;
 
 use super::*;
@@ -171,6 +171,49 @@ impl Exchange {
         let mut prev_tx_index: Option<u64> = None;
         let mut state_events = vec![];
         let mut perp_events = vec![];
+
+        // Pass 0: settle the block's scheduled funding BEFORE any raw events, so
+        // it lands on each position's pre-event size. The contract settles a
+        // funding-event block at the new funding sum regardless of same-block
+        // decreases, so the funding accrual must precede the block's
+        // size-changing events (Bug 44). Funding is applied ONLY here;
+        // `apply_state_event` no longer handles it.
+        let funding_due: Vec<(types::PerpetualId, D64, D256)> = self
+            .perpetuals
+            .values_mut()
+            .filter_map(|perp| {
+                perp.take_funding_payment(next_instant)
+                    .map(|(rate, payment)| (perp.id(), rate, payment))
+            })
+            .collect();
+        for (perp_id, rate, payment) in funding_due {
+            let mut funding_events = vec![];
+            if let Some(perp) = self.perpetuals.get(&perp_id) {
+                funding_events.push(StateEvents::perpetual(
+                    perp,
+                    PerpetualEventType::FundingEvent { rate, payment_per_unit: payment },
+                ));
+            }
+            for acc in self.accounts.values_mut() {
+                if let Some(pos) = acc.positions_mut().get_mut(&perp_id)
+                    && pos.apply_funding_payment(next_instant, payment)
+                {
+                    funding_events.push(StateEvents::position(
+                        pos,
+                        &None,
+                        PositionEventType::UnrealizedPnLUpdated {
+                            pnl: pos.pnl(),
+                            delta_pnl: pos.delta_pnl(),
+                            premium_pnl: pos.premium_pnl(),
+                        },
+                    ));
+                }
+            }
+            if !funding_events.is_empty() {
+                state_events.push(EventContext::empty(funding_events));
+            }
+        }
+
         for event in events.events() {
             if prev_tx_index.is_some_and(|idx| idx < event.tx_index()) {
                 // Reset order context at the transaction boundary
@@ -192,14 +235,12 @@ impl Exchange {
             prev_tx_index = Some(event.tx_index());
         }
 
-        // Commit instant, can produce its own set of Perpetual events
+        // Commit instant: advance each perpetual's state instant and expire
+        // stale orders. Funding is no longer produced here (see Pass 0 above);
+        // this only advances time and prunes the book.
         self.instant = events.instant();
         for perp in self.perpetuals.values_mut() {
-            let result = perp.update_state_instant(self.instant);
-            if !result.is_empty() {
-                perp_events.push(result.clone());
-                state_events.push(EventContext::empty(result));
-            }
+            perp.update_state_instant(self.instant);
         }
 
         // Applying produced state events as a second pass
@@ -1906,31 +1947,12 @@ impl Exchange {
         Ok(match event {
             StateEvents::Perpetual(pe) => {
                 match pe.r#type {
-                    PerpetualEventType::FundingEvent { rate: _, payment_per_unit } => {
-                        // Applying funding to all tracked positions
-                        self.accounts
-                            .values_mut()
-                            .filter_map(|acc| {
-                                acc.positions_mut()
-                                    .get_mut(&pe.perpetual_id)
-                                    .and_then(|pos| {
-                                        pos.apply_funding_payment(instant, payment_per_unit).then(
-                                            || {
-                                                StateEvents::position(
-                                                    pos,
-                                                    &None,
-                                                    PositionEventType::UnrealizedPnLUpdated {
-                                                        pnl: pos.pnl(),
-                                                        delta_pnl: pos.delta_pnl(),
-                                                        premium_pnl: pos.premium_pnl(),
-                                                    },
-                                                )
-                                            },
-                                        )
-                                    })
-                            })
-                            .collect()
-                    },
+                    // NOTE: funding is applied in `apply_events` Pass 0 (before the
+                    // block's raw events), so it lands on each position's pre-event
+                    // size and matches the contract even when a decrease shares the
+                    // funding-event block (Bug 44). It is intentionally NOT handled
+                    // here — the back pass only fans perpetual-parameter changes out
+                    // to positions.
                     PerpetualEventType::MaintenanceMarginFractionUpdated(maintenance_margin) => {
                         // Applying new maintenance margin to all tracked positions
                         self.accounts
