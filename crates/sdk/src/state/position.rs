@@ -495,38 +495,40 @@ mod tests {
 
     // ── A/B/C: funding + decrease(s) in the SAME (funding-event) block ──────────────────
     //
-    // Scenario (the "A/B/C" case), matching the incident structure:
-    //   Block N          — the position already exists and carries a funding balance. In the
-    //                      tests below this is the short opened at block 0 that received a
-    //                      prior funding tick at i1 (premium = 50 on size 10).
-    //   Block N+2 (= i2) — the funding-event block, holding up to three items: A/B (one or two
-    //                      decreases) and C (this block's funding tick takes effect).
+    // Scenario, matching the incident (one block holds the funding effect AND the decreases):
     //
-    // A funding event only SETS the new rate/sum earlier; it takes effect at the funding-event
-    // block (it is effective-dated). At THAT block the contract re-derives premium as
+    //   Block N        the short (size 10) already exists and carries a funding balance —
+    //                  opened earlier, with a prior funding tick that set premium = 50.
+    //   Block N + m    the funding-event block. Its scheduled funding takes effect here, in the
+    //                  same block as the decrease(s), in some on-chain order:
+    //                    Tx A   decrease   (10 -> 6)
+    //                    Tx B   decrease   (6 -> 3)        [two-decrease test only]
+    //                    C      funding takes effect       (effective-dated; not itself a tx)
+    //
+    // The contract re-derives premium at block N+m as
     //   (fundingSumAtBlock - entryFundingSum) * size / scaling   (`CalculationsLib::computePremiumPnl`),
-    // with `getFundingSumAtBlock` returning the sum "prior to OR AT" the block — so the remaining
-    // premium is (sn - entry) * final_size, independent of the tx order of A, B, C.
+    // with `getFundingSumAtBlock` returning the sum "prior to OR AT" the block, so the remaining
+    // premium is (sn - entry) * final_size — independent of the on-chain order of A, B, C.
     //
-    // `apply_events` settles funding (C) in Pass 0, on each position's PRE-decrease size, before
-    // the block's decreases (A, B) run — so the SDK matches the contract for any tx order. These
-    // Position-level tests mirror that ordering (funding first, then the decreases). so=5, sn=6
-    // -> one-tick per-lot funding Δ=1; short of size 10, entry funding sum 0.
+    // `apply_events` settles the funding (C) in Pass 1, on each position's pre-decrease size,
+    // before Pass 2 applies the decreases (A, B) — so the SDK matches the contract for any order.
+    // These Position-level tests mirror that ordering (funding first, then the decreases).
+    // so=5 -> sn=6 gives a one-tick per-lot funding Δ=1; short of size 10, entry funding sum 0.
 
     #[test]
     fn test_funding_applied_before_same_block_decrease() {
         // The tick due at i2 is applied even though the position is also touched by a decrease
-        // in the same block, because funding (Pass 0) runs first (Bug 44 fix).
+        // in the same block, because funding (Pass 1) runs first (Bug 44 fix).
         let (i1, i2) = (StateInstant::new(1, 1), StateInstant::new(2, 2));
         let mut pos = short_at(StateInstant::default());
         assert!(pos.apply_funding_payment(i1, dec256!(5))); // premium = 50
-        // Pass 0: funding on the full pre-decrease size 10.
+        // Pass 1: funding on the full pre-decrease size 10.
         assert!(
             pos.apply_funding_payment(i2, dec256!(5)),
             "funding must be applied before the same-block decrease"
         );
         assert_eq!(pos.premium_pnl(), dec256!(100));
-        // Pass 1: a decrease at i2 (value unchanged here to isolate the tick) does not drop it.
+        // Pass 2: a decrease at i2 (value unchanged here to isolate the tick) does not drop it.
         pos.update_premium_pnl(i2, pos.premium_pnl());
         assert_eq!(pos.premium_pnl(), dec256!(100));
     }
@@ -537,11 +539,11 @@ mod tests {
         // Block N: short size 10 with a prior funding tick (premium = so*10 = 50).
         let mut pos = short_at(StateInstant::default());
         assert!(pos.apply_funding_payment(i1, dec256!(5)));
-        // Block N+2 (funding-event block). Pass 0: the tick Δ=1 lands on the FULL pre-decrease
+        // Block N+m (funding-event block). Pass 1: the tick Δ=1 lands on the FULL pre-decrease
         // size 10 first -> premium = 50 + 1*10 = 60 (per-lot sum now sn=6).
         assert!(pos.apply_funding_payment(i2, dec256!(1)));
         assert_eq!(pos.premium_pnl(), dec256!(60));
-        // Pass 1: decrease 10 -> 6 (closes 4), realized at sn=6: fundingCNS = 6*4 = 24.
+        // Pass 2: decrease 10 -> 6 (closes 4), realized at sn=6: fundingCNS = 6*4 = 24.
         pos.update_size(i2, udec64!(6));
         pos.update_premium_pnl(i2, pos.premium_pnl() - dec256!(24));
         // Matches the contract: (sn - entry) * final_size = 6 * 6 = 36 (the old bug gave 26).
@@ -550,20 +552,20 @@ mod tests {
 
     #[test]
     fn test_funding_block_two_decreases_matches_sc() {
-        // The A/B/C scenario: block N+2 holds TWO decreases (A, B) AND the funding tick (C).
-        // Funding (Pass 0) runs first, so the result equals the contract's value for any
+        // The A/B/C scenario: block N+m holds TWO decreases (A, B) AND the funding tick (C).
+        // Funding (Pass 1) runs first, so the result equals the contract's value for any
         // on-chain tx order of A, B, C.
         let (i1, i2) = (StateInstant::new(1, 1), StateInstant::new(2, 2));
         // Block N: short size 10 with a prior funding tick (premium = 50).
         let mut pos = short_at(StateInstant::default());
         assert!(pos.apply_funding_payment(i1, dec256!(5)));
-        // Pass 0: tick Δ=1 on the FULL pre-decrease size 10 -> 60.
+        // Pass 1: tick Δ=1 on the FULL pre-decrease size 10 -> 60.
         assert!(pos.apply_funding_payment(i2, dec256!(1)));
         assert_eq!(pos.premium_pnl(), dec256!(60));
-        // Pass 1 -- A: 10 -> 6 (closes 4), fundingCNS_A = 6*4 = 24.
+        // Pass 2 -- A: 10 -> 6 (closes 4), fundingCNS_A = 6*4 = 24.
         pos.update_size(i2, udec64!(6));
         pos.update_premium_pnl(i2, pos.premium_pnl() - dec256!(24)); // 36
-        // Pass 1 -- B: 6 -> 3 (closes 3), fundingCNS_B = 6*3 = 18.
+        // Pass 2 -- B: 6 -> 3 (closes 3), fundingCNS_B = 6*3 = 18.
         pos.update_size(i2, udec64!(3));
         pos.update_premium_pnl(i2, pos.premium_pnl() - dec256!(18)); // 18
         // Matches the contract: (sn - entry) * final_size = 6 * 3 = 18 (the old bug gave 8).

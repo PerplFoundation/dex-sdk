@@ -407,11 +407,11 @@ impl Perpetual {
     /// otherwise returns `None`.
     ///
     /// Funding is effective-dated: the payment was scheduled by an earlier
-    /// `FundingEventCompleted` for this later block. The caller
-    /// (`Exchange::apply_events`) must apply this payment to every position on
-    /// its **pre-event** size, before the block's size-changing events are
-    /// processed — matching the contract, which settles a funding-event block
-    /// at the new funding sum regardless of same-block decreases (Bug 44).
+    /// `FundingEventCompleted` for this later block. `Exchange::apply_events`
+    /// applies it in Pass 1 — to every position on its **pre-event** size,
+    /// before the block's size-changing events — matching the contract, which
+    /// settles a funding-event block at the new funding sum regardless of
+    /// same-block decreases.
     pub(crate) fn take_funding_payment(
         &mut self,
         instant: types::StateInstant,

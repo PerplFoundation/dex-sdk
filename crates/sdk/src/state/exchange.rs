@@ -165,19 +165,21 @@ impl Exchange {
             ));
         }
 
-        // Apply events sequentially and accumulate produced state events,
-        // keeping intermediate context as many order events are incremental
+        // apply_events runs three passes over the block:
+        //   Pass 1 — funding:    settle the block's scheduled funding on each position's
+        //                        pre-event size (before any decreases).
+        //   Pass 2 — raw events: apply the block's on-chain events in order.
+        //   Pass 3 — fan-out:    apply perpetual-parameter changes produced in Pass 2
+        //                        (e.g. a maintenance-margin-fraction change) to all positions.
         let mut order_context: Option<OrderContext> = None;
         let mut prev_tx_index: Option<u64> = None;
         let mut state_events = vec![];
         let mut perp_events = vec![];
 
-        // Pass 0: settle the block's scheduled funding BEFORE any raw events, so
-        // it lands on each position's pre-event size. The contract settles a
-        // funding-event block at the new funding sum regardless of same-block
-        // decreases, so the funding accrual must precede the block's
-        // size-changing events (Bug 44). Funding is applied ONLY here;
-        // `apply_state_event` no longer handles it.
+        // Pass 1 — funding: the contract settles a funding-event block at the new funding sum
+        // regardless of same-block decreases, so funding must land on each position's PRE-event
+        // size, before the block's size-changing events. This is the only place funding is
+        // applied.
         let funding_due: Vec<(types::PerpetualId, D64, D256)> = self
             .perpetuals
             .values_mut()
@@ -214,6 +216,8 @@ impl Exchange {
             }
         }
 
+        // Pass 2 — raw events: apply the block's on-chain events in order, keeping incremental
+        // order context across events within a transaction.
         for event in events.events() {
             if prev_tx_index.is_some_and(|idx| idx < event.tx_index()) {
                 // Reset order context at the transaction boundary
@@ -221,7 +225,7 @@ impl Exchange {
             }
             let result = self.apply_raw_event(next_instant, event, &mut order_context)?;
             if !result.is_empty() {
-                // Keep Perpetual events for second pass processing
+                // Collect perpetual events produced here for the Pass 3 fan-out below.
                 let block_perp_events = result
                     .iter()
                     .filter(|e| e.as_perpetual_event().is_some())
@@ -235,15 +239,14 @@ impl Exchange {
             prev_tx_index = Some(event.tx_index());
         }
 
-        // Commit instant: advance each perpetual's state instant and expire
-        // stale orders. Funding is no longer produced here (see Pass 0 above);
-        // this only advances time and prunes the book.
+        // Commit the instant: advance each perpetual's state instant and expire stale orders.
         self.instant = events.instant();
         for perp in self.perpetuals.values_mut() {
             perp.update_state_instant(self.instant);
         }
 
-        // Applying produced state events as a second pass
+        // Pass 3 — fan-out: apply the perpetual-parameter changes produced in Pass 2 (e.g. a
+        // maintenance-margin-fraction change) to all tracked positions.
         for event in perp_events.iter().flatten() {
             let result = self.apply_state_event(self.instant, event)?;
             if !result.is_empty() {
@@ -1944,15 +1947,11 @@ impl Exchange {
         instant: types::StateInstant,
         event: &StateEvents,
     ) -> Result<Vec<StateEvents>, DexError> {
+        // The Pass 3 fan-out: apply perpetual-parameter changes to all tracked positions.
+        // (Funding is applied in `apply_events` Pass 1.)
         Ok(match event {
             StateEvents::Perpetual(pe) => {
                 match pe.r#type {
-                    // NOTE: funding is applied in `apply_events` Pass 0 (before the
-                    // block's raw events), so it lands on each position's pre-event
-                    // size and matches the contract even when a decrease shares the
-                    // funding-event block (Bug 44). It is intentionally NOT handled
-                    // here — the back pass only fans perpetual-parameter changes out
-                    // to positions.
                     PerpetualEventType::MaintenanceMarginFractionUpdated(maintenance_margin) => {
                         // Applying new maintenance margin to all tracked positions
                         self.accounts
