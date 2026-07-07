@@ -168,9 +168,11 @@ impl Exchange {
         // apply_events runs three passes over the block:
         //   Pass 1 — funding:    settle the block's scheduled funding on each position's
         //                        pre-event size (before any decreases).
-        //   Pass 2 — raw events: apply the block's on-chain events in order.
-        //   Pass 3 — fan-out:    apply perpetual-parameter changes produced in Pass 2
-        //                        (e.g. a maintenance-margin-fraction change) to all positions.
+        //   Pass 2 — raw events: apply the block's on-chain events in order (orders, position
+        //                        changes, perpetual-parameter updates); a perpetual-parameter
+        //                        change updates the perpetual here and is set aside for Pass 3.
+        //   Pass 3 — fan-out:    fan the perpetual-parameter changes set aside in Pass 2 (e.g. a
+        //                        maintenance-margin-fraction change) out to every tracked position.
         let mut order_context: Option<OrderContext> = None;
         let mut prev_tx_index: Option<u64> = None;
         let mut state_events = vec![];
@@ -225,7 +227,7 @@ impl Exchange {
             }
             let result = self.apply_raw_event(next_instant, event, &mut order_context)?;
             if !result.is_empty() {
-                // Collect perpetual events produced here for the Pass 3 fan-out below.
+                // Set aside perpetual-parameter events for the Pass 3 fan-out below.
                 let block_perp_events = result
                     .iter()
                     .filter(|e| e.as_perpetual_event().is_some())
@@ -245,8 +247,8 @@ impl Exchange {
             perp.update_state_instant(self.instant);
         }
 
-        // Pass 3 — fan-out: apply the perpetual-parameter changes produced in Pass 2 (e.g. a
-        // maintenance-margin-fraction change) to all tracked positions.
+        // Pass 3 — fan-out: apply the perpetual-parameter changes set aside in Pass 2 (e.g. a
+        // maintenance-margin-fraction change) to every tracked position.
         for event in perp_events.iter().flatten() {
             let result = self.apply_state_event(self.instant, event)?;
             if !result.is_empty() {
@@ -1947,8 +1949,6 @@ impl Exchange {
         instant: types::StateInstant,
         event: &StateEvents,
     ) -> Result<Vec<StateEvents>, DexError> {
-        // The Pass 3 fan-out: apply perpetual-parameter changes to all tracked positions.
-        // (Funding is applied in `apply_events` Pass 1.)
         Ok(match event {
             StateEvents::Perpetual(pe) => {
                 match pe.r#type {
