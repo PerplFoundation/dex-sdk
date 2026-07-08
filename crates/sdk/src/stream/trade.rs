@@ -120,6 +120,7 @@ struct PerpetualConverters {
 /// Context for tracking order requests (reuses pattern from exchange.rs).
 struct OrderContext {
     account_id: types::AccountId,
+    request_id: types::RequestId,
     side: types::OrderSide,
 }
 
@@ -179,7 +180,11 @@ impl TradeProcessor {
                 let request_type: types::RequestType = e.orderType.into();
                 // Only track context for order types that can have fills
                 if let Some(side) = request_type.try_side() {
-                    self.order_context = Some(OrderContext { account_id: e.accountId.to(), side });
+                    self.order_context = Some(OrderContext {
+                        account_id: e.accountId.to(),
+                        request_id: e.orderDescId.to(),
+                        side,
+                    });
                 }
                 None
             },
@@ -241,6 +246,7 @@ impl TradeProcessor {
             event.pass(types::Trade {
                 perpetual_id,
                 taker_account_id: ctx.account_id,
+                taker_request_id: ctx.request_id,
                 taker_side: ctx.side,
                 taker_fee: self.config.collateral_converter.from_unsigned(e.feeCNS),
                 maker_fills: makers

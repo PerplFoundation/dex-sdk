@@ -38,6 +38,9 @@ pub struct Trade {
     /// Taker account ID.
     pub taker_account_id: super::AccountId,
 
+    /// Taker request ID.
+    pub taker_request_id: super::RequestId,
+
     /// Taker side (Bid = buying, Ask = selling).
     pub taker_side: super::OrderSide,
 
