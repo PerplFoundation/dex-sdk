@@ -153,6 +153,54 @@ impl Position {
         bankruptcy_price.max(D64::ZERO).unsigned_abs()
     }
 
+    /// Unrealized PnL of the position evaluated at an arbitrary `price`:
+    /// delta PnL at `price` (protocol sign convention) plus premium (funding) PnL.
+    ///
+    /// Delta PnL uses the same convention as [`Self::apply_mark_price`]:
+    /// `+(price - entry) * size` for longs, `+(entry - price) * size` for shorts.
+    pub fn pnl_at(&self, price: UD64) -> D256 {
+        let sign = if self.r#type.is_long() { D256::ONE } else { D256::ONE.neg() };
+        let delta_pnl: D256 = sign
+            * (price.resize().to_signed() - self.entry_price.resize().to_signed())
+            * self.size.resize().to_signed();
+        delta_pnl + self.premium_pnl
+    }
+
+    /// Fair market value of the position at an arbitrary `price`:
+    /// `deposit + pnl_at(price)`, full precision.
+    ///
+    /// Mirrors the contract's `fmv = deposit + pnl(price)` in
+    /// `OperationHandler._decreasePositionCollateral`. During DCP the contract
+    /// evaluates FMV at the backend-supplied **impact-adjusted** price.
+    pub fn fair_market_value_at(&self, price: UD64) -> D256 {
+        self.deposit.to_signed().resize() + self.pnl_at(price)
+    }
+
+    /// Borrow-margin requirement at `mark` for an effective borrow-margin
+    /// leverage: `ceil(mark * size / leverage)`.
+    ///
+    /// `bmf_leverage` is the **effective** borrow-margin leverage the contract
+    /// uses, `effBmf = min(borrowMarginFracHdths, dynamicIMF)`, as a decimal
+    /// leverage (e.g. `20.0` = 20x), i.e. the on-chain `effBmfHdths / 100`. The
+    /// contract computes `bmr = ceilDiv(notional * 100, effBmfHdths)` at the
+    /// **mark** price; this is the full-precision analog, rounded up so it never
+    /// under-states the requirement (protocol-favorable).
+    pub fn borrow_margin_requirement(&self, bmf_leverage: UD64, mark: UD64) -> D256 {
+        let notional: D256 = (mark.resize().to_signed() * self.size.resize().to_signed())
+            .with_rounding_mode(fastnum::decimal::RoundingMode::Ceiling);
+        notional / bmf_leverage.resize().to_signed()
+    }
+
+    /// Maximum solvent DCP withdrawal: `FMV(impact_adj) - BMR(mark)`.
+    ///
+    /// Mirrors the contract's `withdrawMaxCNS = fmvBefore - bmr` — FMV at the
+    /// impact-adjusted price, BMR at the mark price. May be negative when the
+    /// position is already under-margined; callers treat `<= 0` as "nothing
+    /// withdrawable" (the contract early-returns in that case).
+    pub fn dcp_withdraw_max(&self, impact_adj: UD64, bmf_leverage: UD64, mark: UD64) -> D256 {
+        self.fair_market_value_at(impact_adj) - self.borrow_margin_requirement(bmf_leverage, mark)
+    }
+
     pub(crate) fn update_type(&mut self, instant: types::StateInstant, r#type: PositionType) {
         self.r#type = r#type;
         self.instant = instant;
@@ -259,6 +307,39 @@ impl Position {
                     .with_rounding_mode(fastnum::decimal::RoundingMode::Floor)
                     / Q)
                 / price_converter.scale()
+        }
+    }
+}
+
+/// Test utility builder for `Position`.
+///
+/// Gated behind the `test-utils` feature (mirrors `Perpetual::for_test`) so
+/// downstream crates can construct positions in their own tests without exposing
+/// the internal `new`/`opened` constructors in production builds.
+#[cfg(any(test, feature = "test-utils"))]
+impl Position {
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_test(
+        perpetual_id: types::PerpetualId,
+        account_id: types::AccountId,
+        r#type: PositionType,
+        entry_price: UD64,
+        size: UD64,
+        deposit: UD128,
+        premium_pnl: D256,
+    ) -> Self {
+        Self {
+            instant: types::StateInstant::new(0, 0),
+            funding_instant: types::StateInstant::new(0, 0),
+            perpetual_id,
+            account_id,
+            r#type,
+            entry_price,
+            size,
+            deposit,
+            delta_pnl: D256::ZERO,
+            premium_pnl,
+            maintenance_margin_requirement: UD128::ZERO,
         }
     }
 }
@@ -609,6 +690,86 @@ mod tests {
 
         assert!(pos.apply_funding_payment(i1, dec256!(-5)));
         assert_eq!(pos.bankruptcy_price(), udec64!(105));
+    }
+
+    #[test]
+    fn test_fair_market_value_and_pnl_at() {
+        let pc = num::Converter::new(4);
+        let i0 = StateInstant::default();
+
+        // Long: entry 100, size 10, deposit 100, no funding.
+        let pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            U256::from(1000000),
+            0,
+            pc,
+            udec64!(10),
+            udec128!(100),
+            UD64::ONE,
+        );
+        // pnl(110) = +(110 - 100) * 10 = 100 ; FMV = 100 + 100 = 200
+        assert_eq!(pos.pnl_at(udec64!(110)), dec256!(100));
+        assert_eq!(pos.fair_market_value_at(udec64!(110)), dec256!(200));
+        // pnl(90) = -100 ; FMV = 0
+        assert_eq!(pos.pnl_at(udec64!(90)), dec256!(-100));
+        assert_eq!(pos.fair_market_value_at(udec64!(90)), dec256!(0));
+
+        // Short: entry 100, size 10, deposit 100 — sign flips.
+        let pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Short,
+            U256::from(1000000),
+            0,
+            pc,
+            udec64!(10),
+            udec128!(100),
+            UD64::ONE,
+        );
+        // pnl(90) = +(100 - 90) * 10 = 100 ; FMV = 200
+        assert_eq!(pos.pnl_at(udec64!(90)), dec256!(100));
+        assert_eq!(pos.fair_market_value_at(udec64!(90)), dec256!(200));
+        assert_eq!(pos.pnl_at(udec64!(110)), dec256!(-100));
+
+        // Premium (funding) PnL is included in FMV. Positive funding pays shorts:
+        // premium_pnl = +1 * (+2) * size(10) = +20.
+        let mut pos = pos;
+        assert!(pos.apply_funding_payment(StateInstant::new(1, 1), dec256!(2)));
+        // FMV(90) = deposit 100 + delta 100 + premium 20 = 220
+        assert_eq!(pos.fair_market_value_at(udec64!(90)), dec256!(220));
+    }
+
+    #[test]
+    fn test_borrow_margin_requirement_and_withdraw_max() {
+        let pc = num::Converter::new(4);
+        let i0 = StateInstant::default();
+
+        // Long: entry 100, size 10, deposit 100.
+        let pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            U256::from(1000000),
+            0,
+            pc,
+            udec64!(10),
+            udec128!(100),
+            UD64::ONE,
+        );
+        // BMR at mark 105, effective leverage 20x = 105 * 10 / 20 = 52.5
+        assert_eq!(pos.borrow_margin_requirement(udec64!(20), udec64!(105)), dec256!(52.5));
+        // withdraw max = FMV(impact 110) - BMR(mark 105) = 200 - 52.5 = 147.5
+        assert_eq!(pos.dcp_withdraw_max(udec64!(110), udec64!(20), udec64!(105)), dec256!(147.5));
+
+        // Lower leverage ⇒ larger BMR (needs more margin): 10x = 105 * 10 / 10 = 105
+        assert_eq!(pos.borrow_margin_requirement(udec64!(10), udec64!(105)), dec256!(105));
+        // withdraw max shrinks accordingly: 200 - 105 = 95
+        assert_eq!(pos.dcp_withdraw_max(udec64!(110), udec64!(10), udec64!(105)), dec256!(95));
     }
 
     #[test]

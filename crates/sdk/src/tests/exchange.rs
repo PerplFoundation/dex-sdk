@@ -215,3 +215,107 @@ fn test_smart_contract_position_closed_recycling_fee_to_account() {
     let perp = perps.get(&TEST_PERP_ID).expect("UT");
     assert!(perp.get_order(OrderId::new(1).expect("UT")).is_none());
 }
+
+#[cfg(feature = "dcp")]
+fn apply_event_ret(
+    exchange: &mut Exchange,
+    exchange_event: ExchangeEvents,
+    order_context: &mut Option<OrderContext>,
+    log_index: u64,
+) -> Vec<crate::state::StateEvents> {
+    let instant = StateInstant::new(0, 0);
+    let raw_event = RawEvent::new(TxHash::ZERO, 0, log_index, exchange_event);
+    exchange
+        .apply_raw_event(instant, &raw_event, order_context)
+        .expect("UT")
+}
+
+// for_testing perps use price/size converters of scale 0, so PNS/LNS values pass
+// through unscaled; the collateral converter is scale 4 (see create_test_exchange).
+#[cfg(feature = "dcp")]
+fn event_collateral_decrease_requested(account_id: u64) -> ExchangeEvents {
+    ExchangeEvents::CollateralDecreaseRequested(
+        crate::abi::dex::Exchange::CollateralDecreaseRequested {
+            perpId: U256::from(TEST_PERP_ID),
+            accountId: U256::from(account_id),
+            expiryTS: U256::from(120),
+            amountCNS: U256::ZERO,
+            clampToMaximum: true,
+            positionType: 0, // Long
+            entryPricePNS: U256::from(100),
+            lotLNS: U256::from(10),
+        },
+    )
+}
+
+#[cfg(feature = "dcp")]
+#[test]
+fn test_dcp_request_surfaced_and_mutates_nothing() {
+    use fastnum::{udec64, udec128};
+
+    use crate::state::{PositionEventType, PositionType};
+
+    let mut exchange = create_test_exchange();
+    let mut ctx: Option<OrderContext> = None;
+
+    let out = apply_event_ret(&mut exchange, event_collateral_decrease_requested(1), &mut ctx, 0);
+
+    assert_eq!(out.len(), 1, "request must surface exactly one notification");
+    let pe = out[0].as_position_event().expect("expected a Position event");
+    assert_eq!(pe.perpetual_id, TEST_PERP_ID);
+    assert_eq!(pe.account_id, 1);
+    match pe.r#type {
+        PositionEventType::CollateralDecreaseRequested {
+            expiry_ts,
+            amount,
+            clamp_to_maximum,
+            r#type,
+            entry_price,
+            size,
+        } => {
+            assert_eq!(expiry_ts, 120);
+            assert_eq!(amount, udec128!(0)); // amountCNS 0 == "withdraw max"
+            assert!(clamp_to_maximum);
+            assert_eq!(r#type, PositionType::Long);
+            assert_eq!(entry_price, udec64!(100));
+            assert_eq!(size, udec64!(10));
+        },
+        other => panic!("unexpected event type: {other:?}"),
+    }
+
+    // Pure notification: re-applying yields the identical event and no state drift
+    // (open interest untouched — the arm calls no `update_*`).
+    let out2 = apply_event_ret(&mut exchange, event_collateral_decrease_requested(1), &mut ctx, 1);
+    assert_eq!(out2.len(), 1);
+    let perp = exchange.perpetuals().get(&TEST_PERP_ID).expect("perp");
+    assert_eq!(perp.open_interest(), udec128!(0));
+}
+
+#[cfg(feature = "dcp")]
+#[test]
+fn test_dcp_failure_event_surfaced() {
+    use crate::state::{DcpFailureReason, PositionEventType};
+
+    let mut exchange = create_test_exchange();
+    let mut ctx: Option<OrderContext> = None;
+
+    let ev = ExchangeEvents::BorrowMarginNotMetAfterDecCollateral(
+        crate::abi::dex::Exchange::BorrowMarginNotMetAfterDecCollateral {
+            perpId: U256::from(TEST_PERP_ID),
+            accountId: U256::from(7),
+            bmrCNS: I256::ZERO,
+            fmvAfterCNS: I256::ZERO,
+        },
+    );
+    let out = apply_event_ret(&mut exchange, ev, &mut ctx, 0);
+
+    assert_eq!(out.len(), 1);
+    let pe = out[0].as_position_event().expect("expected a Position event");
+    assert_eq!(pe.account_id, 7);
+    assert!(matches!(
+        pe.r#type,
+        PositionEventType::CollateralDecreaseFailed {
+            reason: DcpFailureReason::BorrowMarginNotMet
+        }
+    ));
+}

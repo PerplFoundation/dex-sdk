@@ -476,6 +476,63 @@ pub enum PositionEventType {
         #[debug("{payment}")]
         payment: UD128,
     },
+
+    /// DCP: a user requested to decrease this position's collateral, pending a
+    /// PositionAdministrator decision (2-minute expiry). Pure notification — the
+    /// SDK state is not mutated by this event.
+    #[cfg(feature = "dcp")]
+    CollateralDecreaseRequested {
+        /// Unix timestamp (secs) after which the request expires on-chain.
+        expiry_ts: u64,
+        /// Requested amount; `0` means "withdraw the maximum solvent amount".
+        #[debug("{amount}")]
+        amount: UD128,
+        /// If `true`, an over-max request is clamped to the max instead of rejected.
+        clamp_to_maximum: bool,
+        r#type: position::PositionType,
+        /// Position entry price at request time (as emitted, no residue).
+        #[debug("{entry_price}")]
+        entry_price: UD64,
+        /// Position size at request time.
+        #[debug("{size}")]
+        size: UD64,
+    },
+
+    /// DCP: a pending collateral-decrease request was cancelled by the user.
+    #[cfg(feature = "dcp")]
+    CollateralDecreaseRequestCancelled,
+
+    /// DCP: a pending collateral-decrease request expired unserviced.
+    #[cfg(feature = "dcp")]
+    CollateralDecreaseRequestExpired { expiry_ts: u64, block_ts: u64 },
+
+    /// DCP: a pending collateral-decrease request was declined by the
+    /// PositionAdministrator. The on-chain decline reason string is intentionally
+    /// not surfaced (the servicer is the sole decliner and owns its own reason).
+    #[cfg(feature = "dcp")]
+    CollateralDecreaseRequestDeclined,
+
+    /// DCP: a `decreasePositionCollateral` admin tx was rejected by the contract
+    /// via an emit-and-return (the tx itself does NOT revert). Lets a servicer
+    /// count a failure instead of waiting on a `CollateralDecreased` that never comes.
+    #[cfg(feature = "dcp")]
+    CollateralDecreaseFailed { reason: DcpFailureReason },
+}
+
+/// Reason a `decreasePositionCollateral` admin transaction was rejected by the
+/// contract without reverting (emit-and-return). One variant per on-chain failure
+/// event. `Copy`, so [`PositionEventType`] stays `Copy`.
+#[cfg(feature = "dcp")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DcpFailureReason {
+    /// `BorrowMarginNotMetAfterDecCollateral` — post-decrease FMV < BMR (beyond tolerance).
+    BorrowMarginNotMet,
+    /// `InsufficientFundsToDecCollateral` — requested amount exceeds the withdrawable maximum.
+    InsufficientFunds,
+    /// `CannotAdjustEntryPriceToDecCollateral` — entry-price adjustment non-positive / out of range.
+    CannotAdjustEntryPrice,
+    /// `DecreaseCollateralBeyondMarkPrice` — impact-adjusted price on the wrong side of mark.
+    BeyondMarkPrice,
 }
 
 impl StateEvents {
@@ -593,6 +650,18 @@ impl StateEvents {
             request_id: ctx.as_ref().map(|c| c.request_id),
             r#type,
         })
+    }
+
+    /// Build a position event from explicit ids, without borrowing a `Position`.
+    /// Used for DCP request-lifecycle notifications, which must not mutate or
+    /// depend on position state (keeps `apply_events` snapshot-safe).
+    #[cfg(feature = "dcp")]
+    pub(crate) fn position_of(
+        perpetual_id: types::PerpetualId,
+        account_id: types::AccountId,
+        r#type: PositionEventType,
+    ) -> Self {
+        Self::Position(PositionEvent { perpetual_id, account_id, request_id: None, r#type })
     }
 
     pub(crate) fn trade(ctx: &OrderContext, taker_fee: UD64) -> Self {
