@@ -17,9 +17,7 @@ pub struct EventContext<T> {
 }
 
 impl<T> BlockEvents<T> {
-    pub(crate) fn new(instant: super::StateInstant, events: Vec<T>) -> Self {
-        Self { instant, events }
-    }
+    pub fn new(instant: super::StateInstant, events: Vec<T>) -> Self { Self { instant, events } }
 
     /// Instant the events produced at.
     pub fn instant(&self) -> super::StateInstant { self.instant }
