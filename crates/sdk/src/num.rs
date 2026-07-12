@@ -11,7 +11,9 @@ pub struct Converter {
 }
 
 impl Converter {
-    pub(crate) fn new(decimals: u8) -> Self { Self { decimals: decimals as i32 } }
+    /// Fixed-point converter for `decimals` decimal places. `pub` to match the
+    /// other public constructors, so callers can build one directly.
+    pub fn new(decimals: u8) -> Self { Self { decimals: decimals as i32 } }
 
     pub fn decimals(&self) -> u8 { self.decimals as u8 }
 
