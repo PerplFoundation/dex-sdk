@@ -74,13 +74,13 @@ pub struct SnapshotBuilder<P> {
 
 impl<P: Provider + Clone> SnapshotBuilder<P> {
     /// Creates a new [`SnapshotBuilder`] which fetches the full exchange state
-    /// at the latest block.
+    /// at the latest safe/voted block.
     pub fn new(chain: &Chain, provider: P) -> Self {
         Self {
             chain: chain.clone(),
             instance: dex::Exchange::new(chain.exchange(), provider.clone()),
             provider,
-            block_id: BlockId::Number(alloy::eips::BlockNumberOrTag::Latest),
+            block_id: BlockId::Number(alloy::eips::BlockNumberOrTag::Safe),
             perpetuals: chain.perpetuals.clone(),
             accounts: vec![],
             all_positions: false,
@@ -89,9 +89,10 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         }
     }
 
-    /// Sets the block number or tag to fetch the state at (default: latest).
-    /// If tag is provided, it gets converted to a specific block number first
-    /// to ensure state consistency.
+    /// Sets the block number or tag to fetch the state at (default:
+    /// [`alloy::eips::BlockNumberOrTag::Safe`]). If tag is provided, it gets
+    /// converted to a specific block number first to ensure state
+    /// consistency.
     pub fn at_block(mut self, block: BlockId) -> Self {
         self.block_id = block;
         self
