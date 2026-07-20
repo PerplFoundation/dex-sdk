@@ -599,6 +599,7 @@ impl StateEvents {
         Self::Trade(types::Trade {
             perpetual_id: ctx.perpetual_id,
             taker_account_id: ctx.account_id,
+            taker_request_id: ctx.request_id,
             taker_side: ctx.r#type.try_side().expect("order type with side"),
             taker_fee,
             maker_fills: ctx.maker_fills.clone(),
