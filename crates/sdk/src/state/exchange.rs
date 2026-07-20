@@ -279,6 +279,15 @@ impl Exchange {
             ExchangeEvents::BankruptcyPricePreventsDeleverage(_) => vec![],
             ExchangeEvents::BeaconUpgraded(_) => vec![],
             ExchangeEvents::BlockStatusChanged(_) => vec![],
+            #[cfg(feature = "dcp")]
+            ExchangeEvents::BorrowMarginNotMetAfterDecCollateral(e) => vec![StateEvents::position_of(
+                e.perpId.to(),
+                e.accountId.to(),
+                PositionEventType::CollateralDecreaseFailed {
+                    reason: DcpFailureReason::BorrowMarginNotMet,
+                },
+            )],
+            #[cfg(not(feature = "dcp"))]
             ExchangeEvents::BorrowMarginNotMetAfterDecCollateral(_) => vec![],
             ExchangeEvents::BuyToLiquidateSettled(_) => vec![],
             ExchangeEvents::BuyToLiquidateSlippageExceeded(_) => vec![],
@@ -294,6 +303,17 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            #[cfg(feature = "dcp")]
+            ExchangeEvents::CannotAdjustEntryPriceToDecCollateral(e) => {
+                vec![StateEvents::position_of(
+                    e.perpId.to(),
+                    e.accountId.to(),
+                    PositionEventType::CollateralDecreaseFailed {
+                        reason: DcpFailureReason::CannotAdjustEntryPrice,
+                    },
+                )]
+            },
+            #[cfg(not(feature = "dcp"))]
             ExchangeEvents::CannotAdjustEntryPriceToDecCollateral(_) => vec![],
             ExchangeEvents::CantBuyToLiquidate(_) => vec![],
             ExchangeEvents::CantChangeCloseOrder(_) => self
@@ -464,9 +484,57 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            #[cfg(feature = "dcp")]
+            ExchangeEvents::CollateralDecreaseDeclined(e) => vec![StateEvents::position_of(
+                e.perpId.to(),
+                e.accountId.to(),
+                PositionEventType::CollateralDecreaseRequestDeclined,
+            )],
+            #[cfg(not(feature = "dcp"))]
             ExchangeEvents::CollateralDecreaseDeclined(_) => vec![],
+            #[cfg(feature = "dcp")]
+            ExchangeEvents::CollateralDecreaseRequestCancelled(e) => vec![StateEvents::position_of(
+                e.perpId.to(),
+                e.accountId.to(),
+                PositionEventType::CollateralDecreaseRequestCancelled,
+            )],
+            #[cfg(not(feature = "dcp"))]
             ExchangeEvents::CollateralDecreaseRequestCancelled(_) => vec![],
+            #[cfg(feature = "dcp")]
+            ExchangeEvents::CollateralDecreaseRequested(e) => {
+                if let Some(perp) = self.perpetual(e.perpId) {
+                    let perpetual_id = perp.id();
+                    let r#type = PositionType::from(e.positionType);
+                    let entry_price = perp.price_converter().from_unsigned(e.entryPricePNS);
+                    let size = perp.size_converter().from_unsigned(e.lotLNS);
+                    vec![StateEvents::position_of(
+                        perpetual_id,
+                        e.accountId.to(),
+                        PositionEventType::CollateralDecreaseRequested {
+                            expiry_ts: e.expiryTS.to(),
+                            amount: cc.from_unsigned(e.amountCNS),
+                            clamp_to_maximum: e.clampToMaximum,
+                            r#type,
+                            entry_price,
+                            size,
+                        },
+                    )]
+                } else {
+                    vec![]
+                }
+            },
+            #[cfg(not(feature = "dcp"))]
             ExchangeEvents::CollateralDecreaseRequested(_) => vec![],
+            #[cfg(feature = "dcp")]
+            ExchangeEvents::CollateralDecreaseRequestExpired(e) => vec![StateEvents::position_of(
+                e.perpId.to(),
+                e.accountId.to(),
+                PositionEventType::CollateralDecreaseRequestExpired {
+                    expiry_ts: e.expiryTS.to(),
+                    block_ts: e.blockTS.to(),
+                },
+            )],
+            #[cfg(not(feature = "dcp"))]
             ExchangeEvents::CollateralDecreaseRequestExpired(_) => vec![],
             ExchangeEvents::CollateralDeposit(e) => self
                 .account(e.accountId)
@@ -544,6 +612,15 @@ impl Exchange {
                 .into_iter()
                 .collect(),
             ExchangeEvents::DcpBorrowThreshUpdated(_) => vec![],
+            #[cfg(feature = "dcp")]
+            ExchangeEvents::DecreaseCollateralBeyondMarkPrice(e) => vec![StateEvents::position_of(
+                e.perpId.to(),
+                e.accountId.to(),
+                PositionEventType::CollateralDecreaseFailed {
+                    reason: DcpFailureReason::BeyondMarkPrice,
+                },
+            )],
+            #[cfg(not(feature = "dcp"))]
             ExchangeEvents::DecreaseCollateralBeyondMarkPrice(_) => vec![],
             ExchangeEvents::DeleveragePositionListEmpty(_) => vec![],
             ExchangeEvents::ExceedsLastExecutionBlock(_) => self
@@ -643,6 +720,15 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            #[cfg(feature = "dcp")]
+            ExchangeEvents::InsufficientFundsToDecCollateral(e) => vec![StateEvents::position_of(
+                e.perpId.to(),
+                e.accountId.to(),
+                PositionEventType::CollateralDecreaseFailed {
+                    reason: DcpFailureReason::InsufficientFunds,
+                },
+            )],
+            #[cfg(not(feature = "dcp"))]
             ExchangeEvents::InsufficientFundsToDecCollateral(_) => vec![],
             ExchangeEvents::InsurancePaymentForSettlement(_) => vec![],
             ExchangeEvents::InvalidAccountFrozenOrder(_) => vec![],
