@@ -712,6 +712,58 @@ mod tests {
     }
 
     #[test]
+    fn test_liquidation_price_after_funding_received() {
+        // Complements test_liquidation_price, which only drives premium NEGATIVE (funding paid).
+        // Here the position RECEIVES funding, driving premium to +50 and moving the liquidation
+        // price AWAY from entry — long 95 -> 90, short 105 -> 110. Setup mirrors
+        // test_liquidation_price (entry 100, size 10, deposit 100, mm 20 -> MMR 50).
+        let pc = num::Converter::new(4);
+        let (i0, i1) = (StateInstant::default(), StateInstant::new(1, 1));
+        let mm1 = udec64!(20);
+
+        // Long receives funding when longs are paid (negative payment).
+        let mut pos = Position::opened(
+            i0, 1, 1, PositionType::Long, U256::from(1000000), 0, pc, udec64!(10), udec128!(100), mm1,
+        );
+        assert_eq!(pos.liquidation_price(), udec64!(95)); // 100 + (50-100-0)/10
+        assert!(pos.apply_funding_payment(i1, dec256!(-5)), "long receives funding");
+        assert_eq!(pos.premium_pnl(), dec256!(50)); // long sign -1: += -1*(-5)*10 = +50
+        assert_eq!(pos.liquidation_price(), udec64!(90)); // 100 + (50-100-50)/10
+
+        // Short receives funding when shorts are paid (positive payment).
+        let mut pos = Position::opened(
+            i0, 1, 1, PositionType::Short, U256::from(1000000), 0, pc, udec64!(10), udec128!(100), mm1,
+        );
+        assert_eq!(pos.liquidation_price(), udec64!(105)); // 100 - (50-100-0)/10
+        assert!(pos.apply_funding_payment(i1, dec256!(5)), "short receives funding");
+        assert_eq!(pos.premium_pnl(), dec256!(50)); // short sign +1: += 1*5*10 = +50
+        assert_eq!(pos.liquidation_price(), udec64!(110)); // 100 - (50-100-50)/10
+    }
+
+    #[test]
+    fn test_bankruptcy_price_after_funding_received() {
+        // Complements test_bankruptcy_price (premium negative only). The position RECEIVES funding
+        // (+50): long bank 90 -> 85, short bank 110 -> 115. Same setup as test_bankruptcy_price.
+        let pc = num::Converter::new(4);
+        let (i0, i1) = (StateInstant::default(), StateInstant::new(1, 1));
+        let mm1 = udec64!(20);
+
+        let mut pos = Position::opened(
+            i0, 1, 1, PositionType::Long, U256::from(1000000), 0, pc, udec64!(10), udec128!(100), mm1,
+        );
+        assert_eq!(pos.bankruptcy_price(), udec64!(90)); // 100 - (100+0)/10
+        assert!(pos.apply_funding_payment(i1, dec256!(-5)), "long receives funding"); // premium +50
+        assert_eq!(pos.bankruptcy_price(), udec64!(85)); // 100 - (100+50)/10
+
+        let mut pos = Position::opened(
+            i0, 1, 1, PositionType::Short, U256::from(1000000), 0, pc, udec64!(10), udec128!(100), mm1,
+        );
+        assert_eq!(pos.bankruptcy_price(), udec64!(110)); // 100 + (100+0)/10
+        assert!(pos.apply_funding_payment(i1, dec256!(5)), "short receives funding"); // premium +50
+        assert_eq!(pos.bankruptcy_price(), udec64!(115)); // 100 + (100+50)/10
+    }
+
+    #[test]
     fn test_apply_mark_price_with_residue() {
         let i0 = StateInstant::default();
         let half_lsb = dec256!(0.0000005);

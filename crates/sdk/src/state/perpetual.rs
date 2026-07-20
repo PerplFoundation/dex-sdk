@@ -815,7 +815,7 @@ impl std::fmt::Display for Perpetual {
 mod tests {
     use std::num::NonZeroU16;
 
-    use fastnum::udec64;
+    use fastnum::{dec64, dec256, udec64};
 
     use super::*;
 
@@ -918,5 +918,65 @@ mod tests {
         // Order 1 should keep its position: FIFO is [1, 2]
         let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
         assert_eq!(orders, vec![oid(1), oid(2)], "Non-expired order should keep position");
+    }
+
+    // ── Funding schedule: effective-dating, single-consumption, prev/next rate boundary ──
+    // These pin `take_funding_payment` / `update_funding` / `funding_rate`, which the fix's
+    // Pass-1 funding relies on. `for_testing` applies no converter, so scheduled values pass
+    // through unchanged.
+
+    #[test]
+    fn perpetual_funding_effective_dated_consumed_once() {
+        // take_funding_payment yields the scheduled (rate, payment) ONLY at the exact
+        // funding-event block, consumes it (cannot fire twice), and never auto-applies a block
+        // that was skipped.
+        let mut perp = Perpetual::for_testing(1);
+        perp.update_funding(types::StateInstant::new(1, 1), dec64!(0.02), dec256!(1.25), 3);
+
+        // Before the event block: not due.
+        assert_eq!(perp.take_funding_payment(types::StateInstant::new(2, 2)), None);
+        // At the event block: due, exactly once.
+        assert_eq!(
+            perp.take_funding_payment(types::StateInstant::new(3, 3)),
+            Some((dec64!(0.02), dec256!(1.25))),
+        );
+        // Consumed: a second read at the same block yields nothing.
+        assert_eq!(perp.take_funding_payment(types::StateInstant::new(3, 3)), None);
+        // A later block never picks up the (already-passed) schedule.
+        assert_eq!(perp.take_funding_payment(types::StateInstant::new(4, 4)), None);
+    }
+
+    #[test]
+    fn perpetual_funding_rate_prev_next_boundary() {
+        // funding_rate() reads state_instant: prev while state_instant.block < the event block,
+        // next at/after it. state_instant advances only via update_state_instant (NOT
+        // update_funding / take_funding_payment).
+        let mut perp = Perpetual::for_testing(2);
+        perp.update_funding(types::StateInstant::new(1, 1), dec64!(0.02), dec256!(1.25), 3);
+
+        assert_eq!(perp.funding_rate(), D64::ZERO); // state (0,0): 3 <= 0? no -> prev
+        assert!(perp.has_next_funding_rate()); // 3 > 0
+        perp.update_state_instant(types::StateInstant::new(2, 2));
+        assert_eq!(perp.funding_rate(), D64::ZERO); // 3 <= 2? no -> prev
+        perp.update_state_instant(types::StateInstant::new(3, 3));
+        assert_eq!(perp.funding_rate(), dec64!(0.02)); // 3 <= 3? yes -> next (at boundary)
+        assert!(!perp.has_next_funding_rate()); // 3 > 3? no
+        perp.update_state_instant(types::StateInstant::new(4, 4));
+        assert_eq!(perp.funding_rate(), dec64!(0.02)); // 3 <= 4? yes -> next
+    }
+
+    #[test]
+    fn perpetual_update_funding_prev_rollover() {
+        // A second update_funding that supersedes an unconsumed schedule (older event block <
+        // new block) rolls the old next rate into prev — the only post-construction writer of
+        // prev_funding_rate.
+        let mut perp = Perpetual::for_testing(3);
+        perp.update_funding(types::StateInstant::new(1, 1), dec64!(0.02), dec256!(1.0), 3);
+        perp.update_funding(types::StateInstant::new(2, 2), dec64!(0.03), dec256!(2.0), 5);
+        // prev is now the superseded 0.02; next is 0.03 @ block 5.
+        perp.update_state_instant(types::StateInstant::new(4, 4));
+        assert_eq!(perp.funding_rate(), dec64!(0.02)); // 5 <= 4? no -> prev (rolled 0.02)
+        perp.update_state_instant(types::StateInstant::new(5, 5));
+        assert_eq!(perp.funding_rate(), dec64!(0.03)); // 5 <= 5? yes -> next
     }
 }
