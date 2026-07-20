@@ -1,4 +1,4 @@
-//! End-to-end `Exchange::apply_events` tests for the funding-before-decrease fix (Bug 44).
+//! End-to-end `Exchange::apply_events` tests for the funding-before-decrease fix.
 //!
 //! Unlike the Position/Perpetual unit tests (which hand-call the two steps in order), these drive
 //! the real three-pass `apply_events` wiring, so they are the tests that FAIL if the passes are
