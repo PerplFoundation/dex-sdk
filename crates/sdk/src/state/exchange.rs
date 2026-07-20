@@ -1,6 +1,6 @@
 use std::iter;
 
-use fastnum::{D256, UD64, UD128};
+use fastnum::{D64, D256, UD64, UD128};
 use itertools::chain;
 
 use super::*;
@@ -165,12 +165,61 @@ impl Exchange {
             ));
         }
 
-        // Apply events sequentially and accumulate produced state events,
-        // keeping intermediate context as many order events are incremental
+        // apply_events runs three passes over the block:
+        //   Pass 1 — funding:    settle the block's scheduled funding on each position's
+        //                        pre-event size (before any decreases).
+        //   Pass 2 — raw events: apply the block's on-chain events in order (orders, position
+        //                        changes, perpetual-parameter updates); a perpetual-parameter
+        //                        change updates the perpetual here and is set aside for Pass 3.
+        //   Pass 3 — fan-out:    fan the perpetual-parameter changes set aside in Pass 2 (e.g. a
+        //                        maintenance-margin-fraction change) out to every tracked position.
         let mut order_context: Option<OrderContext> = None;
         let mut prev_tx_index: Option<u64> = None;
         let mut state_events = vec![];
         let mut perp_events = vec![];
+
+        // Pass 1 — funding: the contract settles a funding-event block at the new funding sum
+        // regardless of same-block decreases, so funding must land on each position's PRE-event
+        // size, before the block's size-changing events. This is the only place funding is
+        // applied.
+        let funding_due: Vec<(types::PerpetualId, D64, D256)> = self
+            .perpetuals
+            .values_mut()
+            .filter_map(|perp| {
+                perp.take_funding_payment(next_instant)
+                    .map(|(rate, payment)| (perp.id(), rate, payment))
+            })
+            .collect();
+        for (perp_id, rate, payment) in funding_due {
+            let mut funding_events = vec![];
+            if let Some(perp) = self.perpetuals.get(&perp_id) {
+                funding_events.push(StateEvents::perpetual(
+                    perp,
+                    PerpetualEventType::FundingEvent { rate, payment_per_unit: payment },
+                ));
+            }
+            for acc in self.accounts.values_mut() {
+                if let Some(pos) = acc.positions_mut().get_mut(&perp_id)
+                    && pos.apply_funding_payment(next_instant, payment)
+                {
+                    funding_events.push(StateEvents::position(
+                        pos,
+                        &None,
+                        PositionEventType::UnrealizedPnLUpdated {
+                            pnl: pos.pnl(),
+                            delta_pnl: pos.delta_pnl(),
+                            premium_pnl: pos.premium_pnl(),
+                        },
+                    ));
+                }
+            }
+            if !funding_events.is_empty() {
+                state_events.push(EventContext::empty(funding_events));
+            }
+        }
+
+        // Pass 2 — raw events: apply the block's on-chain events in order, keeping incremental
+        // order context across events within a transaction.
         for event in events.events() {
             if prev_tx_index.is_some_and(|idx| idx < event.tx_index()) {
                 // Reset order context at the transaction boundary
@@ -178,7 +227,7 @@ impl Exchange {
             }
             let result = self.apply_raw_event(next_instant, event, &mut order_context)?;
             if !result.is_empty() {
-                // Keep Perpetual events for second pass processing
+                // Set aside perpetual-parameter events for the Pass 3 fan-out below.
                 let block_perp_events = result
                     .iter()
                     .filter(|e| e.as_perpetual_event().is_some())
@@ -192,17 +241,14 @@ impl Exchange {
             prev_tx_index = Some(event.tx_index());
         }
 
-        // Commit instant, can produce its own set of Perpetual events
+        // Commit the instant: advance each perpetual's state instant and expire stale orders.
         self.instant = events.instant();
         for perp in self.perpetuals.values_mut() {
-            let result = perp.update_state_instant(self.instant);
-            if !result.is_empty() {
-                perp_events.push(result.clone());
-                state_events.push(EventContext::empty(result));
-            }
+            perp.update_state_instant(self.instant);
         }
 
-        // Applying produced state events as a second pass
+        // Pass 3 — fan-out: apply the perpetual-parameter changes set aside in Pass 2 (e.g. a
+        // maintenance-margin-fraction change) to every tracked position.
         for event in perp_events.iter().flatten() {
             let result = self.apply_state_event(self.instant, event)?;
             if !result.is_empty() {
@@ -1906,31 +1952,6 @@ impl Exchange {
         Ok(match event {
             StateEvents::Perpetual(pe) => {
                 match pe.r#type {
-                    PerpetualEventType::FundingEvent { rate: _, payment_per_unit } => {
-                        // Applying funding to all tracked positions
-                        self.accounts
-                            .values_mut()
-                            .filter_map(|acc| {
-                                acc.positions_mut()
-                                    .get_mut(&pe.perpetual_id)
-                                    .and_then(|pos| {
-                                        pos.apply_funding_payment(instant, payment_per_unit).then(
-                                            || {
-                                                StateEvents::position(
-                                                    pos,
-                                                    &None,
-                                                    PositionEventType::UnrealizedPnLUpdated {
-                                                        pnl: pos.pnl(),
-                                                        delta_pnl: pos.delta_pnl(),
-                                                        premium_pnl: pos.premium_pnl(),
-                                                    },
-                                                )
-                                            },
-                                        )
-                                    })
-                            })
-                            .collect()
-                    },
                     PerpetualEventType::MaintenanceMarginFractionUpdated(maintenance_margin) => {
                         // Applying new maintenance margin to all tracked positions
                         self.accounts
