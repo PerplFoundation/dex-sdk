@@ -333,9 +333,7 @@ mod tests {
     use std::time::Duration;
 
     use alloy::{
-        primitives::{I256, TxHash},
-        providers::ProviderBuilder,
-        rpc::client::RpcClient,
+        primitives::I256, providers::ProviderBuilder, rpc::client::RpcClient,
         transports::layers::RetryBackoffLayer,
     };
     use futures::StreamExt;
@@ -344,6 +342,7 @@ mod tests {
     use crate::{
         Chain,
         abi::dex::Exchange::{OrderPlaced, OrderRequest, TakerOrderFilled},
+        stream::RawEvent,
     };
 
     fn order_request(
@@ -393,18 +392,13 @@ mod tests {
             request_id: 42,
             side: types::OrderSide::Ask,
         });
-        let event = crate::stream::RawEvent::new(
-            TxHash::ZERO,
-            0,
-            0,
-            ExchangeEvents::OrderPlaced(OrderPlaced {
-                orderId: U256::from(9),
-                lotLNS: U256::from(1),
-                lockedBalanceCNS: U256::ZERO,
-                amountCNS: I256::ZERO,
-                balanceCNS: U256::ZERO,
-            }),
-        );
+        let event = RawEvent::empty(ExchangeEvents::OrderPlaced(OrderPlaced {
+            orderId: U256::from(9),
+            lotLNS: U256::from(1),
+            lockedBalanceCNS: U256::ZERO,
+            amountCNS: I256::ZERO,
+            balanceCNS: U256::ZERO,
+        }));
 
         _ = processor.process_event(&event);
 
@@ -420,71 +414,54 @@ mod tests {
         const MAKER_ORDER_ID: u16 = 9;
 
         let mut processor = TradeProcessor::new(normalization_config(PERPETUAL_ID));
-        let maker_tx_hash = TxHash::from([1_u8; 32]);
-        let taker_tx_hash = TxHash::from([2_u8; 32]);
-        let events = crate::stream::RawBlockEvents::new(
-            types::StateInstant::new(1, 0),
-            vec![
-                crate::stream::RawEvent::new(
-                    maker_tx_hash,
-                    0,
-                    0,
-                    order_request(PERPETUAL_ID, MAKER_ACCOUNT_ID, MAKER_CLIENT_ORDER_ID, 1),
-                ),
-                crate::stream::RawEvent::new(
-                    maker_tx_hash,
-                    0,
-                    1,
-                    ExchangeEvents::OrderPlaced(OrderPlaced {
-                        orderId: U256::from(MAKER_ORDER_ID),
-                        lotLNS: U256::from(1),
-                        lockedBalanceCNS: U256::ZERO,
-                        amountCNS: I256::ZERO,
-                        balanceCNS: U256::ZERO,
-                    }),
-                ),
-                crate::stream::RawEvent::new(
-                    taker_tx_hash,
-                    1,
-                    2,
-                    order_request(PERPETUAL_ID, 8, TAKER_REQUEST_ID, 0),
-                ),
-                crate::stream::RawEvent::new(
-                    taker_tx_hash,
-                    1,
-                    3,
-                    ExchangeEvents::MakerOrderFilled(MakerOrderFilled {
-                        perpId: U256::from(PERPETUAL_ID),
-                        accountId: U256::from(MAKER_ACCOUNT_ID),
-                        orderId: U256::from(MAKER_ORDER_ID),
-                        pricePNS: U256::from(100),
-                        lotLNS: U256::from(1),
-                        feeCNS: U256::from(1),
-                        lockedBalanceCNS: U256::ZERO,
-                        amountCNS: I256::ZERO,
-                        balanceCNS: U256::ZERO,
-                    }),
-                ),
-                crate::stream::RawEvent::new(
-                    taker_tx_hash,
-                    1,
-                    4,
-                    ExchangeEvents::TakerOrderFilled(TakerOrderFilled {
-                        entryPricePNS: U256::from(100),
-                        collatPricePNS: U256::from(100),
-                        pnlPricePNS: U256::from(100),
-                        lotLNS: U256::from(1),
-                        feeCNS: U256::from(1),
-                        amountCNS: I256::ZERO,
-                        balanceCNS: U256::ZERO,
-                    }),
-                ),
-            ],
-        );
-
-        let block_trades = processor.process_block(&events);
-        let trade = block_trades.events().first().expect("trade exists").event();
-        let maker_fill = trade.maker_fills.first().expect("maker fill exists");
+        _ = processor.process_event(&RawEvent::empty(order_request(
+            PERPETUAL_ID,
+            MAKER_ACCOUNT_ID,
+            MAKER_CLIENT_ORDER_ID,
+            1,
+        )));
+        _ = processor.process_event(&RawEvent::empty(ExchangeEvents::OrderPlaced(OrderPlaced {
+            orderId: U256::from(MAKER_ORDER_ID),
+            lotLNS: U256::from(1),
+            lockedBalanceCNS: U256::ZERO,
+            amountCNS: I256::ZERO,
+            balanceCNS: U256::ZERO,
+        })));
+        _ = processor.process_event(&RawEvent::empty(order_request(
+            PERPETUAL_ID,
+            8,
+            TAKER_REQUEST_ID,
+            0,
+        )));
+        _ = processor.process_event(&RawEvent::empty(ExchangeEvents::MakerOrderFilled(
+            MakerOrderFilled {
+                perpId: U256::from(PERPETUAL_ID),
+                accountId: U256::from(MAKER_ACCOUNT_ID),
+                orderId: U256::from(MAKER_ORDER_ID),
+                pricePNS: U256::from(100),
+                lotLNS: U256::from(1),
+                feeCNS: U256::from(1),
+                lockedBalanceCNS: U256::ZERO,
+                amountCNS: I256::ZERO,
+                balanceCNS: U256::ZERO,
+            },
+        )));
+        let trade = processor
+            .process_event(&RawEvent::empty(ExchangeEvents::TakerOrderFilled(TakerOrderFilled {
+                entryPricePNS: U256::from(100),
+                collatPricePNS: U256::from(100),
+                pnlPricePNS: U256::from(100),
+                lotLNS: U256::from(1),
+                feeCNS: U256::from(1),
+                amountCNS: I256::ZERO,
+                balanceCNS: U256::ZERO,
+            })))
+            .expect("trade exists");
+        let maker_fill = trade
+            .event()
+            .maker_fills
+            .first()
+            .expect("maker fill exists");
 
         assert_eq!(maker_fill.maker_client_order_id, Some(MAKER_CLIENT_ORDER_ID));
     }
