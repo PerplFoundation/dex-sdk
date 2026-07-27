@@ -112,8 +112,9 @@ async fn test_snapshot_and_events() {
     o(taker.id, 21, None, CloseLong, udec64!(100100), udec64!(0.2)).await;
 
     // Collect and (partially) validate produced events
+    let mut snapshot_maker_fill_seen = false;
     while let Some(block_events) = state.next_state_events().await {
-        for event in block_events.events().iter().map(|e| e.event()).flatten() {
+        for event in block_events.events().iter().flat_map(|e| e.event()) {
             match event {
                 state::StateEvents::Account(AccountEvent {
                     account_id: 1,
@@ -157,6 +158,16 @@ async fn test_snapshot_and_events() {
                     assert_eq!(*is_maker, true);
                 },
 
+                state::StateEvents::Trade(types::Trade {
+                    taker_request_id: 11,
+                    maker_fills,
+                    ..
+                }) => {
+                    let maker_fill = maker_fills.first().expect("maker fill exists");
+                    assert_eq!(maker_fill.maker_client_order_id, None);
+                    snapshot_maker_fill_seen = true;
+                },
+
                 state::StateEvents::Position(PositionEvent {
                     perpetual_id: 16,
                     account_id: 2,
@@ -178,6 +189,7 @@ async fn test_snapshot_and_events() {
             break;
         }
     }
+    assert!(snapshot_maker_fill_seen);
 
     // Validate updated snapshot
     {

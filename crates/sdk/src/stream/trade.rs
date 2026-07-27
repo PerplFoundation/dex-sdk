@@ -119,6 +119,7 @@ struct PerpetualConverters {
 
 /// Context for tracking order requests (reuses pattern from exchange.rs).
 struct OrderContext {
+    perpetual_id: types::PerpetualId,
     account_id: types::AccountId,
     request_id: types::RequestId,
     side: types::OrderSide,
@@ -131,6 +132,7 @@ struct PendingMakerFill {
     perpetual_id: types::PerpetualId,
     maker_account_id: types::AccountId,
     maker_order_id: types::OrderId,
+    maker_client_order_id: Option<types::RequestId>,
     price: fastnum::UD64,
     size: fastnum::UD64,
     maker_fee: fastnum::UD64,
@@ -140,6 +142,9 @@ struct PendingMakerFill {
 pub struct TradeProcessor {
     config: NormalizationConfig,
     order_context: Option<OrderContext>,
+    // Entries are retained after orders close and overwritten on ID reuse, so this can
+    // hold up to 65,535 entries per configured perpetual.
+    maker_client_order_ids: HashMap<(types::PerpetualId, types::OrderId), types::RequestId>,
     pending_maker_fills: Vec<PendingMakerFill>,
     prev_tx_index: Option<u64>,
 }
@@ -147,7 +152,13 @@ pub struct TradeProcessor {
 impl TradeProcessor {
     /// Create a new trade processor with the given normalization config.
     pub fn new(config: NormalizationConfig) -> Self {
-        Self { config, order_context: None, pending_maker_fills: Vec::new(), prev_tx_index: None }
+        Self {
+            config,
+            order_context: None,
+            maker_client_order_ids: HashMap::new(),
+            pending_maker_fills: Vec::new(),
+            prev_tx_index: None,
+        }
     }
 
     /// Process a block of raw events and extract trades.
@@ -181,6 +192,7 @@ impl TradeProcessor {
                 // Only track context for order types that can have fills
                 if let Some(side) = request_type.try_side() {
                     self.order_context = Some(OrderContext {
+                        perpetual_id: e.perpId.to(),
                         account_id: e.accountId.to(),
                         request_id: e.orderDescId.to(),
                         side,
@@ -191,6 +203,16 @@ impl TradeProcessor {
             ExchangeEvents::OrderBatchCompleted(_) => {
                 self.order_context.take();
                 self.pending_maker_fills.clear();
+                None
+            },
+            ExchangeEvents::OrderPlaced(e) => {
+                if let Some(context) = self.order_context.as_ref()
+                    && self.config.perpetuals.contains_key(&context.perpetual_id)
+                    && let Some(order_id) = NonZeroU16::new(e.orderId.to())
+                {
+                    self.maker_client_order_ids
+                        .insert((context.perpetual_id, order_id), context.request_id);
+                }
                 None
             },
             ExchangeEvents::MakerOrderFilled(e) => {
@@ -204,13 +226,19 @@ impl TradeProcessor {
 
     fn handle_maker_fill(&mut self, event: &super::RawEvent, e: &MakerOrderFilled) {
         let perp_id: types::PerpetualId = e.perpId.to();
+        let maker_order_id = NonZeroU16::new(e.orderId.to()).expect("non-zero maker order ID");
         if let Some(converters) = self.config.perpetuals.get(&perp_id) {
+            let maker_client_order_id = self
+                .maker_client_order_ids
+                .get(&(perp_id, maker_order_id))
+                .copied();
             self.pending_maker_fills.push(PendingMakerFill {
                 tx_hash: event.tx_hash(),
                 log_index: event.log_index(),
                 perpetual_id: perp_id,
                 maker_account_id: e.accountId.to(),
-                maker_order_id: NonZeroU16::new(e.orderId.to()).expect("non-zero maker order ID"),
+                maker_order_id,
+                maker_client_order_id,
                 price: converters.price_converter.from_unsigned(e.pricePNS),
                 size: converters.size_converter.from_unsigned(e.lotLNS),
                 maker_fee: self.config.collateral_converter.from_unsigned(e.feeCNS),
@@ -255,6 +283,7 @@ impl TradeProcessor {
                         log_index: m.log_index,
                         maker_account_id: m.maker_account_id,
                         maker_order_id: m.maker_order_id,
+                        maker_client_order_id: m.maker_client_order_id,
                         price: m.price,
                         size: m.size,
                         fee: m.maker_fee,
@@ -304,12 +333,138 @@ mod tests {
     use std::time::Duration;
 
     use alloy::{
-        providers::ProviderBuilder, rpc::client::RpcClient, transports::layers::RetryBackoffLayer,
+        primitives::I256, providers::ProviderBuilder, rpc::client::RpcClient,
+        transports::layers::RetryBackoffLayer,
     };
     use futures::StreamExt;
 
     use super::*;
-    use crate::Chain;
+    use crate::{
+        Chain,
+        abi::dex::Exchange::{OrderPlaced, OrderRequest, TakerOrderFilled},
+        stream::RawEvent,
+    };
+
+    fn order_request(
+        perpetual_id: types::PerpetualId,
+        account_id: types::AccountId,
+        request_id: types::RequestId,
+        order_type: u8,
+    ) -> ExchangeEvents {
+        ExchangeEvents::OrderRequest(OrderRequest {
+            perpId: U256::from(perpetual_id),
+            accountId: U256::from(account_id),
+            orderDescId: U256::from(request_id),
+            orderId: U256::ZERO,
+            orderType: order_type,
+            pricePNS: U256::from(100),
+            lotLNS: U256::from(1),
+            expiryBlock: U256::ZERO,
+            postOnly: false,
+            fillOrKill: false,
+            immediateOrCancel: false,
+            maxMatches: U256::ZERO,
+            leverageHdths: U256::ZERO,
+            lastExecutionBlock: U256::ZERO,
+            amountCNS: U256::ZERO,
+            maxNegPnlCollatBPS: U256::ZERO,
+            gasLeft: U256::ZERO,
+        })
+    }
+
+    fn normalization_config(perpetual_id: types::PerpetualId) -> NormalizationConfig {
+        let converter = num::Converter::new(0);
+        NormalizationConfig {
+            collateral_converter: converter,
+            perpetuals: HashMap::from([(
+                perpetual_id,
+                PerpetualConverters { price_converter: converter, size_converter: converter },
+            )]),
+        }
+    }
+
+    #[test]
+    fn client_order_ids_ignore_unconfigured_perpetuals() {
+        let mut processor = TradeProcessor::new(normalization_config(1));
+        processor.order_context = Some(OrderContext {
+            perpetual_id: 2,
+            account_id: 7,
+            request_id: 42,
+            side: types::OrderSide::Ask,
+        });
+        let event = RawEvent::empty(ExchangeEvents::OrderPlaced(OrderPlaced {
+            orderId: U256::from(9),
+            lotLNS: U256::from(1),
+            lockedBalanceCNS: U256::ZERO,
+            amountCNS: I256::ZERO,
+            balanceCNS: U256::ZERO,
+        }));
+
+        _ = processor.process_event(&event);
+
+        assert!(processor.maker_client_order_ids.is_empty());
+    }
+
+    #[test]
+    fn maker_fill_includes_observed_client_order_id() {
+        const PERPETUAL_ID: types::PerpetualId = 1;
+        const MAKER_ACCOUNT_ID: types::AccountId = 7;
+        const MAKER_CLIENT_ORDER_ID: types::RequestId = 42;
+        const TAKER_REQUEST_ID: types::RequestId = 84;
+        const MAKER_ORDER_ID: u16 = 9;
+
+        let mut processor = TradeProcessor::new(normalization_config(PERPETUAL_ID));
+        _ = processor.process_event(&RawEvent::empty(order_request(
+            PERPETUAL_ID,
+            MAKER_ACCOUNT_ID,
+            MAKER_CLIENT_ORDER_ID,
+            1,
+        )));
+        _ = processor.process_event(&RawEvent::empty(ExchangeEvents::OrderPlaced(OrderPlaced {
+            orderId: U256::from(MAKER_ORDER_ID),
+            lotLNS: U256::from(1),
+            lockedBalanceCNS: U256::ZERO,
+            amountCNS: I256::ZERO,
+            balanceCNS: U256::ZERO,
+        })));
+        _ = processor.process_event(&RawEvent::empty(order_request(
+            PERPETUAL_ID,
+            8,
+            TAKER_REQUEST_ID,
+            0,
+        )));
+        _ = processor.process_event(&RawEvent::empty(ExchangeEvents::MakerOrderFilled(
+            MakerOrderFilled {
+                perpId: U256::from(PERPETUAL_ID),
+                accountId: U256::from(MAKER_ACCOUNT_ID),
+                orderId: U256::from(MAKER_ORDER_ID),
+                pricePNS: U256::from(100),
+                lotLNS: U256::from(1),
+                feeCNS: U256::from(1),
+                lockedBalanceCNS: U256::ZERO,
+                amountCNS: I256::ZERO,
+                balanceCNS: U256::ZERO,
+            },
+        )));
+        let trade = processor
+            .process_event(&RawEvent::empty(ExchangeEvents::TakerOrderFilled(TakerOrderFilled {
+                entryPricePNS: U256::from(100),
+                collatPricePNS: U256::from(100),
+                pnlPricePNS: U256::from(100),
+                lotLNS: U256::from(1),
+                feeCNS: U256::from(1),
+                amountCNS: I256::ZERO,
+                balanceCNS: U256::ZERO,
+            })))
+            .expect("trade exists");
+        let maker_fill = trade
+            .event()
+            .maker_fills
+            .first()
+            .expect("maker fill exists");
+
+        assert_eq!(maker_fill.maker_client_order_id, Some(MAKER_CLIENT_ORDER_ID));
+    }
 
     #[tokio::test]
     async fn test_stream_recent_blocks() {
