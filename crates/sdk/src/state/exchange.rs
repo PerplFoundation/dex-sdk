@@ -775,6 +775,7 @@ impl Exchange {
                             log_index: event.log_index(),
                             maker_account_id: order.account_id(),
                             maker_order_id: order.order_id(),
+                            maker_client_order_id: order.client_order_id(),
                             price: fill_price,
                             size: fill_size,
                             fee,

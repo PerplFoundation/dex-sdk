@@ -12,6 +12,9 @@ pub struct MakerFill {
     /// Maker order ID.
     pub maker_order_id: super::OrderId,
 
+    /// Maker client order ID, if known.
+    pub maker_client_order_id: Option<super::RequestId>,
+
     /// Fill price (normalized decimal).
     #[debug("{price}")]
     pub price: UD64,
