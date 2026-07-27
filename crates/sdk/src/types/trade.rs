@@ -13,6 +13,9 @@ pub struct MakerFill {
     pub maker_order_id: super::OrderId,
 
     /// Maker client order ID, if known.
+    ///
+    /// Available only when the order placement was observed in processed
+    /// events, not for orders loaded from the initial snapshot.
     pub maker_client_order_id: Option<super::RequestId>,
 
     /// Fill price (normalized decimal).
