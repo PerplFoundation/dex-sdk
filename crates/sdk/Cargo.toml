@@ -25,6 +25,11 @@ tokio = { workspace = true }
 [features]
 default = ["display", "testing"]
 display = ["tabled", "colored"]
+# Decrease-Position-Collateral (DCP) request-lifecycle surface. Non-default so the
+# published/external SDK surface is unchanged; the liquidation-bot servicer opts in
+# via `features = ["dcp"]`. Enables the DCP `PositionEventType` variants and their
+# `apply_events` mappings (pure notifications — no extra state mutation).
+dcp = []
 # Separate from `testing` (which is in `default` and enables alloy/node-bindings)
 # so that downstream crates can opt in to test builders (Perpetual::for_test,
 # with_bid, with_ask, etc.) via dev-dependencies without exposing internal
