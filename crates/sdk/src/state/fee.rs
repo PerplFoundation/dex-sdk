@@ -80,6 +80,7 @@ impl std::fmt::Display for FeeScheduleKey {
 #[derive(Clone, Copy)]
 pub struct FeeSchedule {
     key: FeeScheduleKey,
+    tiered: bool,
     taker_fees: [UD64; FEE_TIERS],
     maker_fees: [UD64; FEE_TIERS],
 }
@@ -94,6 +95,7 @@ impl FeeSchedule {
     ) -> Self {
         Self {
             key,
+            tiered: true,
             taker_fees: taker_fees_per_100k.map(|fee| fee_converter.from_unsigned(fee)),
             maker_fees: maker_fees_per_100k.map(|fee| fee_converter.from_unsigned(fee)),
         }
@@ -105,11 +107,24 @@ impl FeeSchedule {
     /// the deprecated `MakerFeeUpdated`/`TakerFeeUpdated` events report the
     /// tier-0 rate only.
     pub(crate) fn flat(key: FeeScheduleKey, taker_fee: UD64, maker_fee: UD64) -> Self {
-        Self { key, taker_fees: [taker_fee; FEE_TIERS], maker_fees: [maker_fee; FEE_TIERS] }
+        Self {
+            key,
+            tiered: false,
+            taker_fees: [taker_fee; FEE_TIERS],
+            maker_fees: [maker_fee; FEE_TIERS],
+        }
     }
 
     /// Schedule this perpetual/exchange resolves its fees from.
     pub fn key(&self) -> FeeScheduleKey { self.key }
+
+    /// Whether the rates were reported per tier, rather than filled in from a
+    /// base rate observed on its own.
+    ///
+    /// False against a pre-v1.1.7.4 deployment, which has no tiers to report:
+    /// every tier then carries the base rate, and reading a discounted one back
+    /// tells the caller nothing the base rate did not.
+    pub fn is_tiered(&self) -> bool { self.tiered }
 
     /// Taker fee of the given tier.
     ///

@@ -754,7 +754,7 @@ impl std::fmt::Display for Perpetual {
         use colored::Colorize;
         use tabled::{
             Table,
-            settings::{Alignment, Style, object::Cell},
+            settings::{Alignment, Panel, Style, object::Cell},
         };
 
         let mut table = Table::from_iter(vec![
@@ -826,6 +826,12 @@ impl std::fmt::Display for Perpetual {
                 format!("Funding Start: {}", self.funding_start_block),
             ],
         ]);
+        // The full fee schedule spans the table in alternate mode. Only a
+        // deployment that reports rates per tier has anything to say here: on an
+        // older one every tier carries the base rate already in the row above.
+        if f.alternate() && self.fee_schedule.is_tiered() {
+            table.with(Panel::footer(format!("Fee tiers (tkr/mkr): {:#}", self.fee_schedule)));
+        }
         table.with(Style::modern());
         table.modify(Cell::new(0, 4), Alignment::right());
 
@@ -840,10 +846,7 @@ impl std::fmt::Display for Perpetual {
             table,
         )?;
 
-        // Render the full fee schedule and order book in alternate mode
-        if f.alternate() {
-            writeln!(f, "    Fee tiers (tkr/mkr): {:#}", self.fee_schedule)?;
-        }
+        // Render the order book in alternate mode
         if f.alternate() && self.l3_book().total_orders() > 0 {
             writeln!(f, "{:}", self.l3_book)?;
         }

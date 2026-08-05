@@ -118,6 +118,10 @@ async fn test_contract_upgrade_mid_stream() {
         assert_eq!(btc.fee_schedule().key(), state::FeeScheduleKey::Default);
         assert_eq!(btc.taker_fee(), udec64!(0.00035));
         assert_eq!(btc.taker_fee_for_tier(2), udec64!(0.00035), "no tiers to differ by");
+        // ...so there are no tiers to report, and the detailed rendering says
+        // nothing about them rather than repeating the base rate eight times
+        assert!(!btc.fee_schedule().is_tiered());
+        assert!(!format!("{btc:#}").contains("Fee tiers"));
         // ...and no account carries a fee tier, since the concept does not exist
         assert_eq!(snapshot.accounts().get(&taker.id).unwrap().fee_tier(), None);
     }
@@ -416,6 +420,12 @@ async fn test_contract_upgrade_mid_stream() {
             assert_eq!(perp.fee_schedule().taker_fees(), &TAKER_FEES, "perp {}", perp.id());
             assert_eq!(perp.fee_schedule().maker_fees(), &MAKER_FEES, "perp {}", perp.id());
             assert_eq!(perp.taker_fee_for_tier(2), TAKER_FEES[2]);
+        }
+
+        // ...and with real tiers on record, the detailed rendering reports them
+        for perp in snapshot.perpetuals().values() {
+            assert!(perp.fee_schedule().is_tiered(), "perp {}", perp.id());
+            assert!(format!("{perp:#}").contains("Fee tiers (tkr/mkr)"), "perp {}", perp.id());
         }
 
         // The contract listed after the upgrade is tracked in full, from events

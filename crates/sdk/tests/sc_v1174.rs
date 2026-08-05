@@ -140,6 +140,12 @@ async fn test_sc_v1174() {
         assert_eq!(perp.maker_fee_for_tier(TAKER_FEE_TIER), MAKER_FEES[TAKER_FEE_TIER as usize]);
     }
 
+    // Tiers are reported per tier, so the detailed rendering carries them
+    let btc = discovered.perpetuals().get(&btc_perp.id).unwrap();
+    assert!(btc.fee_schedule().is_tiered());
+    let rendered = format!("{btc:#}");
+    assert!(rendered.contains("Fee tiers (tkr/mkr)"), "{rendered}");
+
     // Account fee tiers are snapshotted for explicitly requested accounts
     assert_eq!(discovered.accounts().get(&taker.id).unwrap().fee_tier(), Some(TAKER_FEE_TIER));
     assert_eq!(discovered.accounts().get(&maker.id).unwrap().fee_tier(), Some(0));
