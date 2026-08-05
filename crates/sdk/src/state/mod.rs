@@ -833,14 +833,7 @@ pub async fn listed_perpetuals<P: Provider + Clone>(
 ) -> Result<Vec<types::PerpetualId>, DexError> {
     let instance = dex::Exchange::new(chain.exchange(), provider.clone());
     let features = ContractFeatures::probe(&instance, block_id, None).await;
-    discover_perpetuals(
-        &instance,
-        &provider,
-        block_id,
-        features,
-        chain.excluded_perpetuals(),
-    )
-    .await
+    discover_perpetuals(&instance, &provider, block_id, features, chain.excluded_perpetuals()).await
 }
 
 /// Returns the IDs of every perpetual listed on the exchange, less the ones
