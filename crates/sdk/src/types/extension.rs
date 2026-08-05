@@ -76,7 +76,7 @@ impl BuilderAttribution {
     ///
     /// The fee is bounded by [`MAX_BUILDER_FEE_PER_100K`] and quantized to
     /// [`num::FEE_SCALE`] decimal places on encoding; use
-    /// [`Self::try_encode`] to detect an out-of-range rate before submitting.
+    /// [`Self::encode`] to detect an out-of-range rate before submitting.
     pub fn new(builder_id: super::BuilderId, fee: UD64) -> Self { Self { builder_id, fee } }
 
     /// Builder attribution as recorded on-chain, from the raw `Per100K` fee
@@ -96,31 +96,26 @@ impl BuilderAttribution {
     /// Raw `Per100K` fee rate as submitted on-chain.
     pub fn fee_per_100k(&self) -> U256 { num::fee_converter().to_unsigned(self.fee) }
 
-    /// Encodes the envelope to submit with a V2 order entrypoint.
+    /// Encodes the envelope to submit with a V2 order entrypoint, rejecting a
+    /// fee rate the contract's decoder would reject.
     ///
     /// Mirrors `OperationHandler::_decodeOrderExtension`:
     /// `abi.encode(uint16 version, bytes payload)` where the version-1 payload
     /// is `abi.encode(uint256 builderId, uint256 builderFeePer100K)`.
-    pub fn encode(&self) -> Bytes {
-        let payload = (U256::from(self.builder_id), self.fee_per_100k()).abi_encode_params();
-        (ORDER_EXTENSION_VERSION, Bytes::from(payload))
-            .abi_encode_params()
-            .into()
-    }
-
-    /// Encodes the envelope, rejecting a fee rate the contract's decoder would
-    /// reject.
     ///
     /// The contract *reverts* on an out-of-range fee on the single-order path
     /// and skips the order (emitting `OrderExtensionRejected`) on the batched
-    /// and forwarded paths, so validating before submission is always
-    /// preferable.
-    pub fn try_encode(&self) -> Result<Bytes, OrderExtensionError> {
+    /// and forwarded paths, so an envelope is never worth building without the
+    /// range check.
+    pub fn encode(&self) -> Result<Bytes, OrderExtensionError> {
         let fee_per_100k = self.fee_per_100k();
         if fee_per_100k > U256::from(MAX_BUILDER_FEE_PER_100K) {
             return Err(OrderExtensionError::FeeExceedsMaximum(fee_per_100k));
         }
-        Ok(self.encode())
+        let payload = (U256::from(self.builder_id), fee_per_100k).abi_encode_params();
+        Ok((ORDER_EXTENSION_VERSION, Bytes::from(payload))
+            .abi_encode_params()
+            .into())
     }
 
     /// Decodes the envelope emitted with `OrderRequestV2`.
@@ -169,7 +164,7 @@ mod tests {
     #[test]
     fn builder_attribution_envelope_round_trip() {
         let attribution = BuilderAttribution::new(7, udec64!(0.001));
-        let encoded = attribution.try_encode().expect("fee within range");
+        let encoded = attribution.encode().expect("fee within range");
 
         // A version-1 envelope is exactly 160 bytes: version word, payload
         // offset, payload length, and the two payload words.
@@ -188,12 +183,17 @@ mod tests {
     fn rejects_out_of_range_fee() {
         // 11% - above the contract's 10% per-order cap.
         let attribution = BuilderAttribution::new(1, udec64!(0.11));
-        assert!(
-            matches!(attribution.try_encode(), Err(OrderExtensionError::FeeExceedsMaximum(_)),)
-        );
-        // ...and the same envelope is rejected on the way back in.
+        assert!(matches!(attribution.encode(), Err(OrderExtensionError::FeeExceedsMaximum(_)),));
+
+        // ...and so is such an envelope on the way back in. It cannot be built
+        // with `encode`, only received from a third-party submitter, so it is
+        // hand-rolled here.
+        let payload = (U256::from(1), U256::from(11_000)).abi_encode_params();
+        let envelope: Bytes = (ORDER_EXTENSION_VERSION, Bytes::from(payload))
+            .abi_encode_params()
+            .into();
         assert!(matches!(
-            BuilderAttribution::decode(&attribution.encode()),
+            BuilderAttribution::decode(&envelope),
             Err(OrderExtensionError::FeeExceedsMaximum(_)),
         ));
     }

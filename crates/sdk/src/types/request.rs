@@ -169,7 +169,7 @@ impl OrderRequest {
                         exchange.features(),
                     ));
                 }
-                builder.try_encode()?
+                builder.encode()?
             },
         };
         Ok((
@@ -187,7 +187,7 @@ impl OrderRequest {
     /// attribution.
     pub fn to_order_extension(&self) -> Result<Bytes, OrderExtensionError> {
         self.builder
-            .map(|builder| builder.try_encode())
+            .map(|builder| builder.encode())
             .transpose()
             .map(Option::unwrap_or_default)
     }

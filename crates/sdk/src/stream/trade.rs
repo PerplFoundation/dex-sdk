@@ -474,7 +474,9 @@ mod tests {
             amountCNS: U256::ZERO,
             maxNegPnlCollatBPS: U256::ZERO,
             gasLeft: U256::ZERO,
-            extension: builder.map(|b| b.encode()).unwrap_or_default(),
+            extension: builder
+                .map(|b| b.encode().expect("fee within range"))
+                .unwrap_or_default(),
         })
     }
 
