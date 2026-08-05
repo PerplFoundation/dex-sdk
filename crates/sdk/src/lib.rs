@@ -64,6 +64,7 @@ pub struct Chain {
     deployed_at_block: u64,
     exchange: Address,
     perpetuals: Vec<types::PerpetualId>,
+    excluded_perpetuals: Vec<types::PerpetualId>,
 }
 
 impl Chain {
@@ -74,6 +75,7 @@ impl Chain {
             deployed_at_block: 54773010,
             exchange: address!("0x34B6552d57a35a1D042CcAe1951BD1C370112a6F"),
             perpetuals: vec![],
+            excluded_perpetuals: vec![30],
         }
     }
 
@@ -84,6 +86,7 @@ impl Chain {
             deployed_at_block: 62953,
             exchange: address!("0x1964C32f0bE608E7D29302AFF5E61268E72080cc"),
             perpetuals: vec![],
+            excluded_perpetuals: vec![],
         }
     }
 
@@ -99,7 +102,14 @@ impl Chain {
         exchange: Address,
         perpetuals: Vec<types::PerpetualId>,
     ) -> Self {
-        Self { chain_id, collateral_token, deployed_at_block, exchange, perpetuals }
+        Self {
+            chain_id,
+            collateral_token,
+            deployed_at_block,
+            exchange,
+            perpetuals,
+            excluded_perpetuals: vec![],
+        }
     }
 
     pub fn chain_id(&self) -> u64 { self.chain_id }
@@ -122,6 +132,24 @@ impl Chain {
     /// Same chain, tracking only the given subset of perpetual contracts.
     pub fn with_perpetuals(mut self, perpetuals: Vec<types::PerpetualId>) -> Self {
         self.perpetuals = perpetuals;
+        self
+    }
+
+    /// Perpetual contracts to leave out of on-chain discovery.
+    ///
+    /// Applies to discovery *only*: an explicitly configured
+    /// [`Chain::perpetuals`] list is taken as given, exclusions and all, since
+    /// naming a contract is a clearer statement of intent than the default set
+    /// it would otherwise be filtered out of.
+    pub fn excluded_perpetuals(&self) -> &[types::PerpetualId] { &self.excluded_perpetuals }
+
+    /// Same chain, skipping the given perpetual contracts when discovering the
+    /// set to track - see [`Chain::excluded_perpetuals`].
+    ///
+    /// Replaces the chain's default exclusions rather than adding to them, so
+    /// passing an empty list discovers everything the exchange lists.
+    pub fn with_excluded_perpetuals(mut self, perpetuals: Vec<types::PerpetualId>) -> Self {
+        self.excluded_perpetuals = perpetuals;
         self
     }
 }

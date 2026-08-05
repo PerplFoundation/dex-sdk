@@ -54,7 +54,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         chain.deployed_at_block(),
         cli.exchange.unwrap_or(chain.exchange()),
         cli.perp.clone(),
-    );
+    )
+    // Carried over: `custom` starts with no exclusions, but the base chain's
+    // apply just as much to a custom exchange address on the same network
+    .with_excluded_perpetuals(chain.excluded_perpetuals().to_vec());
 
     if !cli.perp.is_empty() {
         let listed = perpl_sdk::state::listed_perpetuals(
@@ -65,6 +68,14 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         .await
         .context("discovering listed perpetuals")?;
         if let Some(unknown_perp) = cli.perp.iter().find(|perp_id| !listed.contains(perp_id)) {
+            // Discovery leaves the chain's excluded contracts out, so say which
+            // of the two it is
+            if chain.excluded_perpetuals().contains(unknown_perp) {
+                return Err(anyhow::anyhow!(
+                    "perpetual ID {} is excluded from indexing for this chain",
+                    unknown_perp,
+                ));
+            }
             return Err(anyhow::anyhow!(
                 "unknown perpetual ID: {}, listed: {:?}",
                 unknown_perp,

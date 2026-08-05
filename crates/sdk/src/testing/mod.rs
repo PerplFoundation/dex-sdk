@@ -257,13 +257,13 @@ impl TestExchange {
     }
 
     pub fn chain(&self) -> Chain {
-        Chain {
-            chain_id: self.chain_id,
-            collateral_token: *self.token.address(),
-            deployed_at_block: 0,
-            exchange: *self.exchange.address(),
-            perpetuals: self.perpetual_ids.iter().map(|p| *p).collect(),
-        }
+        Chain::custom(
+            self.chain_id,
+            *self.token.address(),
+            0,
+            *self.exchange.address(),
+            self.perpetual_ids.iter().map(|p| *p).collect(),
+        )
     }
 
     /// Same chain with no perpetual contracts configured, so clients discover

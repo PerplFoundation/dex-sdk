@@ -114,6 +114,19 @@ async fn test_sc_v1174() {
     discovered_ids.sort();
     assert_eq!(discovered_ids, vec![btc_perp.id, eth_perp.id]);
 
+    // ...less any the chain excludes, for contracts that are listed but not
+    // worth indexing
+    let filtered = SnapshotBuilder::new(
+        &exchange
+            .chain_with_perpetual_discovery()
+            .with_excluded_perpetuals(vec![eth_perp.id]),
+        exchange.provider.clone(),
+    )
+    .build()
+    .await
+    .unwrap();
+    assert_eq!(filtered.perpetuals().keys().copied().collect::<Vec<_>>(), vec![btc_perp.id]);
+
     // The exchange-wide default schedule, tier by tier...
     let default_schedule = discovered.default_fee_schedule();
     assert_eq!(default_schedule.key(), state::FeeScheduleKey::Default);
@@ -320,7 +333,7 @@ async fn test_sc_v1174() {
 /// surfaces the skip as an order error against the request that carried it.
 ///
 /// The SDK never *produces* such an envelope -
-/// [`BuilderAttribution::try_encode`] rejects out-of-range attribution up front
+/// [`BuilderAttribution::encode`] rejects out-of-range attribution up front
 /// - so the envelope here is hand-rolled with an unsupported version tag, the
 /// way a third-party submitter could.
 #[tokio::test]

@@ -66,8 +66,13 @@ async fn test_all_positions_snapshot_and_updates() {
     assert!(!features.builder_attribution());
     assert!(!features.perpetual_discovery());
 
-    // Perpetuals were still found, by probing the ID space
+    // Perpetuals were still found, by probing the ID space, less the ones the
+    // chain excludes - which the probe must skip rather than filter afterwards,
+    // since probing them is itself part of what they cost
     assert!(!exchange.perpetuals().is_empty(), "no perpetuals discovered");
+    for excluded in chain.excluded_perpetuals() {
+        assert!(!exchange.perpetuals().contains_key(excluded), "perp {excluded} was excluded");
+    }
     for (perp_id, perp) in exchange.perpetuals() {
         assert!(!perp.name().is_empty(), "perp {perp_id} has empty name");
         assert!(!perp.symbol().is_empty(), "perp {perp_id} has empty symbol");

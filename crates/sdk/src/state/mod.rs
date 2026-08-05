@@ -170,9 +170,14 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         // Resolve the set of perpetuals to track, discovering it on-chain when
         // it was not configured explicitly
         if self.perpetuals.is_empty() {
-            self.perpetuals =
-                discover_perpetuals(&self.instance, &self.provider, self.block_id, features)
-                    .await?;
+            self.perpetuals = discover_perpetuals(
+                &self.instance,
+                &self.provider,
+                self.block_id,
+                features,
+                self.chain.excluded_perpetuals(),
+            )
+            .await?;
             // An unversioned contract could not be probed for the V2 getters
             // without a perpetual to probe against; now there is one
             if let Some(perp_id) = self.perpetuals.first().copied() {
@@ -828,10 +833,18 @@ pub async fn listed_perpetuals<P: Provider + Clone>(
 ) -> Result<Vec<types::PerpetualId>, DexError> {
     let instance = dex::Exchange::new(chain.exchange(), provider.clone());
     let features = ContractFeatures::probe(&instance, block_id, None).await;
-    discover_perpetuals(&instance, &provider, block_id, features).await
+    discover_perpetuals(
+        &instance,
+        &provider,
+        block_id,
+        features,
+        chain.excluded_perpetuals(),
+    )
+    .await
 }
 
-/// Returns the IDs of every perpetual listed on the exchange.
+/// Returns the IDs of every perpetual listed on the exchange, less the ones
+/// [`Chain::excluded_perpetuals`] leaves out.
 ///
 /// Reads the existence bitmap on v1.1.7.4+, a single call covering the whole
 /// `0..=`[`types::MAX_PERPETUAL_ID`] ID space. Older deployments have no
@@ -843,6 +856,7 @@ async fn discover_perpetuals<P: Provider + Clone>(
     provider: &P,
     block_id: BlockId,
     features: ContractFeatures,
+    excluded: &[types::PerpetualId],
 ) -> Result<Vec<types::PerpetualId>, DexError> {
     if features.perpetual_discovery() {
         let bitmap = instance
@@ -860,10 +874,12 @@ async fn discover_perpetuals<P: Provider + Clone>(
                     (bits.bit(bit) && perp_id <= types::MAX_PERPETUAL_ID).then_some(perp_id)
                 })
             })
+            .filter(|perp_id| !excluded.contains(perp_id))
             .collect());
     }
 
     let probe_batch_futs = (0..=types::MAX_PERPETUAL_ID)
+        .filter(|perp_id| !excluded.contains(perp_id))
         .chunks(PERPETUAL_PROBES_PER_BATCH)
         .into_iter()
         .map(|chunk| {
