@@ -178,8 +178,11 @@ async fn test_full_book_snapshot() {
     assert_eq!(perp.name(), "BTC".to_string());
     assert_eq!(perp.symbol(), "BTC".to_string());
     assert_eq!(perp.is_paused(), false);
-    assert_eq!(perp.maker_fee(), udec64!(0.00010));
-    assert_eq!(perp.taker_fee(), udec64!(0.00035));
+    // Base (tier 0) rates of the exchange-wide default schedule, seeded at
+    // deployment by `Exchange::_seedDefaultFeeSchedule` - a listing does not set
+    // its own fees
+    assert_eq!(perp.maker_fee(), udec64!(0.00009));
+    assert_eq!(perp.taker_fee(), udec64!(0.00069));
     assert_eq!(perp.initial_margin(), udec64!(10));
     assert_eq!(perp.maintenance_margin(), udec64!(20));
     assert_eq!(perp.last_price(), udec64!(99900));

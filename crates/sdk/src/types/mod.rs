@@ -1,4 +1,5 @@
 mod event;
+mod extension;
 mod order;
 mod request;
 mod trade;
@@ -8,6 +9,7 @@ use std::{fmt::Display, str::FromStr};
 use alloy::primitives::Address;
 use chrono::{DateTime, Utc};
 pub use event::*;
+pub use extension::*;
 pub use order::{OrderSide, OrderType};
 pub use request::{OrderRequest, RequestType};
 pub use trade::*;
@@ -15,8 +17,19 @@ pub use trade::*;
 /// ID of perpetual contract.
 pub type PerpetualId = u32;
 
+/// Highest perpetual contract ID the exchange supports
+/// (`C._MAX_CONTRACT_ID`), so the ID space is `0..=MAX_PERPETUAL_ID`.
+pub const MAX_PERPETUAL_ID: PerpetualId = 1020;
+
 /// ID of exchange account.
 pub type AccountId = u32;
+
+/// Fee tier of an exchange account, indexing a [`crate::state::FeeSchedule`].
+/// Tier 0 is the base rate.
+pub type FeeTier = u8;
+
+/// Builder code attributed to an order. Zero means no builder.
+pub type BuilderId = u8;
 
 /// Account address or ID.
 #[derive(Clone, Copy, Debug)]

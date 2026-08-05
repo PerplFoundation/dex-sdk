@@ -1397,6 +1397,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidOrderExtensionVersion",
+    "inputs": [
+      {
+        "name": "version",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidOrderId",
     "inputs": [
       {
@@ -1865,6 +1876,22 @@
   },
   {
     "type": "error",
+    "name": "OrderExtensionsLengthMismatch",
+    "inputs": [
+      {
+        "name": "ordersLength",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "extensionsLength",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "OrderIdIsNotAtSpecifiedPriceLevel",
     "inputs": [
       {
@@ -2015,6 +2042,22 @@
       },
       {
         "name": "maximum",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PerpIdListIncomplete",
+    "inputs": [
+      {
+        "name": "provided",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "expected",
         "type": "uint256",
         "internalType": "uint256"
       }

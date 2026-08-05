@@ -81,6 +81,10 @@ pub(crate) async fn render<P: Provider + Clone>(
                                     trade.total_size().to_string().green().to_string()
                                 },
                                 fees: trade.taker_fee,
+                                builder: builder_details(
+                                    trade.taker_builder,
+                                    trade.taker_builder_fee,
+                                ),
                             })
                         } else if let Some((avg_price, size, fees)) =
                             trade.maker_total(account.id())
@@ -106,6 +110,19 @@ pub(crate) async fn render<P: Provider + Clone>(
                                     size.to_string().green().to_string()
                                 },
                                 fees,
+                                builder: builder_details(
+                                    trade
+                                        .maker_fills
+                                        .iter()
+                                        .find(|f| f.maker_account_id == account.id())
+                                        .and_then(|f| f.builder),
+                                    trade
+                                        .maker_fills
+                                        .iter()
+                                        .filter(|f| f.maker_account_id == account.id())
+                                        .map(|f| f.builder_fee)
+                                        .sum(),
+                                ),
                             })
                         };
                         while perp_trades.len() > num_trades {
@@ -189,4 +206,14 @@ struct TradeDetails {
     size: String,
     #[tabled(rename = "Fees")]
     fees: UD64,
+    #[tabled(rename = "Builder")]
+    builder: String,
+}
+
+/// Renders the builder attribution of a fill and the fee it earned, `-` without
+/// a builder.
+fn builder_details(builder: Option<types::BuilderAttribution>, builder_fee: UD64) -> String {
+    builder
+        .map(|b| format!("#{}: {}", b.builder_id(), builder_fee))
+        .unwrap_or("-".to_string())
 }

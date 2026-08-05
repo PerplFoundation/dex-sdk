@@ -46,21 +46,32 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     client.set_poll_interval(Duration::from_millis(100));
     let provider = ProviderBuilder::new().connect_client(client);
 
-    if let Some(unknown_perp) = cli
-        .perp
-        .iter()
-        .find(|perp_id| !chain.perpetuals().contains(perp_id))
-    {
-        return Err(anyhow::anyhow!("unknown perpetual ID: {}", unknown_perp));
-    }
-
+    // An empty perpetual list makes the SDK track every contract listed on the
+    // exchange, discovered on-chain
     let chain = Chain::custom(
         provider.get_chain_id().await?,
         chain.collateral_token(),
         chain.deployed_at_block(),
         cli.exchange.unwrap_or(chain.exchange()),
-        if !cli.perp.is_empty() { cli.perp.clone() } else { chain.perpetuals().to_vec() },
+        cli.perp.clone(),
     );
+
+    if !cli.perp.is_empty() {
+        let listed = perpl_sdk::state::listed_perpetuals(
+            &chain,
+            provider.clone(),
+            cli.block.map(BlockId::number).unwrap_or(BlockId::safe()),
+        )
+        .await
+        .context("discovering listed perpetuals")?;
+        if let Some(unknown_perp) = cli.perp.iter().find(|perp_id| !listed.contains(perp_id)) {
+            return Err(anyhow::anyhow!(
+                "unknown perpetual ID: {}, listed: {:?}",
+                unknown_perp,
+                listed,
+            ));
+        }
+    }
 
     let mut builder = SnapshotBuilder::new(&chain, provider.clone());
     if let Some(block) = cli.block {

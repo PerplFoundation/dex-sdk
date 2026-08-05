@@ -4,7 +4,6 @@ use fastnum::{D64, D256, UD64, UD128};
 use super::*;
 use crate::{abi::dex::Exchange::PerpetualInfoV2, types};
 
-const FEE_SCALE: u8 = 5;
 const FUNDING_RATE_SCALE: u8 = 5;
 const LEVERAGE_SCALE: u8 = 2;
 
@@ -30,10 +29,7 @@ pub struct Perpetual {
     #[debug("{base_price}")]
     base_price: UD64, // SC allocates 32 bits
 
-    #[debug("{maker_fee}")]
-    maker_fee: UD64, // SC allocates 16 bits
-    #[debug("{taker_fee}")]
-    taker_fee: UD64, // SC allocates 16 bits
+    fee_schedule: FeeSchedule,
     #[debug("{initial_margin}")]
     initial_margin: UD64, // SC allocates 16 bits
     #[debug("{maintenance_margin}")]
@@ -79,15 +75,14 @@ impl Perpetual {
         instant: types::StateInstant,
         id: types::PerpetualId,
         info: &PerpetualInfoV2,
-        maker_fee: U256,
-        taker_fee: U256,
+        fee_schedule: FeeSchedule,
         initial_margin: U256,
         maintenance_margin: U256,
     ) -> Self {
         let price_converter = num::Converter::new(info.priceDecimals.to());
         let size_converter = num::Converter::new(info.lotDecimals.to());
         let leverage_converter = num::Converter::new(LEVERAGE_SCALE);
-        let fee_converter = num::Converter::new(FEE_SCALE);
+        let fee_converter = num::fee_converter();
         let funding_rate_converter = num::Converter::new(FUNDING_RATE_SCALE);
         // Funding sum converter applies to PNS funding payments/sums, combines scaling
         // exponent and price decimals
@@ -110,8 +105,7 @@ impl Perpetual {
             funding_sum_converter,
             base_price: price_converter.from_unsigned(info.basePricePNS),
 
-            maker_fee: fee_converter.from_unsigned(maker_fee), // Fees are per 100K
-            taker_fee: fee_converter.from_unsigned(taker_fee), // Fees are per 100K
+            fee_schedule,
             // Margins are in hundredths
             initial_margin: leverage_converter.from_unsigned(initial_margin),
             // Margins are in hundredths
@@ -156,15 +150,14 @@ impl Perpetual {
         price_decimals: u8,
         size_decimals: u8,
         base_price: U256,
-        maker_fee: U256,
-        taker_fee: U256,
+        fee_schedule: FeeSchedule,
         initial_margin: U256,
         maintenance_margin: U256,
     ) -> Self {
         let price_converter = num::Converter::new(price_decimals);
         let size_converter = num::Converter::new(size_decimals);
         let leverage_converter = num::Converter::new(LEVERAGE_SCALE);
-        let fee_converter = num::Converter::new(FEE_SCALE);
+        let fee_converter = num::fee_converter();
         let funding_rate_converter = num::Converter::new(FUNDING_RATE_SCALE);
         // Funding sum scaling exp is configured separately via
         // `setFundingSumScalingExp` and starts at 0 until that event arrives
@@ -185,8 +178,7 @@ impl Perpetual {
             funding_sum_converter,
             base_price: price_converter.from_unsigned(base_price),
 
-            maker_fee: fee_converter.from_unsigned(maker_fee), // Fees are per 100K
-            taker_fee: fee_converter.from_unsigned(taker_fee), // Fees are per 100K
+            fee_schedule,
             // Margins are in hundredths
             initial_margin: leverage_converter.from_unsigned(initial_margin),
             // Margins are in hundredths
@@ -261,11 +253,34 @@ impl Perpetual {
     /// sums/payments are originaly in price numeric system.
     pub fn funding_sum_converter(&self) -> num::Converter { self.funding_sum_converter }
 
-    /// Maker fee, gets collected only on position opening/increasing.
-    pub fn maker_fee(&self) -> UD64 { self.maker_fee }
+    /// Fee schedule the contract resolves its fees from: a `(taker, maker)` fee
+    /// pair per account fee tier, plus the key identifying whether the schedule
+    /// is shared with other contracts.
+    pub fn fee_schedule(&self) -> FeeSchedule { self.fee_schedule }
 
-    /// Taker fee, gets collected only on position opening/increasing.
-    pub fn taker_fee(&self) -> UD64 { self.taker_fee }
+    /// Base (fee tier 0) maker fee, gets collected only on position
+    /// opening/increasing.
+    ///
+    /// Use [`Self::maker_fee_for_tier`] with an account's
+    /// [`Account::fee_tier`] for the rate that account is actually charged.
+    pub fn maker_fee(&self) -> UD64 { self.fee_schedule.base_maker_fee() }
+
+    /// Base (fee tier 0) taker fee, gets collected only on position
+    /// opening/increasing.
+    ///
+    /// Use [`Self::taker_fee_for_tier`] with an account's
+    /// [`Account::fee_tier`] for the rate that account is actually charged.
+    pub fn taker_fee(&self) -> UD64 { self.fee_schedule.base_taker_fee() }
+
+    /// Maker fee charged to an account of the given fee tier.
+    pub fn maker_fee_for_tier(&self, tier: types::FeeTier) -> UD64 {
+        self.fee_schedule.maker_fee(tier)
+    }
+
+    /// Taker fee charged to an account of the given fee tier.
+    pub fn taker_fee_for_tier(&self, tier: types::FeeTier) -> UD64 {
+        self.fee_schedule.taker_fee(tier)
+    }
 
     /// Minimal initial margin fraction required to open a position.
     pub fn initial_margin(&self) -> UD64 { self.initial_margin }
@@ -421,7 +436,9 @@ impl Perpetual {
             .is_some_and(|fe| fe == instant.block_number())
         {
             let rate = self.next_funding_rate.unwrap_or(self.prev_funding_rate);
-            self.next_funding_payment.take().map(|payment| (rate, payment))
+            self.next_funding_payment
+                .take()
+                .map(|payment| (rate, payment))
         } else {
             None
         }
@@ -503,13 +520,34 @@ impl Perpetual {
         }
     }
 
-    pub(crate) fn update_maker_fee(&mut self, instant: types::StateInstant, maker_fee: UD64) {
-        self.maker_fee = maker_fee;
+    pub(crate) fn update_fee_schedule(
+        &mut self,
+        instant: types::StateInstant,
+        fee_schedule: FeeSchedule,
+    ) {
+        self.fee_schedule = fee_schedule;
         self.instant = instant;
     }
 
-    pub(crate) fn update_taker_fee(&mut self, instant: types::StateInstant, taker_fee: UD64) {
-        self.taker_fee = taker_fee;
+    /// Repoints the contract at another schedule, keeping the rates when the
+    /// new key is the contract's own custom schedule - `PerpFeeScheduleSet`
+    /// carries the values in that case and follows in the same transaction.
+    pub(crate) fn update_fee_schedule_key(
+        &mut self,
+        instant: types::StateInstant,
+        key: FeeScheduleKey,
+    ) {
+        self.fee_schedule = self.fee_schedule.with_key(key);
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_base_maker_fee(&mut self, instant: types::StateInstant, maker_fee: UD64) {
+        self.fee_schedule = self.fee_schedule.with_base_maker_fee(maker_fee);
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_base_taker_fee(&mut self, instant: types::StateInstant, taker_fee: UD64) {
+        self.fee_schedule = self.fee_schedule.with_base_taker_fee(taker_fee);
         self.instant = instant;
     }
 
@@ -636,12 +674,11 @@ impl Perpetual {
             price_converter: num::Converter::new(0),
             size_converter: num::Converter::new(0),
             leverage_converter: num::Converter::new(2),
-            fee_converter: num::Converter::new(5),
+            fee_converter: num::fee_converter(),
             funding_rate_converter: num::Converter::new(5),
             funding_sum_converter: num::Converter::new(0),
             base_price: UD64::ZERO,
-            maker_fee: UD64::ZERO,
-            taker_fee: UD64::ZERO,
+            fee_schedule: FeeSchedule::flat(FeeScheduleKey::Default, UD64::ZERO, UD64::ZERO),
             initial_margin: UD64::ZERO,
             maintenance_margin: UD64::ZERO,
             last_price: UD64::ZERO,
@@ -783,7 +820,7 @@ impl std::fmt::Display for Perpetual {
                 ),
             ],
             vec![
-                format!("Fees: {} / {} (mkr/tkr)", self.maker_fee, self.taker_fee),
+                format!("Fees: {} (tkr/mkr)", self.fee_schedule),
                 format!("Margin: {} / {} (ini/mnt)", self.initial_margin, self.maintenance_margin),
                 format!("Price Max Age: {}", self.price_max_age_sec),
                 format!("Funding Start: {}", self.funding_start_block),
@@ -803,7 +840,10 @@ impl std::fmt::Display for Perpetual {
             table,
         )?;
 
-        // Render order book in alternate mode
+        // Render the full fee schedule and order book in alternate mode
+        if f.alternate() {
+            writeln!(f, "    Fee tiers (tkr/mkr): {:#}", self.fee_schedule)?;
+        }
         if f.alternate() && self.l3_book().total_orders() > 0 {
             writeln!(f, "{:}", self.l3_book)?;
         }
@@ -920,16 +960,16 @@ mod tests {
         assert_eq!(orders, vec![oid(1), oid(2)], "Non-expired order should keep position");
     }
 
-    // ── Funding schedule: effective-dating, single-consumption, prev/next rate boundary ──
-    // These pin `take_funding_payment` / `update_funding` / `funding_rate`, which the fix's
-    // Pass-1 funding relies on. `for_testing` applies no converter, so scheduled values pass
-    // through unchanged.
+    // ── Funding schedule: effective-dating, single-consumption, prev/next rate
+    // boundary ── These pin `take_funding_payment` / `update_funding` /
+    // `funding_rate`, which the fix's Pass-1 funding relies on. `for_testing`
+    // applies no converter, so scheduled values pass through unchanged.
 
     #[test]
     fn perpetual_funding_effective_dated_consumed_once() {
         // take_funding_payment yields the scheduled (rate, payment) ONLY at the exact
-        // funding-event block, consumes it (cannot fire twice), and never auto-applies a block
-        // that was skipped.
+        // funding-event block, consumes it (cannot fire twice), and never auto-applies
+        // a block that was skipped.
         let mut perp = Perpetual::for_testing(1);
         perp.update_funding(types::StateInstant::new(1, 1), dec64!(0.02), dec256!(1.25), 3);
 
@@ -948,9 +988,9 @@ mod tests {
 
     #[test]
     fn perpetual_funding_rate_prev_next_boundary() {
-        // funding_rate() reads state_instant: prev while state_instant.block < the event block,
-        // next at/after it. state_instant advances only via update_state_instant (NOT
-        // update_funding / take_funding_payment).
+        // funding_rate() reads state_instant: prev while state_instant.block < the
+        // event block, next at/after it. state_instant advances only via
+        // update_state_instant (NOT update_funding / take_funding_payment).
         let mut perp = Perpetual::for_testing(2);
         perp.update_funding(types::StateInstant::new(1, 1), dec64!(0.02), dec256!(1.25), 3);
 
@@ -967,9 +1007,9 @@ mod tests {
 
     #[test]
     fn perpetual_update_funding_prev_rollover() {
-        // A second update_funding that supersedes an unconsumed schedule (older event block <
-        // new block) rolls the old next rate into prev — the only post-construction writer of
-        // prev_funding_rate.
+        // A second update_funding that supersedes an unconsumed schedule (older event
+        // block < new block) rolls the old next rate into prev — the only
+        // post-construction writer of prev_funding_rate.
         let mut perp = Perpetual::for_testing(3);
         perp.update_funding(types::StateInstant::new(1, 1), dec64!(0.02), dec256!(1.0), 3);
         perp.update_funding(types::StateInstant::new(2, 2), dec64!(0.03), dec256!(2.0), 5);
