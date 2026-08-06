@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use alloy::primitives::{I256, TxHash, U256};
-use fastnum::udec128;
+use fastnum::{UD64, udec128};
 
 use crate::{
     Chain,
@@ -10,7 +10,7 @@ use crate::{
         OrderPlaced, PositionClosed, PositionOpened, RecycleFeeToAccount,
     },
     num::Converter,
-    state::{Exchange, OrderContext, Perpetual},
+    state::{ContractFeatures, Exchange, FeeSchedule, FeeScheduleKey, OrderContext, Perpetual},
     stream::RawEvent,
     types::{
         self, OrderId, RequestId,
@@ -32,11 +32,14 @@ fn create_test_exchange() -> Exchange {
     Exchange::new(
         chain,
         instant,
+        ContractFeatures::current(),
         collateral_converter,
         100,
         udec128!(0.001),
         udec128!(0.001),
         udec128!(0.001),
+        FeeSchedule::flat(FeeScheduleKey::Default, UD64::ZERO, UD64::ZERO),
+        FeeSchedule::flat(FeeScheduleKey::RwaDefault, UD64::ZERO, UD64::ZERO),
         perpetuals,
         accounts,
         false,
@@ -63,6 +66,7 @@ fn create_test_order_context(
         post_only: false,
         fill_or_kill: false,
         immediate_or_cancel: false,
+        builder: None,
         maker_fills: vec![],
         clearing_remaining_order: false,
         position_closed_at_log_index: None,

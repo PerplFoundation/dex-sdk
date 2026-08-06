@@ -4,6 +4,14 @@ use fastnum::{
     decimal::{Context, Decimal, RoundingMode, UnsignedDecimal},
 };
 
+/// Scale of on-chain fee rates: the exchange expresses every fee rate in
+/// hundred-thousandths of the traded amount (`Per100K`, 1 = 0.1bps), exchange
+/// wide and independent of the perpetual contract.
+pub const FEE_SCALE: u8 = 5;
+
+/// Converter for fee rates, see [`FEE_SCALE`].
+pub fn fee_converter() -> Converter { Converter::new(FEE_SCALE) }
+
 /// Fixed-point to decimal converter.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Converter {

@@ -1,13 +1,13 @@
 use std::{collections::HashMap, num::NonZeroU16};
 
-use alloy::{primitives::U256, providers::Provider};
+use alloy::{eips::BlockId, primitives::U256, providers::Provider};
 use futures::{Stream, StreamExt};
 
 use crate::{
     Chain,
-    abi::dex::Exchange::{ExchangeEvents, ExchangeInstance, MakerOrderFilled},
+    abi::dex::Exchange::{ExchangeEvents, ExchangeInstance},
     error::DexError,
-    num, types,
+    num, state, types,
 };
 
 pub type TradeEvent = types::EventContext<types::Trade>;
@@ -16,9 +16,10 @@ pub type BlockTrades = types::BlockEvents<TradeEvent>;
 /// Returns stream of normalized trade events aggregated from the [`super::raw`]
 /// event stream, batched per block.
 ///
-/// Listens to `MakerOrderFilled` and `TakerOrderFilled` events, batches all
-/// maker fills per taker into unified `Trade` events, normalizes
-/// fixed-point values to decimals.
+/// Listens to `MakerOrderFilledV2` and `TakerOrderFilledV2` events (and their
+/// V1 predecessors when replaying pre-v1.1.7.4 history), batches all maker
+/// fills per taker into unified `Trade` events, normalizes fixed-point values
+/// to decimals and recovers builder attribution from the order requests.
 ///
 /// # Safety note
 ///
@@ -89,7 +90,7 @@ pub async fn trade<P>(
     raw_events: impl Stream<Item = Result<super::RawBlockEvents, DexError>>,
 ) -> Result<impl Stream<Item = Result<BlockTrades, DexError>>, DexError>
 where
-    P: Provider,
+    P: Provider + Clone,
 {
     // Fetch normalization config
     let config = NormalizationConfig::fetch(chain, &provider).await?;
@@ -123,6 +124,7 @@ struct OrderContext {
     account_id: types::AccountId,
     request_id: types::RequestId,
     side: types::OrderSide,
+    builder: Option<types::BuilderAttribution>,
 }
 
 /// Pending maker fill waiting for taker match.
@@ -133,9 +135,22 @@ struct PendingMakerFill {
     maker_account_id: types::AccountId,
     maker_order_id: types::OrderId,
     maker_client_order_id: Option<types::RequestId>,
+    maker_builder: Option<types::BuilderAttribution>,
     price: fastnum::UD64,
     size: fastnum::UD64,
     maker_fee: fastnum::UD64,
+    maker_builder_fee: fastnum::UD64,
+}
+
+/// Raw maker fill data, common to the V1 and V2 `MakerOrderFilled*` events.
+struct RawMakerFill {
+    perp_id: U256,
+    account_id: U256,
+    order_id: U256,
+    price_pns: U256,
+    lot_lns: U256,
+    fee_cns: U256,
+    builder_fee_cns: U256,
 }
 
 /// Trade processor - pure logic, no async.
@@ -144,9 +159,16 @@ pub struct TradeProcessor {
     order_context: Option<OrderContext>,
     // Entries are retained after orders close and overwritten on ID reuse, so this can
     // hold up to 65,535 entries per configured perpetual.
-    maker_client_order_ids: HashMap<(types::PerpetualId, types::OrderId), types::RequestId>,
+    maker_orders: HashMap<(types::PerpetualId, types::OrderId), PlacedOrder>,
     pending_maker_fills: Vec<PendingMakerFill>,
     prev_tx_index: Option<u64>,
+}
+
+/// Attribution of an order observed being placed, recovered at fill time.
+#[derive(Clone, Copy)]
+struct PlacedOrder {
+    client_order_id: types::RequestId,
+    builder: Option<types::BuilderAttribution>,
 }
 
 impl TradeProcessor {
@@ -155,7 +177,7 @@ impl TradeProcessor {
         Self {
             config,
             order_context: None,
-            maker_client_order_ids: HashMap::new(),
+            maker_orders: HashMap::new(),
             pending_maker_fills: Vec::new(),
             prev_tx_index: None,
         }
@@ -187,17 +209,22 @@ impl TradeProcessor {
     /// Process a single event, potentially emitting a trade.
     fn process_event(&mut self, event: &super::RawEvent) -> Option<TradeEvent> {
         match event.event() {
+            // V1 order/fill events are never emitted by contract v1.1.7.4+, but
+            // stay handled to keep historical replay working
             ExchangeEvents::OrderRequest(e) => {
-                let request_type: types::RequestType = e.orderType.into();
-                // Only track context for order types that can have fills
-                if let Some(side) = request_type.try_side() {
-                    self.order_context = Some(OrderContext {
-                        perpetual_id: e.perpId.to(),
-                        account_id: e.accountId.to(),
-                        request_id: e.orderDescId.to(),
-                        side,
-                    });
-                }
+                self.track_order_request(e.perpId, e.accountId, e.orderDescId, e.orderType, None);
+                None
+            },
+            ExchangeEvents::OrderRequestV2(e) => {
+                self.track_order_request(
+                    e.perpId,
+                    e.accountId,
+                    e.orderDescId,
+                    e.orderType,
+                    types::BuilderAttribution::decode(&e.extension)
+                        .ok()
+                        .flatten(),
+                );
                 None
             },
             ExchangeEvents::OrderBatchCompleted(_) => {
@@ -210,38 +237,97 @@ impl TradeProcessor {
                     && self.config.perpetuals.contains_key(&context.perpetual_id)
                     && let Some(order_id) = NonZeroU16::new(e.orderId.to())
                 {
-                    self.maker_client_order_ids
-                        .insert((context.perpetual_id, order_id), context.request_id);
+                    self.maker_orders.insert(
+                        (context.perpetual_id, order_id),
+                        PlacedOrder {
+                            client_order_id: context.request_id,
+                            builder: context.builder,
+                        },
+                    );
                 }
                 None
             },
             ExchangeEvents::MakerOrderFilled(e) => {
-                self.handle_maker_fill(event, e);
+                self.handle_maker_fill(
+                    event,
+                    RawMakerFill {
+                        perp_id: e.perpId,
+                        account_id: e.accountId,
+                        order_id: e.orderId,
+                        price_pns: e.pricePNS,
+                        lot_lns: e.lotLNS,
+                        fee_cns: e.feeCNS,
+                        builder_fee_cns: U256::ZERO,
+                    },
+                );
                 None
             },
-            ExchangeEvents::TakerOrderFilled(e) => self.handle_taker_fill(event, e),
+            ExchangeEvents::MakerOrderFilledV2(e) => {
+                self.handle_maker_fill(
+                    event,
+                    RawMakerFill {
+                        perp_id: e.perpId,
+                        account_id: e.accountId,
+                        order_id: e.orderId,
+                        price_pns: e.pricePNS,
+                        lot_lns: e.lotLNS,
+                        fee_cns: e.feeCNS,
+                        builder_fee_cns: e.builderFeeCNS,
+                    },
+                );
+                None
+            },
+            ExchangeEvents::TakerOrderFilled(e) => {
+                self.handle_taker_fill(event, e.feeCNS, U256::ZERO)
+            },
+            ExchangeEvents::TakerOrderFilledV2(e) => {
+                self.handle_taker_fill(event, e.feeCNS, e.builderFeeCNS)
+            },
             _ => None,
         }
     }
 
-    fn handle_maker_fill(&mut self, event: &super::RawEvent, e: &MakerOrderFilled) {
-        let perp_id: types::PerpetualId = e.perpId.to();
-        let maker_order_id = NonZeroU16::new(e.orderId.to()).expect("non-zero maker order ID");
+    fn track_order_request(
+        &mut self,
+        perp_id: U256,
+        account_id: U256,
+        request_id: U256,
+        order_type: u8,
+        builder: Option<types::BuilderAttribution>,
+    ) {
+        let request_type: types::RequestType = order_type.into();
+        // Only track context for order types that can have fills
+        if let Some(side) = request_type.try_side() {
+            self.order_context = Some(OrderContext {
+                perpetual_id: perp_id.to(),
+                account_id: account_id.to(),
+                request_id: request_id.to(),
+                side,
+                builder,
+            });
+        }
+    }
+
+    fn handle_maker_fill(&mut self, event: &super::RawEvent, fill: RawMakerFill) {
+        let perp_id: types::PerpetualId = fill.perp_id.to();
+        let maker_order_id = NonZeroU16::new(fill.order_id.to()).expect("non-zero maker order ID");
         if let Some(converters) = self.config.perpetuals.get(&perp_id) {
-            let maker_client_order_id = self
-                .maker_client_order_ids
-                .get(&(perp_id, maker_order_id))
-                .copied();
+            let maker_order = self.maker_orders.get(&(perp_id, maker_order_id)).copied();
             self.pending_maker_fills.push(PendingMakerFill {
                 tx_hash: event.tx_hash(),
                 log_index: event.log_index(),
                 perpetual_id: perp_id,
-                maker_account_id: e.accountId.to(),
+                maker_account_id: fill.account_id.to(),
                 maker_order_id,
-                maker_client_order_id,
-                price: converters.price_converter.from_unsigned(e.pricePNS),
-                size: converters.size_converter.from_unsigned(e.lotLNS),
-                maker_fee: self.config.collateral_converter.from_unsigned(e.feeCNS),
+                maker_client_order_id: maker_order.map(|o| o.client_order_id),
+                maker_builder: maker_order.and_then(|o| o.builder),
+                price: converters.price_converter.from_unsigned(fill.price_pns),
+                size: converters.size_converter.from_unsigned(fill.lot_lns),
+                maker_fee: self.config.collateral_converter.from_unsigned(fill.fee_cns),
+                maker_builder_fee: self
+                    .config
+                    .collateral_converter
+                    .from_unsigned(fill.builder_fee_cns),
             });
         }
     }
@@ -249,7 +335,8 @@ impl TradeProcessor {
     fn handle_taker_fill(
         &mut self,
         event: &super::RawEvent,
-        e: &crate::abi::dex::Exchange::TakerOrderFilled,
+        fee_cns: U256,
+        builder_fee_cns: U256,
     ) -> Option<TradeEvent> {
         let makers = std::mem::take(&mut self.pending_maker_fills);
         if makers.is_empty() {
@@ -276,7 +363,12 @@ impl TradeProcessor {
                 taker_account_id: ctx.account_id,
                 taker_request_id: ctx.request_id,
                 taker_side: ctx.side,
-                taker_fee: self.config.collateral_converter.from_unsigned(e.feeCNS),
+                taker_fee: self.config.collateral_converter.from_unsigned(fee_cns),
+                taker_builder: ctx.builder,
+                taker_builder_fee: self
+                    .config
+                    .collateral_converter
+                    .from_unsigned(builder_fee_cns),
                 maker_fills: makers
                     .into_iter()
                     .map(|m| types::MakerFill {
@@ -287,6 +379,8 @@ impl TradeProcessor {
                         price: m.price,
                         size: m.size,
                         fee: m.maker_fee,
+                        builder: m.maker_builder,
+                        builder_fee: m.maker_builder_fee,
                     })
                     .collect(),
             }),
@@ -296,7 +390,10 @@ impl TradeProcessor {
 
 impl NormalizationConfig {
     /// Fetch normalization config from the chain.
-    pub async fn fetch<P: Provider>(chain: &Chain, provider: &P) -> Result<Self, DexError> {
+    ///
+    /// Tracks every perpetual listed on the exchange unless the chain
+    /// configuration names a subset, see [`Chain::perpetuals`].
+    pub async fn fetch<P: Provider + Clone>(chain: &Chain, provider: &P) -> Result<Self, DexError> {
         let instance = ExchangeInstance::new(chain.exchange(), provider);
 
         // Fetch exchange info for collateral decimals
@@ -307,9 +404,15 @@ impl NormalizationConfig {
             .map_err(|err| DexError::Provider(err.into()))?;
         let collateral_converter = num::Converter::new(exchange_info.collateralDecimals.to());
 
+        let perpetual_ids = if chain.perpetuals().is_empty() {
+            state::listed_perpetuals(chain, provider.clone(), BlockId::latest()).await?
+        } else {
+            chain.perpetuals().to_vec()
+        };
+
         // Fetch perpetual info for each perpetual
         let mut perpetuals = HashMap::new();
-        for perp_id in chain.perpetuals() {
+        for perp_id in &perpetual_ids {
             let perp_info = instance
                 .getPerpetualInfo(U256::from(*perp_id))
                 .call()
@@ -336,12 +439,13 @@ mod tests {
         primitives::I256, providers::ProviderBuilder, rpc::client::RpcClient,
         transports::layers::RetryBackoffLayer,
     };
+    use fastnum::udec64;
     use futures::StreamExt;
 
     use super::*;
     use crate::{
         Chain,
-        abi::dex::Exchange::{OrderPlaced, OrderRequest, TakerOrderFilled},
+        abi::dex::Exchange::{MakerOrderFilledV2, OrderPlaced, OrderRequestV2, TakerOrderFilledV2},
         stream::RawEvent,
     };
 
@@ -350,8 +454,9 @@ mod tests {
         account_id: types::AccountId,
         request_id: types::RequestId,
         order_type: u8,
+        builder: Option<types::BuilderAttribution>,
     ) -> ExchangeEvents {
-        ExchangeEvents::OrderRequest(OrderRequest {
+        ExchangeEvents::OrderRequestV2(OrderRequestV2 {
             perpId: U256::from(perpetual_id),
             accountId: U256::from(account_id),
             orderDescId: U256::from(request_id),
@@ -369,6 +474,9 @@ mod tests {
             amountCNS: U256::ZERO,
             maxNegPnlCollatBPS: U256::ZERO,
             gasLeft: U256::ZERO,
+            extension: builder
+                .map(|b| b.encode().expect("fee within range"))
+                .unwrap_or_default(),
         })
     }
 
@@ -391,6 +499,7 @@ mod tests {
             account_id: 7,
             request_id: 42,
             side: types::OrderSide::Ask,
+            builder: None,
         });
         let event = RawEvent::empty(ExchangeEvents::OrderPlaced(OrderPlaced {
             orderId: U256::from(9),
@@ -402,11 +511,17 @@ mod tests {
 
         _ = processor.process_event(&event);
 
-        assert!(processor.maker_client_order_ids.is_empty());
+        assert!(processor.maker_orders.is_empty());
     }
 
-    #[test]
-    fn maker_fill_includes_observed_client_order_id() {
+    /// Drives a single maker-vs-taker match through the processor, attributing
+    /// each side to the given builder, and returns the resulting trade.
+    fn one_match_trade(
+        maker_builder: Option<types::BuilderAttribution>,
+        maker_builder_fee: u64,
+        taker_builder: Option<types::BuilderAttribution>,
+        taker_builder_fee: u64,
+    ) -> types::Trade {
         const PERPETUAL_ID: types::PerpetualId = 1;
         const MAKER_ACCOUNT_ID: types::AccountId = 7;
         const MAKER_CLIENT_ORDER_ID: types::RequestId = 42;
@@ -419,6 +534,7 @@ mod tests {
             MAKER_ACCOUNT_ID,
             MAKER_CLIENT_ORDER_ID,
             1,
+            maker_builder,
         )));
         _ = processor.process_event(&RawEvent::empty(ExchangeEvents::OrderPlaced(OrderPlaced {
             orderId: U256::from(MAKER_ORDER_ID),
@@ -432,38 +548,75 @@ mod tests {
             8,
             TAKER_REQUEST_ID,
             0,
+            taker_builder,
         )));
-        _ = processor.process_event(&RawEvent::empty(ExchangeEvents::MakerOrderFilled(
-            MakerOrderFilled {
+        _ = processor.process_event(&RawEvent::empty(ExchangeEvents::MakerOrderFilledV2(
+            MakerOrderFilledV2 {
                 perpId: U256::from(PERPETUAL_ID),
                 accountId: U256::from(MAKER_ACCOUNT_ID),
                 orderId: U256::from(MAKER_ORDER_ID),
                 pricePNS: U256::from(100),
                 lotLNS: U256::from(1),
-                feeCNS: U256::from(1),
+                feeCNS: U256::from(2),
                 lockedBalanceCNS: U256::ZERO,
                 amountCNS: I256::ZERO,
                 balanceCNS: U256::ZERO,
+                builderId: U256::from(maker_builder.map(|b| b.builder_id()).unwrap_or_default()),
+                builderFeeCNS: U256::from(maker_builder_fee),
             },
         )));
-        let trade = processor
-            .process_event(&RawEvent::empty(ExchangeEvents::TakerOrderFilled(TakerOrderFilled {
-                entryPricePNS: U256::from(100),
-                collatPricePNS: U256::from(100),
-                pnlPricePNS: U256::from(100),
-                lotLNS: U256::from(1),
-                feeCNS: U256::from(1),
-                amountCNS: I256::ZERO,
-                balanceCNS: U256::ZERO,
-            })))
-            .expect("trade exists");
-        let maker_fill = trade
+        processor
+            .process_event(&RawEvent::empty(ExchangeEvents::TakerOrderFilledV2(
+                TakerOrderFilledV2 {
+                    entryPricePNS: U256::from(100),
+                    collatPricePNS: U256::from(100),
+                    pnlPricePNS: U256::from(100),
+                    lotLNS: U256::from(1),
+                    feeCNS: U256::from(3),
+                    amountCNS: I256::ZERO,
+                    balanceCNS: U256::ZERO,
+                    builderId: U256::from(
+                        taker_builder.map(|b| b.builder_id()).unwrap_or_default(),
+                    ),
+                    builderFeeCNS: U256::from(taker_builder_fee),
+                },
+            )))
+            .expect("trade exists")
             .event()
-            .maker_fills
-            .first()
-            .expect("maker fill exists");
+            .clone()
+    }
 
-        assert_eq!(maker_fill.maker_client_order_id, Some(MAKER_CLIENT_ORDER_ID));
+    #[test]
+    fn maker_fill_includes_observed_client_order_id() {
+        let trade = one_match_trade(None, 0, None, 0);
+        let maker_fill = trade.maker_fills.first().expect("maker fill exists");
+
+        assert_eq!(maker_fill.maker_client_order_id, Some(42));
+        assert_eq!(maker_fill.builder, None);
+        assert_eq!(trade.total_builder_fees(), udec64!(0));
+    }
+
+    #[test]
+    fn builder_attribution_recovered_from_order_requests() {
+        let maker_builder = types::BuilderAttribution::new(3, udec64!(0.0005));
+        let taker_builder = types::BuilderAttribution::new(4, udec64!(0.001));
+        let trade = one_match_trade(Some(maker_builder), 1, Some(taker_builder), 2);
+
+        // Attribution rides on the request that placed each order...
+        let maker_fill = trade.maker_fills.first().expect("maker fill exists");
+        assert_eq!(maker_fill.builder, Some(maker_builder));
+        assert_eq!(trade.taker_builder, Some(taker_builder));
+
+        // ...while the fee earned comes from the fill events, and is part of the
+        // reported fee rather than additional to it.
+        assert_eq!(maker_fill.builder_fee, udec64!(1));
+        assert_eq!(trade.taker_builder_fee, udec64!(2));
+        assert_eq!(trade.total_builder_fees(), udec64!(3));
+        assert_eq!(trade.builder_total(3), udec64!(1));
+        assert_eq!(trade.builder_total(4), udec64!(2));
+        assert_eq!(trade.builder_total(5), udec64!(0));
+        assert!(maker_fill.builder_fee < maker_fill.fee);
+        assert!(trade.taker_builder_fee < trade.taker_fee);
     }
 
     #[tokio::test]

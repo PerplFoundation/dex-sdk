@@ -10,7 +10,7 @@ use alloy::{
 
 use crate::{
     abi::errors::Exchange::ExchangeErrors,
-    state::{OrderBookError, OrderParseError},
+    state::{ContractFeatures, FeeScheduleKey, OrderBookError, OrderParseError},
     types,
 };
 
@@ -52,29 +52,41 @@ pub enum ProviderError<R> {
 
 #[derive(Debug, thiserror::Error)]
 pub enum DexError {
-    #[error("provider error: {0}")]
-    Provider(#[from] ProviderError<ExchangeErrors>),
-
     #[error("block out of order, expected: {0}, got: {1}")]
     BlockOutOfOrder(u64, u64),
 
-    #[error("order context expected, tx: {0}, log: {1}")]
-    OrderContextExpected(u64, u64),
+    #[error("fee schedule not found: {0}")]
+    FeeScheduleNotFound(FeeScheduleKey),
 
-    #[error("order not found: {0}")]
-    OrderNotFound(types::PerpetualId, types::OrderId),
-
-    #[error("position not found, acc: {0}, perp: {1}")]
-    PositionNotFound(types::AccountId, types::PerpetualId),
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
 
     #[error("perp {0} order book error: {1}")]
     OrderBook(types::PerpetualId, OrderBookError),
 
+    #[error("order context expected, tx: {0}, log: {1}")]
+    OrderContextExpected(u64, u64),
+
+    #[error("order extension error: {0}")]
+    OrderExtension(#[from] types::OrderExtensionError),
+
+    #[error("order not found: {0}")]
+    OrderNotFound(types::PerpetualId, types::OrderId),
+
     #[error("perp {0} order parse error: {1}")]
     OrderParse(types::PerpetualId, OrderParseError),
 
-    #[error("invalid argument: {0}")]
-    InvalidArgument(String),
+    #[error("perpetual {0} is not tracked")]
+    PerpetualNotTracked(types::PerpetualId),
+
+    #[error("position not found, acc: {0}, perp: {1}")]
+    PositionNotFound(types::AccountId, types::PerpetualId),
+
+    #[error("provider error: {0}")]
+    Provider(#[from] ProviderError<ExchangeErrors>),
+
+    #[error("deployed exchange contract ({1}) does not support {0}")]
+    UnsupportedByContract(&'static str, ContractFeatures),
 }
 
 impl<R: SolInterface> From<contract::Error> for ProviderError<R> {
