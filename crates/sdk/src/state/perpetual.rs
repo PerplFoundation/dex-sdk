@@ -530,8 +530,8 @@ impl Perpetual {
     }
 
     /// Repoints the contract at another schedule, keeping the rates when the
-    /// new key is the contract's own custom schedule - `PerpFeeScheduleSet`
-    /// carries the values in that case and follows in the same transaction.
+    /// new key is the contract's own custom schedule - the `FeeScheduleSet`
+    /// under that id carries the values in that case.
     pub(crate) fn update_fee_schedule_key(
         &mut self,
         instant: types::StateInstant,

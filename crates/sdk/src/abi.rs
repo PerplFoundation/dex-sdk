@@ -43,6 +43,21 @@ pub mod dex_legacy {
         interface LegacyExchange {
             function setTakerFee(uint256 perpId, uint256 takerFeePer100K) external;
             function setMakerFee(uint256 perpId, uint256 makerFeePer100K) external;
+            // Pre-v1.1.7.4 `addContract`: carries two genesis-fee args the
+            // v1.1.7.4 signature dropped, so it is a distinct selector reachable
+            // only against the previous generation.
+            function addContract(
+                string name,
+                string symbol,
+                uint256 perpId,
+                uint256 basePricePNS,
+                uint256 priceDecimals,
+                uint256 lotDecimals,
+                uint256 takerFeePer100K,
+                uint256 makerFeePer100K,
+                uint256 initMarginFracHdths,
+                uint256 maintMarginFracHdths
+            ) external;
         }
     }
 }

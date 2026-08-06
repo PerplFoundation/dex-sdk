@@ -103,9 +103,9 @@ impl ContractFeatures {
     pub fn v2_state_getters(&self) -> bool { self.v2_state_getters }
 
     /// Keyed 8-tier fee schedules with per-account fee tiers are available
-    /// (`getPerpFeeSchedule`, `getFeeScheduleByKey`, `getAccountFeeTier` and
-    /// the `*FeeScheduleSet` / `PerpFeeKeySet` / `AccountFeeTierSet`
-    /// events).
+    /// (`getPerpFeeSchedule`, `getFeeScheduleById`, `getAccountFeeTier` and
+    /// the `FeeScheduleSet` / `DefaultPerpFeeScheduleSet` / `DefaultRwaFeeScheduleSet`
+    /// / `PerpFeeSchedIdSet` / `AccountFeeTierSet` events).
     pub fn keyed_fee_schedules(&self) -> bool { self.keyed_fee_schedules }
 
     /// Builder attribution is available (`execOrderV2` and friends,

@@ -14,7 +14,14 @@ mod account;
 mod indexer;
 mod perp;
 
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 pub use account::*;
 use alloy::{
@@ -70,6 +77,11 @@ pub struct TestExchange {
     pub collateral_converter: num::Converter,
     perpetual_ids: Arc<DashSet<types::PerpetualId>>,
     account_address: Arc<DashMap<types::AccountId, Address>>,
+    // True while the deployed generation predates v1.1.7.4 (set by
+    // `new_at_previous_version`, cleared by `upgrade`). That generation's
+    // `addContract` carries two extra genesis-fee args, so `perp` must reach it
+    // through the legacy interface; a v1.1.7.4 deployment uses the current one.
+    legacy: AtomicBool,
     anvil: AnvilInstance,
 }
 
@@ -130,6 +142,9 @@ impl TestExchange {
             .get_receipt()
             .await
             .unwrap();
+        // The proxy now runs the v1.1.7.4 implementation, whose `addContract`
+        // dropped the two genesis-fee args, so subsequent listings use it.
+        self.legacy.store(false, Ordering::Relaxed);
     }
 
     async fn deploy(implementation: Option<&str>) -> Self {
@@ -252,6 +267,9 @@ impl TestExchange {
             collateral_converter: num::Converter::new(USD_DECIMALS),
             perpetual_ids: Arc::new(DashSet::new()),
             account_address: Arc::new(DashMap::new()),
+            // A specific implementation is only ever requested by
+            // `new_at_previous_version`, so this marks the pre-upgrade generation.
+            legacy: AtomicBool::new(implementation.is_some()),
             anvil,
         }
     }
@@ -321,7 +339,7 @@ impl TestExchange {
     ) {
         let fee_converter = num::fee_converter();
         self.exchange
-            .setFeeSchedule(
+            .setDefaultPerpFeeSchedValues(
                 taker_fees.map(|fee| fee_converter.to_unsigned(fee)),
                 maker_fees.map(|fee| fee_converter.to_unsigned(fee)),
             )
@@ -343,7 +361,7 @@ impl TestExchange {
     ) {
         let fee_converter = num::fee_converter();
         self.exchange
-            .setRwaFeeSchedule(
+            .setDefaultRwaFeeSchedValues(
                 taker_fees.map(|fee| fee_converter.to_unsigned(fee)),
                 maker_fees.map(|fee| fee_converter.to_unsigned(fee)),
             )
@@ -400,7 +418,16 @@ impl TestExchange {
     ) -> TestPerp<'_> {
         let price_converter = num::Converter::new(price_decimals);
         let leverage_converter = num::Converter::new(2); // Margin and leverage are in 100th
-        self.exchange
+        if self.legacy.load(Ordering::Relaxed) {
+            // The pre-v1.1.7.4 generation's `addContract` still carries the two
+            // genesis-fee args (dropped in v1.1.7.4); reach it through the legacy
+            // interface so the selector matches the deployed contract. Genesis
+            // fees are seeded to zero and set separately via
+            // `TestPerp::with_legacy_fees`.
+            crate::abi::dex_legacy::LegacyExchange::new(
+                *self.exchange.address(),
+                self.provider.clone(),
+            )
             .addContract(
                 name.to_string(),
                 name.to_string(),
@@ -408,7 +435,6 @@ impl TestExchange {
                 price_converter.to_unsigned(base_price),
                 U256::from(price_decimals),
                 U256::from(size_decimals),
-                // Deprecated and ignored by the contract, see above
                 U256::ZERO,
                 U256::ZERO,
                 leverage_converter.to_unsigned(initial_margin),
@@ -421,6 +447,26 @@ impl TestExchange {
             .get_receipt()
             .await
             .unwrap();
+        } else {
+            self.exchange
+                .addContract(
+                    name.to_string(),
+                    name.to_string(),
+                    U256::from(perp_id),
+                    price_converter.to_unsigned(base_price),
+                    U256::from(price_decimals),
+                    U256::from(size_decimals),
+                    leverage_converter.to_unsigned(initial_margin),
+                    leverage_converter.to_unsigned(maintenance_margin),
+                )
+                .send()
+                .await
+                .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+                .unwrap()
+                .get_receipt()
+                .await
+                .unwrap();
+        }
         // Ignore oracle to eliminate ChainLink dependency
         self.exchange
             .setIgnOracle(U256::from(perp_id), true)

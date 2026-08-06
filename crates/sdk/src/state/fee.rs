@@ -19,26 +19,27 @@ use super::*;
 /// Number of fee tiers in a fee schedule.
 pub const FEE_TIERS: usize = 8;
 
-/// Raw key of the exchange-wide default schedule (`C._DEFAULT_FEE_KEY`).
+/// Raw id of the exchange-wide default schedule (`C._DEFAULT_PERP_FEE_SCHED_ID`).
 const DEFAULT_FEE_KEY: u32 = 1021;
 
-/// Raw key of the exchange-wide RWA default schedule
-/// (`C._DEFAULT_RWA_FEE_KEY`).
+/// Raw id of the exchange-wide RWA default schedule
+/// (`C._DEFAULT_RWA_FEE_SCHED_ID`).
 const DEFAULT_RWA_FEE_KEY: u32 = 1022;
 
 /// Selects the fee schedule a perpetual's fees are resolved from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FeeScheduleKey {
     /// Exchange-wide default schedule, shared by every perpetual that has not
-    /// been repointed. Kept up to date by `FeeScheduleSet`.
+    /// been repointed. Kept up to date by `DefaultPerpFeeScheduleSet`.
     Default,
 
     /// Exchange-wide default schedule for real-world assets. Kept up to date by
-    /// `RwaFeeScheduleSet`.
+    /// `DefaultRwaFeeScheduleSet`.
     RwaDefault,
 
     /// The perpetual's own custom schedule, keyed by its ID. Kept up to date by
-    /// `PerpFeeScheduleSet`.
+    /// `FeeScheduleSet` under the perpetual's own schedule id (the perpetual is
+    /// pointed at it by `PerpFeeSchedIdSet`).
     Custom(types::PerpetualId),
 }
 
@@ -161,7 +162,7 @@ impl FeeSchedule {
     pub fn maker_fees(&self) -> &[UD64; FEE_TIERS] { &self.maker_fees }
 
     /// Same rates under a different key, for a perpetual repointed by
-    /// `PerpFeeKeySet`.
+    /// `PerpFeeSchedIdSet`.
     pub(crate) fn with_key(&self, key: FeeScheduleKey) -> Self { Self { key, ..*self } }
 
     /// Overrides the base (tier 0) rates, leaving the discounted tiers intact.

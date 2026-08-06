@@ -10,15 +10,15 @@ use thiserror::Error;
 use crate::num;
 
 /// Envelope version tag understood by the contract's decoder
-/// (`OperationHandler::_ORDER_EXT_VERSION_1`).
+/// (`OrderExtensionLib._ORDER_EXT_VERSION_1`).
 pub const ORDER_EXTENSION_VERSION: u16 = 1;
 
 /// Hard byte cap the contract's decoder applies to a single envelope
-/// (`OperationHandler::_MAX_ORDER_EXT_BYTES`).
+/// (`OrderExtensionLib._MAX_ORDER_EXT_BYTES`).
 ///
 /// Exceeding it is a *structural* fault: it reverts the whole call on every
 /// path, including batched ones with `revertOnFail = false`.
-pub const MAX_ORDER_EXTENSION_BYTES: usize = 512;
+pub const MAX_ORDER_EXTENSION_BYTES: usize = 256;
 
 /// Highest per-order builder fee rate the contract accepts, in `Per100K`
 /// (`C._MAX_FEE`, i.e. 10%).
@@ -99,7 +99,7 @@ impl BuilderAttribution {
     /// Encodes the envelope to submit with a V2 order entrypoint, rejecting a
     /// fee rate the contract's decoder would reject.
     ///
-    /// Mirrors `OperationHandler::_decodeOrderExtension`:
+    /// Mirrors `OrderExtensionLib.decodeOrderExtension`:
     /// `abi.encode(uint16 version, bytes payload)` where the version-1 payload
     /// is `abi.encode(uint256 builderId, uint256 builderFeePer100K)`.
     ///

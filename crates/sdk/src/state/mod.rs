@@ -260,9 +260,9 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         }
         let fee_converter = num::fee_converter();
         let (default_call, rwa_call) = (
-            self.instance.getFeeSchedule().block(self.block_id),
+            self.instance.getDefaultPerpFeeSchedule().block(self.block_id),
             self.instance
-                .getFeeScheduleByKey(FeeScheduleKey::RwaDefault.to_raw())
+                .getFeeScheduleById(FeeScheduleKey::RwaDefault.to_raw())
                 .block(self.block_id),
         );
         let (default, rwa) =
@@ -303,7 +303,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                 .await
                 .map(|schedule| {
                     FeeSchedule::new(
-                        FeeScheduleKey::from_raw(schedule.key),
+                        FeeScheduleKey::from_raw(schedule.feeSchedId),
                         schedule.takerFeesPer100K,
                         schedule.makerFeesPer100K,
                         fee_converter,

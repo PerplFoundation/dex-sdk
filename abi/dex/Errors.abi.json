@@ -2265,27 +2265,6 @@
   },
   {
     "type": "error",
-    "name": "ProposedFeeExceedsMax",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "proposedFeePer100K",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "maxFeePer100K",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "ProposedFundingRateClampExceedsMax",
     "inputs": [
       {

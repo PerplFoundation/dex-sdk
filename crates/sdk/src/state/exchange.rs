@@ -645,9 +645,9 @@ impl Exchange {
             ExchangeEvents::ContractAddedV2(e) => {
                 // The listing reports the contract's fee schedule KEY, the rates
                 // being resolvable from it - a new contract is placed on the
-                // exchange-wide default schedule, and no `PerpFeeKeySet`
-                // accompanies the listing to report the key separately.
-                let key = FeeScheduleKey::from_raw(e.perpFeeKey);
+                // exchange-wide default schedule, and no `PerpFeeSchedIdSet`
+                // accompanies the listing to report the id separately.
+                let key = FeeScheduleKey::from_raw(e.perpFeeSchedId);
                 let fee_schedule = self.fee_schedule(key).ok_or(
                     // A custom schedule of a contract that does not exist yet has
                     // no rates to resolve; the contract documents that a listing
@@ -718,6 +718,24 @@ impl Exchange {
                 .collect(),
             ExchangeEvents::DcpBorrowThreshUpdated(_) => vec![],
             ExchangeEvents::DecreaseCollateralBeyondMarkPrice(_) => vec![],
+            ExchangeEvents::DefaultPerpFeeScheduleSet(e) => self.update_exchange_fee_schedule(
+                instant,
+                FeeSchedule::new(
+                    FeeScheduleKey::Default,
+                    e.takerFeesPer100K,
+                    e.makerFeesPer100K,
+                    num::fee_converter(),
+                ),
+            ),
+            ExchangeEvents::DefaultRwaFeeScheduleSet(e) => self.update_exchange_fee_schedule(
+                instant,
+                FeeSchedule::new(
+                    FeeScheduleKey::RwaDefault,
+                    e.takerFeesPer100K,
+                    e.makerFeesPer100K,
+                    num::fee_converter(),
+                ),
+            ),
             ExchangeEvents::DeleveragePositionListEmpty(_) => vec![],
             ExchangeEvents::ExceedsLastExecutionBlock(_) => self
                 .err_ctx(ctx, event)?
@@ -730,15 +748,36 @@ impl Exchange {
             },
             ExchangeEvents::ExchangeInitialized(_) => vec![],
             ExchangeEvents::FeeParamsUpdated(_) => vec![],
-            ExchangeEvents::FeeScheduleSet(e) => self.update_exchange_fee_schedule(
-                instant,
-                FeeSchedule::new(
-                    FeeScheduleKey::Default,
+            ExchangeEvents::FeeScheduleSet(e) => {
+                // `setFeeSchedValues(id, …)` reports a schedule's rates under its
+                // id. The exchange-wide defaults have their own events
+                // (`DefaultPerpFeeScheduleSet` / `DefaultRwaFeeScheduleSet`); a
+                // custom id is a perpetual's own schedule (keyed by its id), which
+                // a perpetual is pointed at by `PerpFeeSchedIdSet`.
+                let key = FeeScheduleKey::from_raw(e.feeSchedId);
+                let schedule = FeeSchedule::new(
+                    key,
                     e.takerFeesPer100K,
                     e.makerFeesPer100K,
                     num::fee_converter(),
-                ),
-            ),
+                );
+                match key {
+                    FeeScheduleKey::Custom(perp_id) => self
+                        .perpetual(U256::from(perp_id))
+                        .map(|perp| {
+                            perp.update_fee_schedule(instant, schedule);
+                            StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::FeeScheduleUpdated(perp.fee_schedule()),
+                            )
+                        })
+                        .into_iter()
+                        .collect(),
+                    // A default id would normally arrive via its own event; apply
+                    // it as the exchange-wide update it names.
+                    _ => self.update_exchange_fee_schedule(instant, schedule),
+                }
+            },
             ExchangeEvents::FundingClampPctUpdated(_) => vec![],
             ExchangeEvents::FundingEventCompleted(e) => {
                 if let Some(perp) = self.perpetual(e.perpId) {
@@ -1267,18 +1306,17 @@ impl Exchange {
             ExchangeEvents::OwnershipTransferStarted(_) => vec![],
             ExchangeEvents::OwnershipTransferred(_) => vec![],
             ExchangeEvents::PermissonedCancelParamsUpdated(_) => vec![],
-            ExchangeEvents::PerpFeeKeySet(e) => {
-                // Key-only repoint, so the rates come from the schedule now
+            ExchangeEvents::PerpFeeSchedIdSet(e) => {
+                // Id-only repoint, so the rates come from the schedule now
                 // pointed at.
                 //
                 // A repoint to the contract's own custom schedule is the one
-                // case where they do not: it is only ever emitted by
-                // `setPerpFeeSchedule`, whose `PerpFeeScheduleSet` carries the
-                // new rates and follows in the same transaction. Applying the
-                // key silently here leaves that event to report the change,
+                // case where they do not: the custom schedule's rates arrive in
+                // a `FeeScheduleSet` under that id, not on the repoint. Applying
+                // the id silently here leaves that event to report the change,
                 // rather than surfacing an intermediate schedule pairing the new
-                // key with the old rates - a state that never applies to a fill.
-                let key = FeeScheduleKey::from_raw(e.key);
+                // id with the old rates - a state that never applies to a fill.
+                let key = FeeScheduleKey::from_raw(e.feeSchedId);
                 let schedule = self
                     .fee_schedule(key)
                     .filter(|_| !matches!(key, FeeScheduleKey::Custom(_)));
@@ -1299,26 +1337,6 @@ impl Exchange {
                     .into_iter()
                     .collect()
             },
-            ExchangeEvents::PerpFeeScheduleSet(e) => self
-                .perpetual(e.perpId)
-                .map(|perp| {
-                    // A custom schedule is always keyed by the contract's own ID
-                    perp.update_fee_schedule(
-                        instant,
-                        FeeSchedule::new(
-                            FeeScheduleKey::Custom(perp.id()),
-                            e.takerFeesPer100K,
-                            e.makerFeesPer100K,
-                            num::fee_converter(),
-                        ),
-                    );
-                    StateEvents::perpetual(
-                        perp,
-                        PerpetualEventType::FeeScheduleUpdated(perp.fee_schedule()),
-                    )
-                })
-                .into_iter()
-                .collect(),
             ExchangeEvents::PerpPositionBalCreditPositiveSevere(_) => vec![],
             ExchangeEvents::PositionAdministratorUpdated(_) => vec![],
             ExchangeEvents::PositionClosed(e) => {
@@ -1987,15 +2005,6 @@ impl Exchange {
             ExchangeEvents::ReportPriceIsNegative(_) => vec![],
             ExchangeEvents::ResidueBalanceInsufficient(_) => vec![],
             ExchangeEvents::ResidueTransferred(_) => vec![],
-            ExchangeEvents::RwaFeeScheduleSet(e) => self.update_exchange_fee_schedule(
-                instant,
-                FeeSchedule::new(
-                    FeeScheduleKey::RwaDefault,
-                    e.takerFeesPer100K,
-                    e.makerFeesPer100K,
-                    num::fee_converter(),
-                ),
-            ),
             // Deprecated in v1.1.7.4, replayed from earlier history only
             ExchangeEvents::TakerFeeUpdated(e) => self
                 .perpetual(e.perpId)

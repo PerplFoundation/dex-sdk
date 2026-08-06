@@ -66,7 +66,7 @@ async fn test_order_book() {
         let ask_level = book.ask_level(udec64!(100000)).unwrap();
         assert_eq!(ask_level.num_orders(), 1);
         assert_eq!(ask_level.size(), udec64!(0.9));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let order = perp.get_order(oid(1)).unwrap();
         assert_eq!(order.r#type(), types::OrderType::OpenShort);
@@ -114,17 +114,17 @@ async fn test_order_book() {
         let ask_level = book.ask_level(udec64!(100000)).unwrap();
         assert_eq!(ask_level.num_orders(), 2);
         assert_eq!(ask_level.size(), udec64!(2.9));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let ask_level = book.ask_level(udec64!(99900)).unwrap();
         assert_eq!(ask_level.num_orders(), 1);
         assert_eq!(ask_level.size(), udec64!(1));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let bid_level = book.bid_level(udec64!(99000)).unwrap();
         assert_eq!(bid_level.num_orders(), 1);
         assert_eq!(bid_level.size(), udec64!(0.5));
-        assert_eq!(bid_level.is_empty(), false);
+        assert!(!bid_level.is_empty());
     }
 
     // Orders to expire
@@ -148,22 +148,22 @@ async fn test_order_book() {
         let ask_level = book.ask_level(udec64!(100000)).unwrap();
         assert_eq!(ask_level.num_orders(), 3);
         assert_eq!(ask_level.size(), udec64!(5.9));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let ask_level = book.ask_level(udec64!(99900)).unwrap();
         assert_eq!(ask_level.num_orders(), 1);
         assert_eq!(ask_level.size(), udec64!(1));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let ask_level = book.ask_level(udec64!(99800)).unwrap();
         assert_eq!(ask_level.num_orders(), 1);
         assert_eq!(ask_level.size(), udec64!(2));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let bid_level = book.bid_level(udec64!(99000)).unwrap();
         assert_eq!(bid_level.num_orders(), 2);
         assert_eq!(bid_level.size(), udec64!(1.2));
-        assert_eq!(bid_level.is_empty(), false);
+        assert!(!bid_level.is_empty());
     }
 
     // Wait for expiration
@@ -184,17 +184,17 @@ async fn test_order_book() {
         let ask_level = book.ask_level(udec64!(100000)).unwrap();
         assert_eq!(ask_level.num_orders(), 2);
         assert_eq!(ask_level.size(), udec64!(2.9));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let ask_level = book.ask_level(udec64!(99900)).unwrap();
         assert_eq!(ask_level.num_orders(), 1);
         assert_eq!(ask_level.size(), udec64!(1));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let bid_level = book.bid_level(udec64!(99000)).unwrap();
         assert_eq!(bid_level.num_orders(), 1);
         assert_eq!(bid_level.size(), udec64!(0.5));
-        assert_eq!(bid_level.is_empty(), false);
+        assert!(!bid_level.is_empty());
     }
 
     // Cancel and update expired orders
@@ -217,17 +217,17 @@ async fn test_order_book() {
         let ask_level = book.ask_level(udec64!(100000)).unwrap();
         assert_eq!(ask_level.num_orders(), 2);
         assert_eq!(ask_level.size(), udec64!(2.9));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let ask_level = book.ask_level(udec64!(99900)).unwrap();
         assert_eq!(ask_level.num_orders(), 1);
         assert_eq!(ask_level.size(), udec64!(1));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let bid_level = book.bid_level(udec64!(99000)).unwrap();
         assert_eq!(bid_level.num_orders(), 2);
         assert_eq!(bid_level.size(), udec64!(1.8));
-        assert_eq!(bid_level.is_empty(), false);
+        assert!(!bid_level.is_empty());
     }
 
     // Cancel and update active orders
@@ -250,17 +250,17 @@ async fn test_order_book() {
         let ask_level = book.ask_level(udec64!(100000)).unwrap();
         assert_eq!(ask_level.num_orders(), 1);
         assert_eq!(ask_level.size(), udec64!(0.9));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let ask_level = book.ask_level(udec64!(99900)).unwrap();
         assert_eq!(ask_level.num_orders(), 1);
         assert_eq!(ask_level.size(), udec64!(1));
-        assert_eq!(ask_level.is_empty(), false);
+        assert!(!ask_level.is_empty());
 
         let bid_level = book.bid_level(udec64!(99000)).unwrap();
         assert_eq!(bid_level.num_orders(), 2);
         assert_eq!(bid_level.size(), udec64!(1.5));
-        assert_eq!(bid_level.is_empty(), false);
+        assert!(!bid_level.is_empty());
     }
 
     // Close maker order of reduced size

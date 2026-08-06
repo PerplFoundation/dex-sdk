@@ -65,7 +65,7 @@ async fn test_snapshot_and_events() {
         assert_eq!(perp.id(), btc_perp.id);
         assert_eq!(perp.name(), "BTC".to_string());
         assert_eq!(perp.symbol(), "BTC".to_string());
-        assert_eq!(perp.is_paused(), false);
+        assert!(!perp.is_paused());
         // Base (tier 0) rates of the exchange-wide default schedule, seeded at
         // deployment by `Exchange::_seedDefaultFeeSchedule` - a listing does not
         // set its own fees
@@ -163,7 +163,7 @@ async fn test_snapshot_and_events() {
                     // Maker rate on the filled notional: 0.1 * 100100 * 0.00009
                     assert_eq!(*fee, udec64!(0.9009));
                     assert_eq!(*builder_fee, udec64!(0));
-                    assert_eq!(*is_maker, true);
+                    assert!(*is_maker);
                 },
 
                 state::StateEvents::Trade(types::Trade {

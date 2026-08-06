@@ -6,7 +6,7 @@
 //!   perpetual list.
 //! - **Keyed, tiered fee schedules** - the exchange-wide default and RWA
 //!   schedules, a per-contract custom one, and the repoints between them, via
-//!   both `getPerpFeeSchedule` and the `*FeeScheduleSet` / `PerpFeeKeySet`
+//!   both `getPerpFeeSchedule` and the `*FeeScheduleSet` / `PerpFeeSchedIdSet`
 //!   events.
 //! - **Per-account fee tiers** (`getAccountFeeTier` / `AccountFeeTierSet`).
 //! - **Builder attribution** carried by the V2 order entrypoints' extension

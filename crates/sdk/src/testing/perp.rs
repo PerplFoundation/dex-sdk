@@ -164,13 +164,28 @@ impl<'e> TestPerp<'e> {
         maker_fees: [UD64; state::FEE_TIERS],
     ) -> PendingTransactionBuilder<Ethereum> {
         let fee_converter = num::fee_converter();
+        // v1.1.7.4 split the one-shot custom-schedule setter into value-set +
+        // repoint. A perpetual's custom schedule is keyed by its own id: land the
+        // rates under that id, then point the perpetual at it.
+        let fee_sched_id = U256::from(self.id);
         self.exchange
             .exchange
-            .setPerpFeeSchedule(
-                U256::from(self.id),
+            .setFeeSchedValues(
+                fee_sched_id,
                 taker_fees.map(|fee| fee_converter.to_unsigned(fee)),
                 maker_fees.map(|fee| fee_converter.to_unsigned(fee)),
             )
+            .gas(500000)
+            .send()
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
+        self.exchange
+            .exchange
+            .setPerpToFeeSchedule(U256::from(self.id), fee_sched_id)
             .gas(500000)
             .send()
             .await
@@ -183,7 +198,7 @@ impl<'e> TestPerp<'e> {
     pub async fn set_rwa_default_fee(&self) -> PendingTransactionBuilder<Ethereum> {
         self.exchange
             .exchange
-            .setPerpToRwaDefaultFee(U256::from(self.id))
+            .setPerpToDefaultRwaFeeSched(U256::from(self.id))
             .gas(500000)
             .send()
             .await
