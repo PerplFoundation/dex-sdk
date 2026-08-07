@@ -23,7 +23,9 @@ use crate::{
         PositionOpened,
     },
     num::Converter,
-    state::{ContractFeatures, Exchange, FeeSchedule, FeeScheduleKey, Perpetual},
+    state::{
+        ContractFeatures, Exchange, FeeSchedule, FeeScheduleKey, FeeScheduleRegistry, Perpetual,
+    },
     stream::{RawBlockEvents, RawEvent},
     types::StateInstant,
 };
@@ -70,8 +72,11 @@ fn exchange(perps: HashMap<u32, Perpetual>) -> Exchange {
         udec128!(0.001),
         udec128!(0.001),
         udec128!(0.001),
-        FeeSchedule::flat(FeeScheduleKey::Default, udec64!(0), udec64!(0)),
-        FeeSchedule::flat(FeeScheduleKey::RwaDefault, udec64!(0), udec64!(0)),
+        FeeScheduleRegistry::new(
+            FeeSchedule::flat(FeeScheduleKey::Default, udec64!(0), udec64!(0)),
+            FeeSchedule::flat(FeeScheduleKey::RwaDefault, udec64!(0), udec64!(0)),
+            HashMap::new(),
+        ),
         perps,
         HashMap::new(),
         false, // is_halted

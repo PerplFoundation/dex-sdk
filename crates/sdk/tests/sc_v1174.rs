@@ -47,6 +47,11 @@ const TAKER_FEES: [UD64; state::FEE_TIERS] = [
     udec64!(0),
 ];
 
+/// Rates written under the ETH contract's own schedule id while the contract is
+/// still resolving its fees from the exchange-wide default.
+const ETH_TAKER_FEES: [UD64; state::FEE_TIERS] = [udec64!(0.002); state::FEE_TIERS];
+const ETH_MAKER_FEES: [UD64; state::FEE_TIERS] = [udec64!(0.0003); state::FEE_TIERS];
+
 /// Eight maker rates, one per fee tier, descending from the base rate.
 const MAKER_FEES: [UD64; state::FEE_TIERS] = [
     udec64!(0.00009),
@@ -132,7 +137,20 @@ async fn test_sc_v1174() {
     assert_eq!(default_schedule.key(), state::FeeScheduleKey::Default);
     assert_eq!(default_schedule.taker_fees(), &TAKER_FEES);
     assert_eq!(default_schedule.maker_fees(), &MAKER_FEES);
-    // ...which every contract points at until repointed
+
+    // The registry carries a schedule for every discovered contract too, even
+    // though none of them points at its own yet - the values and the pointer
+    // into them are tracked apart
+    let registry = discovered.fee_schedules();
+    let mut registered: Vec<_> = registry.custom_schedules().keys().copied().collect();
+    registered.sort();
+    assert_eq!(registered, vec![btc_perp.id, eth_perp.id]);
+    for perp_id in registered {
+        let key = state::FeeScheduleKey::Custom(perp_id);
+        assert_eq!(registry.get(key).unwrap().key(), key);
+    }
+
+    // ...and every contract points at the default until repointed
     for perp in discovered.perpetuals().values() {
         assert_eq!(perp.fee_schedule().key(), state::FeeScheduleKey::Default);
         assert_eq!(perp.taker_fee(), TAKER_FEES[0], "base rate is tier 0");
@@ -183,18 +201,34 @@ async fn test_sc_v1174() {
         .await
         .unwrap();
 
-    // Give the perpetual its own fee schedule, move the taker to the base tier
-    // and retune the exchange-wide default - three distinct fee events
+    // Give BTC its own fee schedule - values written under its id, then the
+    // contract pointed at them
     _ = btc_perp
         .set_fee_schedule([udec64!(0.001); state::FEE_TIERS], [udec64!(0.0002); state::FEE_TIERS])
         .await
         .get_receipt()
         .await
         .unwrap();
+    // Write the values of ETH's own schedule WITHOUT pointing ETH at it: a
+    // `FeeScheduleSet` keyed by a contract's id is not a repoint, so ETH keeps
+    // resolving its fees from the exchange-wide default below
+    eth_perp
+        .set_own_fee_schedule_values(ETH_TAKER_FEES, ETH_MAKER_FEES)
+        .await;
+    // Move the taker to the base tier and retune the exchange-wide default,
+    // which ETH - still pointing at it - has to follow
     exchange.set_account_fee_tiers(vec![(taker.id, 0)]).await;
     exchange
         .set_fee_schedule([udec64!(0.0009); state::FEE_TIERS], [udec64!(0.0001); state::FEE_TIERS])
         .await;
+    // Only now point ETH at its own schedule. The repoint carries no rates, so
+    // they come from the values landed above
+    _ = eth_perp
+        .use_own_fee_schedule()
+        .await
+        .get_receipt()
+        .await
+        .unwrap();
     // A trailing order request gives the loop below a request id to stop at
     _ = btc_perp
         .order_v2(maker.id, order(3, btc_perp.id, OpenShort, udec64!(100001), udec64!(0.1)))
@@ -210,6 +244,8 @@ async fn test_sc_v1174() {
     let mut perp_schedule_seen = false;
     let mut exchange_schedule_seen = false;
     let mut default_fanout_seen = false;
+    let mut eth_values_seen = false;
+    let mut eth_repoint_seen = false;
     while let Some(block_events) = state.next_state_events().await {
         for event in block_events.events().iter().flat_map(|e| e.event()) {
             match event {
@@ -269,15 +305,26 @@ async fn test_sc_v1174() {
                     perpetual_id,
                     r#type: state::PerpetualEventType::FeeScheduleUpdated(schedule),
                 }) => match schedule.key() {
-                    // The contract's own schedule, keyed by its ID
-                    state::FeeScheduleKey::Custom(id) if id == *perpetual_id => {
+                    // BTC pointed at its own schedule, keyed by its ID
+                    state::FeeScheduleKey::Custom(id) if id == btc_perp.id => {
                         assert_eq!(*perpetual_id, btc_perp.id);
                         assert_eq!(schedule.base_taker_fee(), udec64!(0.001));
                         assert_eq!(schedule.taker_fee(7), udec64!(0.001));
                         perp_schedule_seen = true;
                     },
+                    // ETH repointed at its own schedule with no `FeeScheduleSet`
+                    // alongside: the rates come from the registry, where the
+                    // earlier values-only write landed them
+                    state::FeeScheduleKey::Custom(id) if id == eth_perp.id => {
+                        assert_eq!(*perpetual_id, eth_perp.id);
+                        assert_eq!(schedule.taker_fees(), &ETH_TAKER_FEES);
+                        assert_eq!(schedule.maker_fees(), &ETH_MAKER_FEES);
+                        eth_repoint_seen = true;
+                    },
                     // Retuning the exchange-wide default fans out to the
-                    // contracts still pointing at it - and only those
+                    // contracts still pointing at it - and only those. ETH is
+                    // one of them, its own schedule having been written but
+                    // never pointed at yet
                     state::FeeScheduleKey::Default => {
                         assert_eq!(*perpetual_id, eth_perp.id);
                         assert_eq!(schedule.base_taker_fee(), udec64!(0.0009));
@@ -288,10 +335,19 @@ async fn test_sc_v1174() {
 
                 state::StateEvents::Exchange(state::ExchangeEvent::FeeScheduleUpdated(
                     schedule,
-                )) if schedule.key() == state::FeeScheduleKey::Default => {
-                    assert_eq!(schedule.base_taker_fee(), udec64!(0.0009));
-                    assert_eq!(schedule.base_maker_fee(), udec64!(0.0001));
-                    exchange_schedule_seen = true;
+                )) => match schedule.key() {
+                    state::FeeScheduleKey::Default => {
+                        assert_eq!(schedule.base_taker_fee(), udec64!(0.0009));
+                        assert_eq!(schedule.base_maker_fee(), udec64!(0.0001));
+                        exchange_schedule_seen = true;
+                    },
+                    // A schedule rewritten with no contract on it is still
+                    // reported - it lands in the registry, ready for a repoint
+                    state::FeeScheduleKey::Custom(id) if id == eth_perp.id => {
+                        assert_eq!(schedule.taker_fees(), &ETH_TAKER_FEES);
+                        eth_values_seen = true;
+                    },
+                    _ => (),
                 },
 
                 _ => (),
@@ -309,6 +365,8 @@ async fn test_sc_v1174() {
     assert!(perp_schedule_seen, "per-contract fee schedule update not seen");
     assert!(exchange_schedule_seen, "exchange-wide fee schedule update not seen");
     assert!(default_fanout_seen, "default schedule fan-out not seen");
+    assert!(eth_values_seen, "values-only rewrite of an unpointed schedule not seen");
+    assert!(eth_repoint_seen, "repoint onto an already-written schedule not seen");
 
     // ── state kept up to date by the events above ───────────────────────────
     {
@@ -317,15 +375,34 @@ async fn test_sc_v1174() {
         // The taker moved back to the base tier
         assert_eq!(snapshot.accounts().get(&taker.id).unwrap().fee_tier(), Some(0));
 
-        // BTC now on its own schedule, so the default retune left it alone
+        // BTC on its own schedule, so the default retune left it alone
         let btc = snapshot.perpetuals().get(&btc_perp.id).unwrap();
         assert_eq!(btc.fee_schedule().key(), state::FeeScheduleKey::Custom(btc_perp.id));
         assert_eq!(btc.taker_fee(), udec64!(0.001));
-        // ...while ETH followed it
+        // ...while ETH, repointed only after the retune, followed the retune
+        // first and picked up its own rates only on the repoint
         let eth = snapshot.perpetuals().get(&eth_perp.id).unwrap();
-        assert_eq!(eth.fee_schedule().key(), state::FeeScheduleKey::Default);
-        assert_eq!(eth.taker_fee(), udec64!(0.0009));
+        assert_eq!(eth.fee_schedule().key(), state::FeeScheduleKey::Custom(eth_perp.id));
+        assert_eq!(eth.taker_fee(), ETH_TAKER_FEES[0]);
         assert_eq!(snapshot.default_fee_schedule().base_taker_fee(), udec64!(0.0009));
+
+        // Both custom schedules are registered exchange-wide, whoever points at
+        // them
+        let registry = snapshot.fee_schedules();
+        assert_eq!(
+            registry
+                .get(state::FeeScheduleKey::Custom(eth_perp.id))
+                .unwrap()
+                .taker_fees(),
+            &ETH_TAKER_FEES,
+        );
+        assert_eq!(
+            registry
+                .get(state::FeeScheduleKey::Custom(btc_perp.id))
+                .unwrap()
+                .base_taker_fee(),
+            udec64!(0.001),
+        );
 
         // 100000 balance, less the 1000 position deposit (10000 notional at 10x)
         // and the 15 taker-side fee

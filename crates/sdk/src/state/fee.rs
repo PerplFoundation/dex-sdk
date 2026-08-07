@@ -11,6 +11,11 @@
 //! Both sides are resolved at fill time from the perpetual's current key and
 //! the account's current tier - never snapshotted at order placement - so a
 //! schedule, key or tier change takes effect on the next fill.
+//!
+//! The schedules themselves live exchange-wide in the [`FeeScheduleRegistry`],
+//! independently of which contract points at which: rewriting a schedule
+//! (`FeeScheduleSet`) and repointing a contract at one (`PerpFeeSchedIdSet`)
+//! are separate operations on the contract and are kept separate here.
 
 use fastnum::UD64;
 
@@ -19,7 +24,8 @@ use super::*;
 /// Number of fee tiers in a fee schedule.
 pub const FEE_TIERS: usize = 8;
 
-/// Raw id of the exchange-wide default schedule (`C._DEFAULT_PERP_FEE_SCHED_ID`).
+/// Raw id of the exchange-wide default schedule
+/// (`C._DEFAULT_PERP_FEE_SCHED_ID`).
 const DEFAULT_FEE_KEY: u32 = 1021;
 
 /// Raw id of the exchange-wide RWA default schedule
@@ -37,9 +43,13 @@ pub enum FeeScheduleKey {
     /// `DefaultRwaFeeScheduleSet`.
     RwaDefault,
 
-    /// The perpetual's own custom schedule, keyed by its ID. Kept up to date by
-    /// `FeeScheduleSet` under the perpetual's own schedule id (the perpetual is
-    /// pointed at it by `PerpFeeSchedIdSet`).
+    /// A perpetual's own custom schedule, keyed by its ID. Kept up to date by
+    /// `FeeScheduleSet` under that id.
+    ///
+    /// Existing under a perpetual's id does not mean the perpetual resolves its
+    /// fees from it - only `PerpFeeSchedIdSet` points a perpetual at a
+    /// schedule, and nothing stops one perpetual from being pointed at
+    /// another's.
     Custom(types::PerpetualId),
 }
 
@@ -196,6 +206,87 @@ impl std::fmt::Debug for FeeSchedule {
             )?;
         }
         write!(f, "] }}")
+    }
+}
+
+/// Every fee schedule the exchange resolves fees from, keyed by
+/// [`FeeScheduleKey`].
+///
+/// Populated on snapshotting with the two exchange-wide schedules
+/// ([`FeeScheduleKey::Default`] and [`FeeScheduleKey::RwaDefault`]) plus the
+/// custom schedule of every perpetual the snapshot tracks, then kept up to date
+/// by `FeeScheduleSet` / `DefaultPerpFeeScheduleSet` /
+/// `DefaultRwaFeeScheduleSet`.
+///
+/// The registry holds the *rates*; which schedule a perpetual resolves its fees
+/// from is the perpetual's own state (the key of
+/// [`crate::state::Perpetual::fee_schedule`]), moved only by
+/// `PerpFeeSchedIdSet`. Rewriting a schedule therefore reaches a perpetual only
+/// if that perpetual is currently pointing at it.
+#[derive(Clone, Debug)]
+pub struct FeeScheduleRegistry {
+    default: FeeSchedule,
+    rwa_default: FeeSchedule,
+    custom: HashMap<types::PerpetualId, FeeSchedule>,
+}
+
+impl FeeScheduleRegistry {
+    pub(crate) fn new(
+        default: FeeSchedule,
+        rwa_default: FeeSchedule,
+        custom: HashMap<types::PerpetualId, FeeSchedule>,
+    ) -> Self {
+        Self { default, rwa_default, custom }
+    }
+
+    /// Exchange-wide default schedule, shared by every perpetual contract that
+    /// has not been repointed at another one.
+    pub fn default_schedule(&self) -> FeeSchedule { self.default }
+
+    /// Exchange-wide default schedule for real-world assets.
+    pub fn rwa_default_schedule(&self) -> FeeSchedule { self.rwa_default }
+
+    /// Custom schedules, by the id of the perpetual contract each is keyed by.
+    ///
+    /// Covers the perpetuals known when the snapshot was built, plus any picked
+    /// up from a `FeeScheduleSet` since; a perpetual listed after the snapshot
+    /// appears here only once its own schedule is written.
+    pub fn custom_schedules(&self) -> &HashMap<types::PerpetualId, FeeSchedule> { &self.custom }
+
+    /// Schedule registered under the given key, `None` for a custom schedule
+    /// that has never been observed.
+    pub fn get(&self, key: FeeScheduleKey) -> Option<FeeSchedule> {
+        match key {
+            FeeScheduleKey::Default => Some(self.default),
+            FeeScheduleKey::RwaDefault => Some(self.rwa_default),
+            FeeScheduleKey::Custom(perp_id) => self.custom.get(&perp_id).copied(),
+        }
+    }
+
+    /// Registers a schedule under its own key, replacing the one held before.
+    pub(crate) fn set(&mut self, schedule: FeeSchedule) {
+        match schedule.key() {
+            FeeScheduleKey::Default => self.default = schedule,
+            FeeScheduleKey::RwaDefault => self.rwa_default = schedule,
+            FeeScheduleKey::Custom(perp_id) => {
+                self.custom.insert(perp_id, schedule);
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for FeeScheduleRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{:#}", self.default)?;
+        write!(f, "{:#}", self.rwa_default)?;
+        // The custom schedules are one line per perpetual, so they are listed in
+        // alternate mode only
+        if f.alternate() {
+            for perp_id in self.custom.keys().sorted() {
+                write!(f, "\n{:#}", self.custom[perp_id])?;
+            }
+        }
+        Ok(())
     }
 }
 
