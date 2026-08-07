@@ -754,7 +754,7 @@ impl std::fmt::Display for Perpetual {
         use colored::Colorize;
         use tabled::{
             Table,
-            settings::{Alignment, Panel, Style, object::Cell},
+            settings::{Alignment, Style, object::Cell},
         };
 
         let mut table = Table::from_iter(vec![
@@ -820,18 +820,20 @@ impl std::fmt::Display for Perpetual {
                 ),
             ],
             vec![
-                format!("Fees: {} (tkr/mkr)", self.fee_schedule),
+                // Base rates only, plus the schedule they resolve from - the
+                // discounted tiers are rendered once per schedule with the
+                // exchange rather than repeated per contract
+                format!(
+                    "Fees: {} / {} (tkr/mkr, {})",
+                    self.fee_schedule.base_taker_fee(),
+                    self.fee_schedule.base_maker_fee(),
+                    self.fee_schedule.key(),
+                ),
                 format!("Margin: {} / {} (ini/mnt)", self.initial_margin, self.maintenance_margin),
                 format!("Price Max Age: {}", self.price_max_age_sec),
                 format!("Funding Start: {}", self.funding_start_block),
             ],
         ]);
-        // The full fee schedule spans the table in alternate mode. Only a
-        // deployment that reports rates per tier has anything to say here: on an
-        // older one every tier carries the base rate already in the row above.
-        if f.alternate() && self.fee_schedule.is_tiered() {
-            table.with(Panel::footer(format!("Fee tiers (tkr/mkr): {:#}", self.fee_schedule)));
-        }
         table.with(Style::modern());
         table.modify(Cell::new(0, 4), Alignment::right());
 

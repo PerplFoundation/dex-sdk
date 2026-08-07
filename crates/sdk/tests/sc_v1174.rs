@@ -158,11 +158,25 @@ async fn test_sc_v1174() {
         assert_eq!(perp.maker_fee_for_tier(TAKER_FEE_TIER), MAKER_FEES[TAKER_FEE_TIER as usize]);
     }
 
-    // Tiers are reported per tier, so the detailed rendering carries them
+    // Tiers are reported per tier, so the exchange rendering carries them - one
+    // row per registered schedule, the contracts themselves showing base rates
+    // and the schedule they resolve from
     let btc = discovered.perpetuals().get(&btc_perp.id).unwrap();
     assert!(btc.fee_schedule().is_tiered());
-    let rendered = format!("{btc:#}");
-    assert!(rendered.contains("Fee tiers (tkr/mkr)"), "{rendered}");
+    let rendered = format!("{discovered:#}");
+    for row in [
+        "Min Post".to_string(),
+        "Recycle Fee".to_string(),
+        "Fees (tkr/mkr)".to_string(),
+        "Tier 7".to_string(),
+        "default".to_string(),
+        "rwa".to_string(),
+        format!("custom #{}", btc_perp.id),
+        format!("custom #{}", eth_perp.id),
+    ] {
+        assert!(rendered.contains(&row), "{row} missing from\n{rendered}");
+    }
+    assert!(format!("{btc:#}").contains("(tkr/mkr, default)"), "{btc:#}");
 
     // Account fee tiers are snapshotted for explicitly requested accounts
     assert_eq!(discovered.accounts().get(&taker.id).unwrap().fee_tier(), Some(TAKER_FEE_TIER));

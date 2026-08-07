@@ -2407,6 +2407,7 @@ impl Exchange {
 impl std::fmt::Display for Exchange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use colored::Colorize;
+        use tabled::{Table, settings::Style};
 
         writeln!(
             f,
@@ -2423,23 +2424,40 @@ impl std::fmt::Display for Exchange {
             .bold()
             .purple(),
         )?;
-        writeln!(
-            f,
-            "    Min Post: {} | Min Settle: {} | Funding Interval: {}",
-            self.min_post, self.min_settle, self.funding_interval_blocks,
-        )?;
-        // Pre-v1.1.7.4 contracts have no schedule registry - fees live on the
-        // perpetual contract itself
+
+        let mut params = Table::from_iter(vec![vec![
+            format!("Min Post: {}", self.min_post),
+            format!("Min Settle: {}", self.min_settle),
+            format!("Recycle Fee: {}", self.recycle_fee),
+            format!("Funding Interval: {}", self.funding_interval_blocks),
+        ]]);
+        params.with(Style::modern());
+        writeln!(f, "{params}")?;
+
+        // One row per registered schedule, the tier rates stacked taker over
+        // maker. Pre-v1.1.7.4 contracts have no schedule registry - fees live on
+        // the perpetual contract itself, and are rendered with it.
         if self.features.keyed_fee_schedules() {
-            let schedules = if f.alternate() {
-                format!("{:#}", self.fee_schedules)
-            } else {
-                format!("{}", self.fee_schedules)
-            };
-            writeln!(f, "    Fees (tkr/mkr):")?;
-            for line in schedules.lines() {
-                writeln!(f, "        {line}")?;
-            }
+            let mut fees = Table::from_iter(chain!(
+                iter::once(
+                    chain!(
+                        iter::once("Fees (tkr/mkr)".to_string()),
+                        (0..FEE_TIERS).map(|tier| format!("Tier {tier}")),
+                    )
+                    .collect::<Vec<_>>(),
+                ),
+                self.fee_schedules.schedules().map(|schedule| chain!(
+                    iter::once(schedule.key().to_string()),
+                    (0..FEE_TIERS as types::FeeTier).map(move |tier| format!(
+                        "{}\n{}",
+                        schedule.taker_fee(tier),
+                        schedule.maker_fee(tier),
+                    )),
+                )
+                .collect::<Vec<_>>()),
+            ));
+            fees.with(Style::modern());
+            writeln!(f, "{fees}")?;
         }
         writeln!(f)?;
 

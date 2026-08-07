@@ -253,6 +253,17 @@ impl FeeScheduleRegistry {
     /// appears here only once its own schedule is written.
     pub fn custom_schedules(&self) -> &HashMap<types::PerpetualId, FeeSchedule> { &self.custom }
 
+    /// Every registered schedule: the exchange-wide default, the RWA default,
+    /// then the custom ones ordered by the perpetual id each is keyed by.
+    pub fn schedules(&self) -> impl Iterator<Item = FeeSchedule> {
+        [self.default, self.rwa_default].into_iter().chain(
+            self.custom
+                .keys()
+                .sorted()
+                .map(|perp_id| self.custom[perp_id]),
+        )
+    }
+
     /// Schedule registered under the given key, `None` for a custom schedule
     /// that has never been observed.
     pub fn get(&self, key: FeeScheduleKey) -> Option<FeeSchedule> {
@@ -272,21 +283,6 @@ impl FeeScheduleRegistry {
                 self.custom.insert(perp_id, schedule);
             },
         }
-    }
-}
-
-impl std::fmt::Display for FeeScheduleRegistry {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{:#}", self.default)?;
-        write!(f, "{:#}", self.rwa_default)?;
-        // The custom schedules are one line per perpetual, so they are listed in
-        // alternate mode only
-        if f.alternate() {
-            for perp_id in self.custom.keys().sorted() {
-                write!(f, "\n{:#}", self.custom[perp_id])?;
-            }
-        }
-        Ok(())
     }
 }
 
