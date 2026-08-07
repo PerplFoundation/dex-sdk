@@ -422,10 +422,14 @@ async fn test_contract_upgrade_mid_stream() {
             assert_eq!(perp.taker_fee_for_tier(2), TAKER_FEES[2]);
         }
 
-        // ...and with real tiers on record, the detailed rendering reports them
+        // ...and with real tiers on record, the exchange rendering reports them
+        // per registered schedule, each contract naming the schedule it is on
+        let rendered = format!("{snapshot:#}");
+        assert!(rendered.contains("Fees (tkr/mkr)"), "{rendered}");
+        assert!(rendered.contains("Tier 7"), "{rendered}");
         for perp in snapshot.perpetuals().values() {
             assert!(perp.fee_schedule().is_tiered(), "perp {}", perp.id());
-            assert!(format!("{perp:#}").contains("Fee tiers (tkr/mkr)"), "perp {}", perp.id());
+            assert!(format!("{perp:#}").contains("(tkr/mkr, default)"), "perp {}", perp.id(),);
         }
 
         // The contract listed after the upgrade is tracked in full, from events

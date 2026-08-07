@@ -158,20 +158,34 @@ impl<'e> TestPerp<'e> {
 
     /// Sets a custom fee schedule for this perpetual contract, eight
     /// `(taker, maker)` rates indexed by an account's fee tier.
+    ///
+    /// v1.1.7.4 split the one-shot custom-schedule setter into value-set +
+    /// repoint, done here back to back. Use
+    /// [`Self::set_own_fee_schedule_values`] and [`Self::use_own_fee_schedule`]
+    /// to exercise the two halves apart.
     pub async fn set_fee_schedule(
         &self,
         taker_fees: [UD64; state::FEE_TIERS],
         maker_fees: [UD64; state::FEE_TIERS],
     ) -> PendingTransactionBuilder<Ethereum> {
+        self.set_own_fee_schedule_values(taker_fees, maker_fees)
+            .await;
+        self.use_own_fee_schedule().await
+    }
+
+    /// Writes the rates of the schedule keyed by this contract's id, without
+    /// pointing the contract at it - schedule values and the pointer into them
+    /// are independent.
+    pub async fn set_own_fee_schedule_values(
+        &self,
+        taker_fees: [UD64; state::FEE_TIERS],
+        maker_fees: [UD64; state::FEE_TIERS],
+    ) {
         let fee_converter = num::fee_converter();
-        // v1.1.7.4 split the one-shot custom-schedule setter into value-set +
-        // repoint. A perpetual's custom schedule is keyed by its own id: land the
-        // rates under that id, then point the perpetual at it.
-        let fee_sched_id = U256::from(self.id);
         self.exchange
             .exchange
             .setFeeSchedValues(
-                fee_sched_id,
+                U256::from(self.id),
                 taker_fees.map(|fee| fee_converter.to_unsigned(fee)),
                 maker_fees.map(|fee| fee_converter.to_unsigned(fee)),
             )
@@ -183,9 +197,14 @@ impl<'e> TestPerp<'e> {
             .get_receipt()
             .await
             .unwrap();
+    }
+
+    /// Points this perpetual contract at the schedule keyed by its own id, see
+    /// [`Self::set_own_fee_schedule_values`].
+    pub async fn use_own_fee_schedule(&self) -> PendingTransactionBuilder<Ethereum> {
         self.exchange
             .exchange
-            .setPerpToFeeSchedule(U256::from(self.id), fee_sched_id)
+            .setPerpToFeeSchedule(U256::from(self.id), U256::from(self.id))
             .gas(500000)
             .send()
             .await

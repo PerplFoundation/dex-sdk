@@ -199,11 +199,12 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         ) = self.exchange_info().await?;
         let collateral_converter = num::Converter::new(exchange_info.collateralDecimals.to());
 
-        // Exchange-wide fee schedules perpetuals resolve their fees from
-        let (default_fee_schedule, rwa_fee_schedule) = self.fee_schedules(features).await?;
-
-        // Perpetual contracts parameters, state and active orders
-        let perpetuals = self.perpetuals(instant, features).await?;
+        // Every fee schedule perpetuals resolve their fees from, alongside the
+        // perpetual contracts' own parameters, state and active orders. Both
+        // are keyed off the perpetual ids resolved above and pinned to the same
+        // block, so they are independent of each other.
+        let (fee_schedules, perpetuals) =
+            futures::try_join!(self.fee_schedules(features), self.perpetuals(instant, features))?;
 
         let accounts = if !self.accounts.is_empty() {
             // Accounts parameters, state and open positions if specific accounts requested
@@ -233,8 +234,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
             collateral_converter.from_unsigned(min_post),
             collateral_converter.from_unsigned(min_settle),
             collateral_converter.from_unsigned(recycle_fee),
-            default_fee_schedule,
-            rwa_fee_schedule,
+            fee_schedules,
             perpetuals,
             accounts,
             is_halted,
@@ -242,33 +242,65 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         ))
     }
 
-    /// Fetches the exchange-wide default and RWA-default fee schedules every
-    /// perpetual resolves its fees from unless it carries a custom one.
+    /// Fetches every fee schedule perpetuals resolve their fees from: the two
+    /// exchange-wide ones plus the custom schedule keyed by each perpetual
+    /// being tracked.
     ///
-    /// Pre-v1.1.7.4 contracts have no exchange-wide schedules - fees live on
-    /// the perpetual itself and no event ever repoints one at a shared
-    /// schedule, so empty schedules are returned and never consulted.
+    /// A custom schedule is fetched whether or not the perpetual it is keyed by
+    /// currently points at it - the two are independent, and the registry has
+    /// to be able to resolve the rates of a `PerpFeeSchedIdSet` repoint that
+    /// arrives without a `FeeScheduleSet` of its own.
+    ///
+    /// Pre-v1.1.7.4 contracts have no schedule registry - fees live on the
+    /// perpetual itself and no event ever repoints one at a shared schedule, so
+    /// empty schedules are returned and never consulted.
     async fn fee_schedules(
         &self,
         features: ContractFeatures,
-    ) -> Result<(FeeSchedule, FeeSchedule), DexError> {
+    ) -> Result<FeeScheduleRegistry, DexError> {
         if !features.keyed_fee_schedules() {
-            return Ok((
+            return Ok(FeeScheduleRegistry::new(
                 FeeSchedule::flat(FeeScheduleKey::Default, UD64::ZERO, UD64::ZERO),
                 FeeSchedule::flat(FeeScheduleKey::RwaDefault, UD64::ZERO, UD64::ZERO),
+                HashMap::new(),
             ));
         }
         let fee_converter = num::fee_converter();
         let (default_call, rwa_call) = (
-            self.instance.getDefaultPerpFeeSchedule().block(self.block_id),
+            self.instance
+                .getDefaultPerpFeeSchedule()
+                .block(self.block_id),
             self.instance
                 .getFeeScheduleById(FeeScheduleKey::RwaDefault.to_raw())
                 .block(self.block_id),
         );
-        let (default, rwa) =
-            futures::try_join!(default_call.call().into_future(), rwa_call.call().into_future())
-                .map_err(|err| DexError::Provider(err.into()))?;
-        Ok((
+        let custom_calls = self.perpetuals.iter().map(|perp_id| {
+            let key = FeeScheduleKey::Custom(*perp_id);
+            let call = self
+                .instance
+                .getFeeScheduleById(key.to_raw())
+                .block(self.block_id);
+            async move {
+                call.call().await.map(|schedule| {
+                    (
+                        *perp_id,
+                        FeeSchedule::new(
+                            key,
+                            schedule.takerFeesPer100K,
+                            schedule.makerFeesPer100K,
+                            fee_converter,
+                        ),
+                    )
+                })
+            }
+        });
+        let (default, rwa, custom) = futures::try_join!(
+            default_call.call().into_future(),
+            rwa_call.call().into_future(),
+            futures::future::try_join_all(custom_calls),
+        )
+        .map_err(|err| DexError::Provider(err.into()))?;
+        Ok(FeeScheduleRegistry::new(
             FeeSchedule::new(
                 FeeScheduleKey::Default,
                 default.takerFeesPer100K,
@@ -281,6 +313,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                 rwa.makerFeesPer100K,
                 fee_converter,
             ),
+            custom.into_iter().collect(),
         ))
     }
 

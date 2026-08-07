@@ -10,7 +10,10 @@ use crate::{
         OrderPlaced, PositionClosed, PositionOpened, RecycleFeeToAccount,
     },
     num::Converter,
-    state::{ContractFeatures, Exchange, FeeSchedule, FeeScheduleKey, OrderContext, Perpetual},
+    state::{
+        ContractFeatures, Exchange, FeeSchedule, FeeScheduleKey, FeeScheduleRegistry, OrderContext,
+        Perpetual,
+    },
     stream::RawEvent,
     types::{
         self, OrderId, RequestId,
@@ -38,8 +41,11 @@ fn create_test_exchange() -> Exchange {
         udec128!(0.001),
         udec128!(0.001),
         udec128!(0.001),
-        FeeSchedule::flat(FeeScheduleKey::Default, UD64::ZERO, UD64::ZERO),
-        FeeSchedule::flat(FeeScheduleKey::RwaDefault, UD64::ZERO, UD64::ZERO),
+        FeeScheduleRegistry::new(
+            FeeSchedule::flat(FeeScheduleKey::Default, UD64::ZERO, UD64::ZERO),
+            FeeSchedule::flat(FeeScheduleKey::RwaDefault, UD64::ZERO, UD64::ZERO),
+            HashMap::new(),
+        ),
         perpetuals,
         accounts,
         false,

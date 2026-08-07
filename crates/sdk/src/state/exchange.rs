@@ -66,8 +66,7 @@ pub struct Exchange {
     min_settle: UD128,
     #[debug("{recycle_fee}")]
     recycle_fee: UD128,
-    default_fee_schedule: FeeSchedule,
-    rwa_fee_schedule: FeeSchedule,
+    fee_schedules: FeeScheduleRegistry,
     perpetuals: HashMap<types::PerpetualId, Perpetual>,
     accounts: HashMap<types::AccountId, Account>,
     is_halted: bool,
@@ -85,8 +84,7 @@ impl Exchange {
         min_post: UD128,
         min_settle: UD128,
         recycle_fee: UD128,
-        default_fee_schedule: FeeSchedule,
-        rwa_fee_schedule: FeeSchedule,
+        fee_schedules: FeeScheduleRegistry,
         perpetuals: HashMap<types::PerpetualId, Perpetual>,
         accounts: HashMap<types::AccountId, Account>,
         is_halted: bool,
@@ -101,8 +99,7 @@ impl Exchange {
             min_post,
             min_settle,
             recycle_fee,
-            default_fee_schedule,
-            rwa_fee_schedule,
+            fee_schedules,
             perpetuals,
             accounts,
             is_halted,
@@ -128,25 +125,23 @@ impl Exchange {
     /// has no version getter.
     pub fn contract_version(&self) -> Option<ContractVersion> { self.features.version() }
 
+    /// Every fee schedule known to the exchange, which perpetual contracts
+    /// resolve their fees from by pointing at one (see
+    /// [`Perpetual::fee_schedule`]).
+    pub fn fee_schedules(&self) -> &FeeScheduleRegistry { &self.fee_schedules }
+
     /// Exchange-wide default fee schedule, shared by every perpetual contract
     /// that has not been repointed at another one.
-    pub fn default_fee_schedule(&self) -> FeeSchedule { self.default_fee_schedule }
+    pub fn default_fee_schedule(&self) -> FeeSchedule { self.fee_schedules.default_schedule() }
 
     /// Exchange-wide default fee schedule for real-world assets.
-    pub fn rwa_fee_schedule(&self) -> FeeSchedule { self.rwa_fee_schedule }
+    pub fn rwa_fee_schedule(&self) -> FeeSchedule { self.fee_schedules.rwa_default_schedule() }
 
-    /// Fee schedule under the given key, `None` for a custom schedule of an
-    /// untracked perpetual contract (a tracked one carries its schedule, see
-    /// [`Perpetual::fee_schedule`]).
+    /// Fee schedule registered under the given key, `None` for a custom
+    /// schedule that has never been observed - one keyed by a perpetual the
+    /// snapshot does not track, and not written since.
     pub fn fee_schedule(&self, key: FeeScheduleKey) -> Option<FeeSchedule> {
-        match key {
-            FeeScheduleKey::Default => Some(self.default_fee_schedule),
-            FeeScheduleKey::RwaDefault => Some(self.rwa_fee_schedule),
-            FeeScheduleKey::Custom(perp_id) => self
-                .perpetuals
-                .get(&perp_id)
-                .map(|perp| perp.fee_schedule()),
-        }
+        self.fee_schedules.get(key)
     }
 
     /// Converter of fixed-point <-> decimal numbers for collateral token
@@ -718,7 +713,7 @@ impl Exchange {
                 .collect(),
             ExchangeEvents::DcpBorrowThreshUpdated(_) => vec![],
             ExchangeEvents::DecreaseCollateralBeyondMarkPrice(_) => vec![],
-            ExchangeEvents::DefaultPerpFeeScheduleSet(e) => self.update_exchange_fee_schedule(
+            ExchangeEvents::DefaultPerpFeeScheduleSet(e) => self.update_fee_schedule(
                 instant,
                 FeeSchedule::new(
                     FeeScheduleKey::Default,
@@ -727,7 +722,7 @@ impl Exchange {
                     num::fee_converter(),
                 ),
             ),
-            ExchangeEvents::DefaultRwaFeeScheduleSet(e) => self.update_exchange_fee_schedule(
+            ExchangeEvents::DefaultRwaFeeScheduleSet(e) => self.update_fee_schedule(
                 instant,
                 FeeSchedule::new(
                     FeeScheduleKey::RwaDefault,
@@ -749,34 +744,20 @@ impl Exchange {
             ExchangeEvents::ExchangeInitialized(_) => vec![],
             ExchangeEvents::FeeParamsUpdated(_) => vec![],
             ExchangeEvents::FeeScheduleSet(e) => {
-                // `setFeeSchedValues(id, …)` reports a schedule's rates under its
-                // id. The exchange-wide defaults have their own events
-                // (`DefaultPerpFeeScheduleSet` / `DefaultRwaFeeScheduleSet`); a
-                // custom id is a perpetual's own schedule (keyed by its id), which
-                // a perpetual is pointed at by `PerpFeeSchedIdSet`.
-                let key = FeeScheduleKey::from_raw(e.feeSchedId);
-                let schedule = FeeSchedule::new(
-                    key,
-                    e.takerFeesPer100K,
-                    e.makerFeesPer100K,
-                    num::fee_converter(),
-                );
-                match key {
-                    FeeScheduleKey::Custom(perp_id) => self
-                        .perpetual(U256::from(perp_id))
-                        .map(|perp| {
-                            perp.update_fee_schedule(instant, schedule);
-                            StateEvents::perpetual(
-                                perp,
-                                PerpetualEventType::FeeScheduleUpdated(perp.fee_schedule()),
-                            )
-                        })
-                        .into_iter()
-                        .collect(),
-                    // A default id would normally arrive via its own event; apply
-                    // it as the exchange-wide update it names.
-                    _ => self.update_exchange_fee_schedule(instant, schedule),
-                }
+                // `setFeeSchedValues(id, …)` rewrites the rates of the schedule
+                // registered under `id`, whichever contracts happen to point at
+                // it. It does NOT repoint anything: a custom id names a schedule
+                // *keyed by* a perpetual's id, not that perpetual's current
+                // schedule - only `PerpFeeSchedIdSet` moves a contract onto it.
+                self.update_fee_schedule(
+                    instant,
+                    FeeSchedule::new(
+                        FeeScheduleKey::from_raw(e.feeSchedId),
+                        e.takerFeesPer100K,
+                        e.makerFeesPer100K,
+                        num::fee_converter(),
+                    ),
+                )
             },
             ExchangeEvents::FundingClampPctUpdated(_) => vec![],
             ExchangeEvents::FundingEventCompleted(e) => {
@@ -1307,19 +1288,17 @@ impl Exchange {
             ExchangeEvents::OwnershipTransferred(_) => vec![],
             ExchangeEvents::PermissonedCancelParamsUpdated(_) => vec![],
             ExchangeEvents::PerpFeeSchedIdSet(e) => {
-                // Id-only repoint, so the rates come from the schedule now
-                // pointed at.
+                // The only event that repoints a contract at another schedule.
+                // Id-only, so the rates come from the registry entry now pointed
+                // at.
                 //
-                // A repoint to the contract's own custom schedule is the one
-                // case where they do not: the custom schedule's rates arrive in
-                // a `FeeScheduleSet` under that id, not on the repoint. Applying
-                // the id silently here leaves that event to report the change,
-                // rather than surfacing an intermediate schedule pairing the new
-                // id with the old rates - a state that never applies to a fill.
+                // A schedule never observed has no rates to resolve: the id is
+                // applied on its own and the `FeeScheduleSet` that eventually
+                // writes it reports the rates, rather than surfacing an
+                // intermediate schedule pairing the new id with the old rates -
+                // a state that never applies to a fill.
                 let key = FeeScheduleKey::from_raw(e.feeSchedId);
-                let schedule = self
-                    .fee_schedule(key)
-                    .filter(|_| !matches!(key, FeeScheduleKey::Custom(_)));
+                let schedule = self.fee_schedules.get(key);
                 self.perpetual(e.perpId)
                     .and_then(|perp| match schedule {
                         Some(schedule) => {
@@ -2284,19 +2263,16 @@ impl Exchange {
         .collect())
     }
 
-    /// Applies a rewrite of one of the exchange-wide fee schedules, fanning it
-    /// out to every tracked contract that points at it.
-    fn update_exchange_fee_schedule(
+    /// Registers a rewrite of a fee schedule, fanning it out to every tracked
+    /// contract *currently pointing at it* - a contract keyed by the same id
+    /// but resolving its fees elsewhere is left alone, as only
+    /// `PerpFeeSchedIdSet` moves a contract between schedules.
+    fn update_fee_schedule(
         &mut self,
         instant: types::StateInstant,
         schedule: FeeSchedule,
     ) -> Vec<StateEvents> {
-        match schedule.key() {
-            FeeScheduleKey::RwaDefault => self.rwa_fee_schedule = schedule,
-            // A custom key never reaches here: only the two exchange-wide
-            // schedules have their own events
-            _ => self.default_fee_schedule = schedule,
-        }
+        self.fee_schedules.set(schedule);
         chain!(
             iter::once(StateEvents::Exchange(ExchangeEvent::FeeScheduleUpdated(schedule))),
             self.perpetuals
@@ -2431,6 +2407,7 @@ impl Exchange {
 impl std::fmt::Display for Exchange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use colored::Colorize;
+        use tabled::{Table, settings::Style};
 
         writeln!(
             f,
@@ -2447,19 +2424,40 @@ impl std::fmt::Display for Exchange {
             .bold()
             .purple(),
         )?;
-        writeln!(
-            f,
-            "    Min Post: {} | Min Settle: {} | Funding Interval: {}",
-            self.min_post, self.min_settle, self.funding_interval_blocks,
-        )?;
-        // Pre-v1.1.7.4 contracts have no exchange-wide schedules - fees live on
-        // the perpetual contract itself
+
+        let mut params = Table::from_iter(vec![vec![
+            format!("Min Post: {}", self.min_post),
+            format!("Min Settle: {}", self.min_settle),
+            format!("Recycle Fee: {}", self.recycle_fee),
+            format!("Funding Interval: {}", self.funding_interval_blocks),
+        ]]);
+        params.with(Style::modern());
+        writeln!(f, "{params}")?;
+
+        // One row per registered schedule, the tier rates stacked taker over
+        // maker. Pre-v1.1.7.4 contracts have no schedule registry - fees live on
+        // the perpetual contract itself, and are rendered with it.
         if self.features.keyed_fee_schedules() {
-            writeln!(
-                f,
-                "    Fees (tkr/mkr): {:#}\n           {:#}",
-                self.default_fee_schedule, self.rwa_fee_schedule,
-            )?;
+            let mut fees = Table::from_iter(chain!(
+                iter::once(
+                    chain!(
+                        iter::once("Fees (tkr/mkr)".to_string()),
+                        (0..FEE_TIERS).map(|tier| format!("Tier {tier}")),
+                    )
+                    .collect::<Vec<_>>(),
+                ),
+                self.fee_schedules.schedules().map(|schedule| chain!(
+                    iter::once(schedule.key().to_string()),
+                    (0..FEE_TIERS as types::FeeTier).map(move |tier| format!(
+                        "{}\n{}",
+                        schedule.taker_fee(tier),
+                        schedule.maker_fee(tier),
+                    )),
+                )
+                .collect::<Vec<_>>()),
+            ));
+            fees.with(Style::modern());
+            writeln!(f, "{fees}")?;
         }
         writeln!(f)?;
 

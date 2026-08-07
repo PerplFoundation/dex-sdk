@@ -188,12 +188,13 @@ pub enum ExchangeEvent {
     /// set it resolves to.
     ContractVersionUpdated(ContractVersion),
 
-    /// One of the exchange-wide fee schedules
-    /// ([`super::FeeScheduleKey::Default`]
-    /// or [`super::FeeScheduleKey::RwaDefault`], per [`FeeSchedule::key`]) was
-    /// rewritten. Every tracked perpetual
-    /// contract pointing at it gets a corresponding
-    /// [`PerpetualEventType::FeeScheduleUpdated`].
+    /// A fee schedule in [`super::Exchange::fee_schedules`] was rewritten,
+    /// under the key it is registered by ([`FeeSchedule::key`]).
+    ///
+    /// Every tracked perpetual contract *currently pointing at* that schedule
+    /// gets a corresponding [`PerpetualEventType::FeeScheduleUpdated`];
+    /// rewriting a schedule never repoints a contract at it, only
+    /// `PerpFeeSchedIdSet` does.
     FeeScheduleUpdated(FeeSchedule),
 
     /// Exchange halted/unhalted.
