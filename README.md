@@ -13,6 +13,16 @@
 cargo doc -p perpl-sdk --no-deps --open
 ```
 
+## Development
+
+Run the workspace checks before opening a pull request:
+
+```bash
+cargo fmt --check
+cargo test
+cargo clippy --all-targets --all-features
+```
+
 ## Crates
 
 * [perpl-sdk](./crates/sdk/src/lib.rs): SDK types for building and maintaining in-memory cache of the exchange state, along with order posting helpers.
