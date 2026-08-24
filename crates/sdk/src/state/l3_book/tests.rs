@@ -8,10 +8,14 @@ use super::*;
 use crate::state::Order;
 
 /// Helper to create OrderId from u16 literal in tests.
-fn oid(n: u16) -> types::OrderId { NonZeroU16::new(n).expect("test order id must be non-zero") }
+fn oid(n: u16) -> types::OrderId {
+    NonZeroU16::new(n).expect("test order id must be non-zero")
+}
 
 /// Helper to create Option<OrderId> from u16 literal in tests.
-fn ooid(n: u16) -> Option<types::OrderId> { NonZeroU16::new(n) }
+fn ooid(n: u16) -> Option<types::OrderId> {
+    NonZeroU16::new(n)
+}
 
 // ============================================================================
 // TEST DSL MACROS

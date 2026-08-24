@@ -214,63 +214,91 @@ impl Perpetual {
 
     /// Instant the perpetual contract state is consistent with or was last
     /// updated at.
-    pub fn instant(&self) -> types::StateInstant { self.instant }
+    pub fn instant(&self) -> types::StateInstant {
+        self.instant
+    }
 
     /// ID of the perpetual contract.
-    pub fn id(&self) -> types::PerpetualId { self.id }
+    pub fn id(&self) -> types::PerpetualId {
+        self.id
+    }
 
     /// Name of the perpetual contract.
-    pub fn name(&self) -> String { self.name.clone() }
+    pub fn name(&self) -> String {
+        self.name.clone()
+    }
 
     /// Symbol of the perpetual contract.
-    pub fn symbol(&self) -> String { self.symbol.clone() }
+    pub fn symbol(&self) -> String {
+        self.symbol.clone()
+    }
 
     /// Indicates if the perpetual contract is paused.
-    pub fn is_paused(&self) -> bool { self.is_paused }
+    pub fn is_paused(&self) -> bool {
+        self.is_paused
+    }
 
     /// Converter of prices between internal fixed-point and decimal
     /// representations.
-    pub fn price_converter(&self) -> num::Converter { self.price_converter }
+    pub fn price_converter(&self) -> num::Converter {
+        self.price_converter
+    }
 
     /// Converter of sizes between internal fixed-point and decimal
     /// representations.
-    pub fn size_converter(&self) -> num::Converter { self.size_converter }
+    pub fn size_converter(&self) -> num::Converter {
+        self.size_converter
+    }
 
     /// Converter of leverage/margin between internal fixed-point and decimal
     /// representations.
-    pub fn leverage_converter(&self) -> num::Converter { self.leverage_converter }
+    pub fn leverage_converter(&self) -> num::Converter {
+        self.leverage_converter
+    }
 
     /// Converter of fees between internal fixed-point and decimal
     /// representations.
-    pub fn fee_converter(&self) -> num::Converter { self.fee_converter }
+    pub fn fee_converter(&self) -> num::Converter {
+        self.fee_converter
+    }
 
     /// Converter of funding rates between internal fixed-point and decimal
     /// representations.
-    pub fn funding_rate_converter(&self) -> num::Converter { self.funding_rate_converter }
+    pub fn funding_rate_converter(&self) -> num::Converter {
+        self.funding_rate_converter
+    }
 
     /// Converter for funding sums / per-unit funding payments.
     /// Scales by `10^(fundingSumScalingExp + priceDecimals)` as funding
     /// sums/payments are originaly in price numeric system.
-    pub fn funding_sum_converter(&self) -> num::Converter { self.funding_sum_converter }
+    pub fn funding_sum_converter(&self) -> num::Converter {
+        self.funding_sum_converter
+    }
 
     /// Fee schedule the contract resolves its fees from: a `(taker, maker)` fee
     /// pair per account fee tier, plus the key identifying whether the schedule
     /// is shared with other contracts.
-    pub fn fee_schedule(&self) -> FeeSchedule { self.fee_schedule }
+    pub fn fee_schedule(&self) -> FeeSchedule {
+        self.fee_schedule
+    }
 
     /// Base (fee tier 0) maker fee, gets collected only on position
     /// opening/increasing.
     ///
     /// Use [`Self::maker_fee_for_tier`] with an account's
     /// [`Account::fee_tier`] for the rate that account is actually charged.
-    pub fn maker_fee(&self) -> UD64 { self.fee_schedule.base_maker_fee() }
+    pub fn maker_fee(&self) -> UD64 {
+        self.fee_schedule.base_maker_fee()
+    }
 
     /// Base (fee tier 0) taker fee, gets collected only on position
     /// opening/increasing.
     ///
     /// Use [`Self::taker_fee_for_tier`] with an account's
     /// [`Account::fee_tier`] for the rate that account is actually charged.
-    pub fn taker_fee(&self) -> UD64 { self.fee_schedule.base_taker_fee() }
+    pub fn taker_fee(&self) -> UD64 {
+        self.fee_schedule.base_taker_fee()
+    }
 
     /// Maker fee charged to an account of the given fee tier.
     pub fn maker_fee_for_tier(&self, tier: types::FeeTier) -> UD64 {
@@ -283,13 +311,19 @@ impl Perpetual {
     }
 
     /// Minimal initial margin fraction required to open a position.
-    pub fn initial_margin(&self) -> UD64 { self.initial_margin }
+    pub fn initial_margin(&self) -> UD64 {
+        self.initial_margin
+    }
 
     /// Minimal maintenance margin fraction required to keep a position.
-    pub fn maintenance_margin(&self) -> UD64 { self.maintenance_margin }
+    pub fn maintenance_margin(&self) -> UD64 {
+        self.maintenance_margin
+    }
 
     /// The price last trade was executed at.
-    pub fn last_price(&self) -> UD64 { self.last_price }
+    pub fn last_price(&self) -> UD64 {
+        self.last_price
+    }
 
     /// Instant the last trade was executed at.
     /// Block number available only from real-time events, not from the initial
@@ -302,10 +336,14 @@ impl Perpetual {
     }
 
     /// Unix timestamp (in seconds) of the last trade.
-    pub fn last_price_timestamp(&self) -> u64 { self.last_price_timestamp }
+    pub fn last_price_timestamp(&self) -> u64 {
+        self.last_price_timestamp
+    }
 
     /// Mark price of the contract.
-    pub fn mark_price(&self) -> UD64 { self.mark_price }
+    pub fn mark_price(&self) -> UD64 {
+        self.mark_price
+    }
 
     /// Instant the mark price was updated at.
     /// Block number available only from real-time events, not from the initial
@@ -318,7 +356,9 @@ impl Perpetual {
     }
 
     /// Unix timestamp (in seconds) of the most recent mark price update.
-    pub fn mark_price_timestamp(&self) -> u64 { self.mark_price_timestamp }
+    pub fn mark_price_timestamp(&self) -> u64 {
+        self.mark_price_timestamp
+    }
 
     /// Indicates that the mark price is obsolete and will not be accepted
     /// during the order/position settlement
@@ -327,7 +367,9 @@ impl Perpetual {
     }
 
     /// Oracle price of the contract.
-    pub fn oracle_price(&self) -> UD64 { self.oracle_price }
+    pub fn oracle_price(&self) -> UD64 {
+        self.oracle_price
+    }
 
     /// Instant the oracle price was updated at.
     /// Block number available only from real-time events, not from the initial
@@ -340,7 +382,9 @@ impl Perpetual {
     }
 
     /// Unix timestamp (in seconds) of the most recent oracle price update.
-    pub fn oracle_price_timestamp(&self) -> u64 { self.oracle_price_timestamp }
+    pub fn oracle_price_timestamp(&self) -> u64 {
+        self.oracle_price_timestamp
+    }
 
     /// Indicates that the oracle price is obsolete and will not be accepted
     /// during the order/position settlement
@@ -375,19 +419,29 @@ impl Perpetual {
     /// Starting block number of funding intervals.
     /// Use [`Exchange::funding_interval_blocks`] to get interval "duration" in
     /// blocks.
-    pub fn funding_start_block(&self) -> u64 { self.funding_start_block }
+    pub fn funding_start_block(&self) -> u64 {
+        self.funding_start_block
+    }
 
     /// The block number of the next funding event, if scheduled.
-    pub fn next_funding_event_block(&self) -> Option<u64> { self.next_funding_event_block }
+    pub fn next_funding_event_block(&self) -> Option<u64> {
+        self.next_funding_event_block
+    }
 
     /// Feed ID of ChainLink DataStreams price oracle.
-    pub fn oracle_feed_id(&self) -> B256 { self.oracle_feed_id }
+    pub fn oracle_feed_id(&self) -> B256 {
+        self.oracle_feed_id
+    }
 
     /// If perpetual contract relues on oracle prices.
-    pub fn is_oracle_used(&self) -> bool { self.is_oracle_used }
+    pub fn is_oracle_used(&self) -> bool {
+        self.is_oracle_used
+    }
 
     /// Max age in seconds for oracle/mark prices.
-    pub fn price_max_age_sec(&self) -> u64 { self.price_max_age_sec }
+    pub fn price_max_age_sec(&self) -> u64 {
+        self.price_max_age_sec
+    }
 
     /// Get a specific order by ID.
     pub fn get_order(&self, order_id: types::OrderId) -> Option<&Order> {
@@ -395,18 +449,28 @@ impl Perpetual {
     }
 
     /// Total number of orders in the book.
-    pub fn total_orders(&self) -> usize { self.l3_book.total_orders() }
+    pub fn total_orders(&self) -> usize {
+        self.l3_book.total_orders()
+    }
 
     /// Up to date L3 order book.
-    pub fn l3_book(&self) -> &OrderBook { &self.l3_book }
+    pub fn l3_book(&self) -> &OrderBook {
+        &self.l3_book
+    }
 
     /// Open interest size.
-    pub fn open_interest(&self) -> UD128 { self.open_interest }
+    pub fn open_interest(&self) -> UD128 {
+        self.open_interest
+    }
 
     /// Open interest amount.
-    pub fn open_interest_amount(&self) -> UD128 { self.open_interest * self.last_price.resize() }
+    pub fn open_interest_amount(&self) -> UD128 {
+        self.open_interest * self.last_price.resize()
+    }
 
-    pub(crate) fn base_price(&self) -> UD64 { self.base_price }
+    pub(crate) fn base_price(&self) -> UD64 {
+        self.base_price
+    }
 
     pub(crate) fn update_state_instant(&mut self, instant: types::StateInstant) {
         // Update state instant first
@@ -658,7 +722,9 @@ impl Perpetual {
 
     /// Create a minimal Perpetual for testing purposes.
     #[cfg(test)]
-    pub(crate) fn for_testing(id: types::PerpetualId) -> Self { Self::testing(id) }
+    pub(crate) fn for_testing(id: types::PerpetualId) -> Self {
+        Self::testing(id)
+    }
 
     // Only reachable from `for_testing` (#[cfg(test)]) and `for_test`
     // (#[cfg(any(test, feature = "test-utils"))]), so unused in normal builds.
@@ -713,7 +779,9 @@ impl Perpetual {
 /// production builds.
 #[cfg(any(test, feature = "test-utils"))]
 impl Perpetual {
-    pub fn for_test(id: types::PerpetualId) -> Self { Self::testing(id) }
+    pub fn for_test(id: types::PerpetualId) -> Self {
+        Self::testing(id)
+    }
 
     pub fn with_last_price(mut self, price: UD64) -> Self {
         self.last_price = price;
@@ -864,7 +932,9 @@ mod tests {
 
     use super::*;
 
-    fn oid(n: u16) -> types::OrderId { NonZeroU16::new(n).expect("test order id must be non-zero") }
+    fn oid(n: u16) -> types::OrderId {
+        NonZeroU16::new(n).expect("test order id must be non-zero")
+    }
 
     #[test]
     fn update_order_expired_order_renewal_moves_to_back() {

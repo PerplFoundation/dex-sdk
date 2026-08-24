@@ -88,7 +88,9 @@ pub struct TestExchange {
 impl TestExchange {
     /// Spins up the environment running the exchange implementation the SDK
     /// targets ([`state::Exchange::revision`]).
-    pub async fn new() -> Self { Self::deploy(None).await }
+    pub async fn new() -> Self {
+        Self::deploy(None).await
+    }
 
     /// Spins up the environment running the *previous* contract generation
     /// (v1.1.7.3b: V2 information getters, but no version getter, keyed fee
@@ -286,7 +288,9 @@ impl TestExchange {
 
     /// Same chain with no perpetual contracts configured, so clients discover
     /// every listed contract on-chain instead.
-    pub fn chain_with_perpetual_discovery(&self) -> Chain { self.chain().with_perpetuals(vec![]) }
+    pub fn chain_with_perpetual_discovery(&self) -> Chain {
+        self.chain().with_perpetuals(vec![])
+    }
 
     pub async fn account(&self, idx: usize, usd_balance: u64) -> TestAccount<'_> {
         let address = self.anvil.addresses()[idx + 3]; // skipping owner, admin and price admin
@@ -545,4 +549,6 @@ pub fn scale(amount: u64, decimals: u8) -> U256 {
     U256::from(amount) * U256::from(10).pow(U256::from(decimals))
 }
 
-pub fn usd(amount: u64) -> U256 { scale(amount, USD_DECIMALS) }
+pub fn usd(amount: u64) -> U256 {
+    scale(amount, USD_DECIMALS)
+}

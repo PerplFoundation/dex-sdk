@@ -49,15 +49,21 @@ pub struct OrderBook {
 }
 
 impl OrderBook {
-    pub(crate) fn new() -> Self { Self::default() }
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
 
     // === L2 API ===
 
     /// Asks sorted away from the spread.
-    pub fn asks(&self) -> &BTreeMap<UD64, BookLevel> { &self.asks }
+    pub fn asks(&self) -> &BTreeMap<UD64, BookLevel> {
+        &self.asks
+    }
 
     /// Bids sorted away from the spread.
-    pub fn bids(&self) -> &BTreeMap<Reverse<UD64>, BookLevel> { &self.bids }
+    pub fn bids(&self) -> &BTreeMap<Reverse<UD64>, BookLevel> {
+        &self.bids
+    }
 
     /// Best ask price/size.
     pub fn best_ask(&self) -> Option<(UD64, UD64)> {
@@ -106,10 +112,14 @@ impl OrderBook {
     // === L3 API ===
 
     /// Get L3 level at a specific ask price.
-    pub fn ask_level(&self, price: UD64) -> Option<&BookLevel> { self.asks.get(&price) }
+    pub fn ask_level(&self, price: UD64) -> Option<&BookLevel> {
+        self.asks.get(&price)
+    }
 
     /// Get L3 level at a specific bid price.
-    pub fn bid_level(&self, price: UD64) -> Option<&BookLevel> { self.bids.get(&Reverse(price)) }
+    pub fn bid_level(&self, price: UD64) -> Option<&BookLevel> {
+        self.bids.get(&Reverse(price))
+    }
 
     /// Get a specific order by ID (O(1) via HashMap lookup).
     pub fn get_order(&self, order_id: types::OrderId) -> Option<&BookOrder> {
@@ -142,10 +152,14 @@ impl OrderBook {
     }
 
     /// Total number of orders in the book.
-    pub fn total_orders(&self) -> usize { self.orders.len() }
+    pub fn total_orders(&self) -> usize {
+        self.orders.len()
+    }
 
     /// Access to all orders in the book keyed by order ID.
-    pub fn all_orders(&self) -> &HashMap<types::OrderId, BookOrder> { &self.orders }
+    pub fn all_orders(&self) -> &HashMap<types::OrderId, BookOrder> {
+        &self.orders
+    }
 
     /// Iterator over orders at a specific level (follows the linked list).
     pub(crate) fn level_orders<'a>(&'a self, level: &'a BookLevel) -> LevelOrdersIter<'a> {

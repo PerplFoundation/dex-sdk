@@ -98,37 +98,59 @@ impl Position {
     }
 
     /// Instant the position state is consistent with or was last updated at.
-    pub fn instant(&self) -> types::StateInstant { self.instant }
+    pub fn instant(&self) -> types::StateInstant {
+        self.instant
+    }
 
     /// ID of the perpetual contract.
-    pub fn perpetual_id(&self) -> types::PerpetualId { self.perpetual_id }
+    pub fn perpetual_id(&self) -> types::PerpetualId {
+        self.perpetual_id
+    }
 
     /// ID of the account holding the position.
-    pub fn account_id(&self) -> types::AccountId { self.account_id }
+    pub fn account_id(&self) -> types::AccountId {
+        self.account_id
+    }
 
     /// Type of the position.
-    pub fn r#type(&self) -> PositionType { self.r#type }
+    pub fn r#type(&self) -> PositionType {
+        self.r#type
+    }
 
     /// Position entry price, full precision - including 16 bit rounding residue
-    pub fn entry_price(&self) -> UD64 { self.entry_price }
+    pub fn entry_price(&self) -> UD64 {
+        self.entry_price
+    }
 
     /// Size of the position.
-    pub fn size(&self) -> UD64 { self.size }
+    pub fn size(&self) -> UD64 {
+        self.size
+    }
 
     /// Collateral deposit / margin locked in the position.
-    pub fn deposit(&self) -> UD128 { self.deposit }
+    pub fn deposit(&self) -> UD128 {
+        self.deposit
+    }
 
     /// Unrealized Delta PnL of the position.
-    pub fn delta_pnl(&self) -> D256 { self.delta_pnl }
+    pub fn delta_pnl(&self) -> D256 {
+        self.delta_pnl
+    }
 
     /// Unrealized Premium PnL of the position.
-    pub fn premium_pnl(&self) -> D256 { self.premium_pnl }
+    pub fn premium_pnl(&self) -> D256 {
+        self.premium_pnl
+    }
 
     /// Unrealized PnL of the position.
-    pub fn pnl(&self) -> D256 { self.delta_pnl + self.premium_pnl }
+    pub fn pnl(&self) -> D256 {
+        self.delta_pnl + self.premium_pnl
+    }
 
     /// Maintenance margin requirement of the position.
-    pub fn maintenance_margin_requirement(&self) -> UD128 { self.maintenance_margin_requirement }
+    pub fn maintenance_margin_requirement(&self) -> UD128 {
+        self.maintenance_margin_requirement
+    }
 
     /// Liquidation price of the position.
     pub fn liquidation_price(&self) -> UD64 {
@@ -264,9 +286,13 @@ impl Position {
 }
 
 impl PositionType {
-    pub fn is_long(&self) -> bool { matches!(self, PositionType::Long) }
+    pub fn is_long(&self) -> bool {
+        matches!(self, PositionType::Long)
+    }
 
-    pub fn is_short(&self) -> bool { matches!(self, PositionType::Short) }
+    pub fn is_short(&self) -> bool {
+        matches!(self, PositionType::Short)
+    }
 }
 
 impl From<u8> for PositionType {

@@ -40,13 +40,21 @@ impl ContractVersion {
     /// `getContractVersion` itself.
     pub const BUILDER_CODES: Self = Self { major: 1, minor: 7, patch: 4 };
 
-    pub const fn new(major: u64, minor: u64, patch: u64) -> Self { Self { major, minor, patch } }
+    pub const fn new(major: u64, minor: u64, patch: u64) -> Self {
+        Self { major, minor, patch }
+    }
 
-    pub const fn major(&self) -> u64 { self.major }
+    pub const fn major(&self) -> u64 {
+        self.major
+    }
 
-    pub const fn minor(&self) -> u64 { self.minor }
+    pub const fn minor(&self) -> u64 {
+        self.minor
+    }
 
-    pub const fn patch(&self) -> u64 { self.patch }
+    pub const fn patch(&self) -> u64 {
+        self.patch
+    }
 }
 
 impl std::fmt::Display for ContractVersion {
@@ -96,28 +104,38 @@ impl ContractFeatures {
 
     /// Version reported by the contract, if it exposes `getContractVersion`
     /// (v1.1.7.4+).
-    pub fn version(&self) -> Option<ContractVersion> { self.version }
+    pub fn version(&self) -> Option<ContractVersion> {
+        self.version
+    }
 
     /// `getPerpetualInfoV2` / `getPositionV2` and the V2 position events
     /// (`fundingSumScalingExp`, `priceResiduePNSQ16`) are available.
-    pub fn v2_state_getters(&self) -> bool { self.v2_state_getters }
+    pub fn v2_state_getters(&self) -> bool {
+        self.v2_state_getters
+    }
 
     /// Keyed 8-tier fee schedules with per-account fee tiers are available
     /// (`getPerpFeeSchedule`, `getFeeScheduleById`, `getAccountFeeTier` and
     /// the `FeeScheduleSet` / `DefaultPerpFeeScheduleSet` /
     /// `DefaultRwaFeeScheduleSet` / `PerpFeeSchedIdSet` /
     /// `AccountFeeTierSet` events).
-    pub fn keyed_fee_schedules(&self) -> bool { self.keyed_fee_schedules }
+    pub fn keyed_fee_schedules(&self) -> bool {
+        self.keyed_fee_schedules
+    }
 
     /// Builder attribution is available (`execOrderV2` and friends,
     /// `getOrderV2` and the `OrderRequestV2` / `MakerOrderFilledV2` /
     /// `TakerOrderFilledV2` events).
-    pub fn builder_attribution(&self) -> bool { self.builder_attribution }
+    pub fn builder_attribution(&self) -> bool {
+        self.builder_attribution
+    }
 
     /// The perpetual-existence bitmap is available
     /// (`getPerpetualExistsBitmap`), so the set of listed perpetuals can be
     /// discovered on-chain instead of being configured.
-    pub fn perpetual_discovery(&self) -> bool { self.perpetual_discovery }
+    pub fn perpetual_discovery(&self) -> bool {
+        self.perpetual_discovery
+    }
 
     /// Detects the feature set of the deployed contract at `block_id`.
     ///
@@ -192,7 +210,9 @@ impl ContractFeatures {
 }
 
 impl Default for ContractFeatures {
-    fn default() -> Self { Self::current() }
+    fn default() -> Self {
+        Self::current()
+    }
 }
 
 impl std::fmt::Display for ContractFeatures {

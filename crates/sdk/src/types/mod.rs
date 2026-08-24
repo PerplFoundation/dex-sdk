@@ -60,9 +60,13 @@ impl StateInstant {
         Self { block_number, block_timestamp }
     }
 
-    pub fn block_number(&self) -> u64 { self.block_number }
+    pub fn block_number(&self) -> u64 {
+        self.block_number
+    }
 
-    pub fn block_timestamp(&self) -> u64 { self.block_timestamp }
+    pub fn block_timestamp(&self) -> u64 {
+        self.block_timestamp
+    }
 
     pub fn next(&self) -> Self {
         Self { block_number: self.block_number + 1, block_timestamp: self.block_timestamp }
@@ -102,5 +106,7 @@ impl FromStr for AccountAddressOrID {
 impl TryFrom<String> for AccountAddressOrID {
     type Error = crate::error::DexError;
 
-    fn try_from(value: String) -> Result<Self, Self::Error> { AccountAddressOrID::from_str(&value) }
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        AccountAddressOrID::from_str(&value)
+    }
 }

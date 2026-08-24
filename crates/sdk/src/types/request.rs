@@ -122,7 +122,9 @@ impl OrderRequest {
     }
 
     /// Builder attribution of the request, if any.
-    pub fn builder(&self) -> Option<BuilderAttribution> { self.builder }
+    pub fn builder(&self) -> Option<BuilderAttribution> {
+        self.builder
+    }
 
     /// Prepare order request for execution via the V1 entrypoints
     /// (`execOrder`/`execOrders`), which cannot carry builder attribution.

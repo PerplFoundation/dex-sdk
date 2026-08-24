@@ -154,7 +154,9 @@ impl<E: Display, R: SolInterface> From<transports::RpcError<E>> for ProviderErro
 }
 
 impl<R: SolInterface> From<sol_types::Error> for ProviderError<R> {
-    fn from(value: sol_types::Error) -> Self { Self::Fatal(value.to_string()) }
+    fn from(value: sol_types::Error) -> Self {
+        Self::Fatal(value.to_string())
+    }
 }
 
 impl<R: SolInterface> From<MulticallError> for ProviderError<R> {
