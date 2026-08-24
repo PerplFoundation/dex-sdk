@@ -42,7 +42,7 @@ jobs:
       - name: Lint
         run: cargo clippy
 
-      - name: Check generated code is up to date
+      - name: Check code is up to date
         run: git diff --exit-code
 
       - name: Build
