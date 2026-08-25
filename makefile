@@ -10,6 +10,6 @@ build:
 	cargo build --all-features
 
 test:
-	cargo test
+	cargo test -- --no-capture
 
 all: check fmt lint build
