@@ -4,7 +4,7 @@
 ## Prerequisites
 
 * Rust >= 1.85.0
-* `anvil` binary from [Foundry](https://github.com/category-labs/foundry/releases/tag/v1.5.0-monad.0.2.0) Note: this is a custom anvil binary for monad specifically.
+* `anvil` binary from [Foundry](https://github.com/category-labs/foundry/releases/tag/v1.5.0-monad.0.2.0) Note: this is a custom anvil binary for Monad specifically.
 
 ## Contributing
 
