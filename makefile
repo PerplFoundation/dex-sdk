@@ -12,4 +12,4 @@ build:
 test:
 	cargo test -- --no-capture
 
-all: check fmt lint build
+all: check fmt lint build test
