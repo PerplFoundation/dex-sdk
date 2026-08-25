@@ -21,6 +21,13 @@ jobs:
         with:
           toolchain: 1.97
           components: rustfmt, clippy
+
+      - name: Install Rust Nightly
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+        with:
+          toolchain: nightly-2026-08-22
+          components: rustfmt, clippy
+
       - name: Install Monad Foundry
         run: |
           curl -L \
