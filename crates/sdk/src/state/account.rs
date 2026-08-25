@@ -98,33 +98,23 @@ impl Account {
     }
 
     /// Instant the account state is consistent with or was last updated at.
-    pub fn instant(&self) -> types::StateInstant {
-        self.instant
-    }
+    pub fn instant(&self) -> types::StateInstant { self.instant }
 
     /// ID of the account.
-    pub fn id(&self) -> types::AccountId {
-        self.id
-    }
+    pub fn id(&self) -> types::AccountId { self.id }
 
     /// Account address.
-    pub fn address(&self) -> Address {
-        self.address
-    }
+    pub fn address(&self) -> Address { self.address }
 
     /// The current balance of collateral tokens in this account,
     /// not including any open positions.
-    pub fn balance(&self) -> UD128 {
-        self.balance
-    }
+    pub fn balance(&self) -> UD128 { self.balance }
 
     /// The balance of collateral tokens locked by existing orders for this
     /// account.
     /// If this value exceeds [`Self::balance`], new Open* orders cannot be
     /// placed.
-    pub fn locked_balance(&self) -> UD128 {
-        self.locked_balance
-    }
+    pub fn locked_balance(&self) -> UD128 { self.locked_balance }
 
     /// The balance of collateral tokens available for trading.
     pub fn available_balance(&self) -> UD128 {
@@ -136,14 +126,10 @@ impl Account {
     }
 
     /// Total unrealized PnL of all positions of the account.
-    pub fn unrealized_pnl(&self) -> D256 {
-        self.positions.values().map(|p| p.pnl()).sum()
-    }
+    pub fn unrealized_pnl(&self) -> D256 { self.positions.values().map(|p| p.pnl()).sum() }
 
     /// Indicator of the account being frozen.
-    pub fn frozen(&self) -> bool {
-        self.frozen
-    }
+    pub fn frozen(&self) -> bool { self.frozen }
 
     /// Fee tier of the account, indexing the
     /// [`Perpetual::fee_schedule`] of every contract it trades. Tier 0 is the
@@ -153,14 +139,10 @@ impl Account {
     /// no per-account tiers, and accounts tracked via
     /// [`SnapshotBuilder::with_all_positions`] are not snapshotted - such an
     /// account reports a tier only once `AccountFeeTierSet` is observed for it.
-    pub fn fee_tier(&self) -> Option<types::FeeTier> {
-        self.fee_tier
-    }
+    pub fn fee_tier(&self) -> Option<types::FeeTier> { self.fee_tier }
 
     /// Positions the account has, up to one per each perpetual contract.
-    pub fn positions(&self) -> &HashMap<types::PerpetualId, position::Position> {
-        &self.positions
-    }
+    pub fn positions(&self) -> &HashMap<types::PerpetualId, position::Position> { &self.positions }
 
     pub(crate) fn update_frozen(&mut self, instant: types::StateInstant, frozen: bool) {
         self.frozen = frozen;

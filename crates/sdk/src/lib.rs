@@ -112,21 +112,13 @@ impl Chain {
         }
     }
 
-    pub fn chain_id(&self) -> u64 {
-        self.chain_id
-    }
+    pub fn chain_id(&self) -> u64 { self.chain_id }
 
-    pub fn collateral_token(&self) -> Address {
-        self.collateral_token
-    }
+    pub fn collateral_token(&self) -> Address { self.collateral_token }
 
-    pub fn deployed_at_block(&self) -> u64 {
-        self.deployed_at_block
-    }
+    pub fn deployed_at_block(&self) -> u64 { self.deployed_at_block }
 
-    pub fn exchange(&self) -> Address {
-        self.exchange
-    }
+    pub fn exchange(&self) -> Address { self.exchange }
 
     /// Perpetual contracts to track, empty (the default) meaning every
     /// perpetual listed on the exchange.
@@ -135,9 +127,7 @@ impl Chain {
     /// does not need to be told: an empty list makes
     /// [`state::SnapshotBuilder`] discover them at snapshot time. Configure it
     /// explicitly only to deliberately track a *subset*.
-    pub fn perpetuals(&self) -> &[types::PerpetualId] {
-        &self.perpetuals
-    }
+    pub fn perpetuals(&self) -> &[types::PerpetualId] { &self.perpetuals }
 
     /// Same chain, tracking only the given subset of perpetual contracts.
     pub fn with_perpetuals(mut self, perpetuals: Vec<types::PerpetualId>) -> Self {
@@ -151,9 +141,7 @@ impl Chain {
     /// [`Chain::perpetuals`] list is taken as given, exclusions and all, since
     /// naming a contract is a clearer statement of intent than the default set
     /// it would otherwise be filtered out of.
-    pub fn excluded_perpetuals(&self) -> &[types::PerpetualId] {
-        &self.excluded_perpetuals
-    }
+    pub fn excluded_perpetuals(&self) -> &[types::PerpetualId] { &self.excluded_perpetuals }
 
     /// Same chain, skipping the given perpetual contracts when discovering the
     /// set to track - see [`Chain::excluded_perpetuals`].

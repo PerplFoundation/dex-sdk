@@ -127,9 +127,7 @@ impl FeeSchedule {
     }
 
     /// Schedule this perpetual/exchange resolves its fees from.
-    pub fn key(&self) -> FeeScheduleKey {
-        self.key
-    }
+    pub fn key(&self) -> FeeScheduleKey { self.key }
 
     /// Whether the rates were reported per tier, rather than filled in from a
     /// base rate observed on its own.
@@ -137,9 +135,7 @@ impl FeeSchedule {
     /// False against a pre-v1.1.7.4 deployment, which has no tiers to report:
     /// every tier then carries the base rate, and reading a discounted one back
     /// tells the caller nothing the base rate did not.
-    pub fn is_tiered(&self) -> bool {
-        self.tiered
-    }
+    pub fn is_tiered(&self) -> bool { self.tiered }
 
     /// Taker fee of the given tier.
     ///
@@ -164,30 +160,20 @@ impl FeeSchedule {
     }
 
     /// Base (tier 0) taker fee.
-    pub fn base_taker_fee(&self) -> UD64 {
-        self.taker_fees[0]
-    }
+    pub fn base_taker_fee(&self) -> UD64 { self.taker_fees[0] }
 
     /// Base (tier 0) maker fee.
-    pub fn base_maker_fee(&self) -> UD64 {
-        self.maker_fees[0]
-    }
+    pub fn base_maker_fee(&self) -> UD64 { self.maker_fees[0] }
 
     /// Taker fee of every tier, base rate first.
-    pub fn taker_fees(&self) -> &[UD64; FEE_TIERS] {
-        &self.taker_fees
-    }
+    pub fn taker_fees(&self) -> &[UD64; FEE_TIERS] { &self.taker_fees }
 
     /// Maker fee of every tier, base rate first.
-    pub fn maker_fees(&self) -> &[UD64; FEE_TIERS] {
-        &self.maker_fees
-    }
+    pub fn maker_fees(&self) -> &[UD64; FEE_TIERS] { &self.maker_fees }
 
     /// Same rates under a different key, for a perpetual repointed by
     /// `PerpFeeSchedIdSet`.
-    pub(crate) fn with_key(&self, key: FeeScheduleKey) -> Self {
-        Self { key, ..*self }
-    }
+    pub(crate) fn with_key(&self, key: FeeScheduleKey) -> Self { Self { key, ..*self } }
 
     /// Overrides the base (tier 0) rates, leaving the discounted tiers intact.
     ///
@@ -255,23 +241,17 @@ impl FeeScheduleRegistry {
 
     /// Exchange-wide default schedule, shared by every perpetual contract that
     /// has not been repointed at another one.
-    pub fn default_schedule(&self) -> FeeSchedule {
-        self.default
-    }
+    pub fn default_schedule(&self) -> FeeSchedule { self.default }
 
     /// Exchange-wide default schedule for real-world assets.
-    pub fn rwa_default_schedule(&self) -> FeeSchedule {
-        self.rwa_default
-    }
+    pub fn rwa_default_schedule(&self) -> FeeSchedule { self.rwa_default }
 
     /// Custom schedules, by the id of the perpetual contract each is keyed by.
     ///
     /// Covers the perpetuals known when the snapshot was built, plus any picked
     /// up from a `FeeScheduleSet` since; a perpetual listed after the snapshot
     /// appears here only once its own schedule is written.
-    pub fn custom_schedules(&self) -> &HashMap<types::PerpetualId, FeeSchedule> {
-        &self.custom
-    }
+    pub fn custom_schedules(&self) -> &HashMap<types::PerpetualId, FeeSchedule> { &self.custom }
 
     /// Every registered schedule: the exchange-wide default, the RWA default,
     /// then the custom ones ordered by the perpetual id each is keyed by.

@@ -37,9 +37,7 @@ const SHORT: u8 = 1;
 
 // ── builders ────────────────────────────────────────────────────────────────
 
-fn si(block: u64) -> StateInstant {
-    StateInstant::new(block, block)
-}
+fn si(block: u64) -> StateInstant { StateInstant::new(block, block) }
 
 fn ev(event: ExchangeEvents, log_index: u64) -> RawEvent {
     RawEvent::new(TxHash::ZERO, 0, log_index, event)
@@ -142,9 +140,7 @@ fn maintenance_margin(perp_id: u32, hdths: u64) -> ExchangeEvents {
     })
 }
 
-fn deposit_for(lot: u64) -> u64 {
-    lot * 100_000
-}
+fn deposit_for(lot: u64) -> u64 { lot * 100_000 }
 
 // ── accessors ───────────────────────────────────────────────────────────────
 

@@ -89,9 +89,7 @@ pub struct Trade {
 
 impl Trade {
     /// Total size filled across all makers.
-    pub fn total_size(&self) -> UD64 {
-        self.maker_fills.iter().map(|f| f.size).sum()
-    }
+    pub fn total_size(&self) -> UD64 { self.maker_fills.iter().map(|f| f.size).sum() }
 
     /// Volume-weighted average price across all maker fills.
     ///
@@ -109,9 +107,7 @@ impl Trade {
     }
 
     /// Total maker fees paid across all fills.
-    pub fn total_maker_fees(&self) -> UD64 {
-        self.maker_fills.iter().map(|f| f.fee).sum()
-    }
+    pub fn total_maker_fees(&self) -> UD64 { self.maker_fills.iter().map(|f| f.fee).sum() }
 
     /// Total builder fees earned on this trade, taker and maker sides combined.
     ///

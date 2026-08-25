@@ -21,6 +21,19 @@ jobs:
         with:
           toolchain: 1.97
           components: rustfmt, clippy
+      - name: Install Monad Foundry
+        run: |
+          curl -L \
+            https://github.com/category-labs/foundry/releases/download/v1.5.0-monad.0.2.0/foundry_v1.5.0-monad.0.2.0_linux_amd64.tar.gz \
+            -o /tmp/foundry.tar.gz
+
+          tar -xzf /tmp/foundry.tar.gz -C /tmp
+
+          sudo mv /tmp/forge /usr/local/bin/forge
+          sudo mv /tmp/cast /usr/local/bin/cast
+          sudo mv /tmp/anvil /usr/local/bin/anvil
+          sudo mv /tmp/chisel /usr/local/bin/chisel
+          anvil --version
 
       - name: Machete
         uses: bnjbvr/cargo-machete@main
@@ -37,17 +50,17 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Format
-        run: cargo fmt
+        run: make fmt
 
       - name: Lint
-        run: cargo clippy
+        run: make lint
 
       - name: Check code is up to date
         run: git diff --exit-code
 
       - name: Build
-        run: cargo build --all-features
+        run: make build
 
-#       - name: Test
-#         run: cargo test
+      - name: Test
+        run: make test
 

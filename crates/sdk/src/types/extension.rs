@@ -77,9 +77,7 @@ impl BuilderAttribution {
     /// The fee is bounded by [`MAX_BUILDER_FEE_PER_100K`] and quantized to
     /// [`num::FEE_SCALE`] decimal places on encoding; use
     /// [`Self::encode`] to detect an out-of-range rate before submitting.
-    pub fn new(builder_id: super::BuilderId, fee: UD64) -> Self {
-        Self { builder_id, fee }
-    }
+    pub fn new(builder_id: super::BuilderId, fee: UD64) -> Self { Self { builder_id, fee } }
 
     /// Builder attribution as recorded on-chain, from the raw `Per100K` fee
     /// rate.
@@ -89,20 +87,14 @@ impl BuilderAttribution {
 
     /// Builder code the order is attributed to. Zero means no builder, in which
     /// case no envelope is submitted at all.
-    pub fn builder_id(&self) -> super::BuilderId {
-        self.builder_id
-    }
+    pub fn builder_id(&self) -> super::BuilderId { self.builder_id }
 
     /// Additive builder fee *rate* requested by the order, as a fraction of the
     /// traded amount.
-    pub fn fee(&self) -> UD64 {
-        self.fee
-    }
+    pub fn fee(&self) -> UD64 { self.fee }
 
     /// Raw `Per100K` fee rate as submitted on-chain.
-    pub fn fee_per_100k(&self) -> U256 {
-        num::fee_converter().to_unsigned(self.fee)
-    }
+    pub fn fee_per_100k(&self) -> U256 { num::fee_converter().to_unsigned(self.fee) }
 
     /// Encodes the envelope to submit with a V2 order entrypoint, rejecting a
     /// fee rate the contract's decoder would reject.

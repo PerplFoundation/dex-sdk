@@ -10,9 +10,7 @@ use fastnum::{
 pub const FEE_SCALE: u8 = 5;
 
 /// Converter for fee rates, see [`FEE_SCALE`].
-pub fn fee_converter() -> Converter {
-    Converter::new(FEE_SCALE)
-}
+pub fn fee_converter() -> Converter { Converter::new(FEE_SCALE) }
 
 /// Fixed-point to decimal converter.
 #[derive(Clone, Copy, Debug, Default)]
@@ -23,13 +21,9 @@ pub struct Converter {
 impl Converter {
     /// Fixed-point converter for `decimals` decimal places. `pub` to match the
     /// other public constructors, so callers can build one directly.
-    pub fn new(decimals: u8) -> Self {
-        Self { decimals: decimals as i32 }
-    }
+    pub fn new(decimals: u8) -> Self { Self { decimals: decimals as i32 } }
 
-    pub fn decimals(&self) -> u8 {
-        self.decimals as u8
-    }
+    pub fn decimals(&self) -> u8 { self.decimals as u8 }
 
     pub fn scale<const N: usize>(&self) -> UnsignedDecimal<N> {
         UnsignedDecimal::<N>::from_parts(

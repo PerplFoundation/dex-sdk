@@ -108,50 +108,34 @@ impl Exchange {
     }
 
     /// Revision of the exchange smart contract the SDK targeted at.
-    pub const fn revision() -> &'static str {
-        crate::abi::DEX_REVISION
-    }
+    pub const fn revision() -> &'static str { crate::abi::DEX_REVISION }
 
     /// Chain the snapshot collected from.
-    pub fn chain(&self) -> &Chain {
-        &self.chain
-    }
+    pub fn chain(&self) -> &Chain { &self.chain }
 
     /// Instant the snapshot is consistent with or was last updated at.
-    pub fn instant(&self) -> types::StateInstant {
-        self.instant
-    }
+    pub fn instant(&self) -> types::StateInstant { self.instant }
 
     /// Feature set of the *deployed* contract, which can lag behind the
     /// revision the SDK targets ([`Self::revision`]). Detected while
     /// building the snapshot and kept up to date by `ContractVersionSet`.
-    pub fn features(&self) -> ContractFeatures {
-        self.features
-    }
+    pub fn features(&self) -> ContractFeatures { self.features }
 
     /// Version reported by the deployed contract, `None` before v1.1.7.4 which
     /// has no version getter.
-    pub fn contract_version(&self) -> Option<ContractVersion> {
-        self.features.version()
-    }
+    pub fn contract_version(&self) -> Option<ContractVersion> { self.features.version() }
 
     /// Every fee schedule known to the exchange, which perpetual contracts
     /// resolve their fees from by pointing at one (see
     /// [`Perpetual::fee_schedule`]).
-    pub fn fee_schedules(&self) -> &FeeScheduleRegistry {
-        &self.fee_schedules
-    }
+    pub fn fee_schedules(&self) -> &FeeScheduleRegistry { &self.fee_schedules }
 
     /// Exchange-wide default fee schedule, shared by every perpetual contract
     /// that has not been repointed at another one.
-    pub fn default_fee_schedule(&self) -> FeeSchedule {
-        self.fee_schedules.default_schedule()
-    }
+    pub fn default_fee_schedule(&self) -> FeeSchedule { self.fee_schedules.default_schedule() }
 
     /// Exchange-wide default fee schedule for real-world assets.
-    pub fn rwa_fee_schedule(&self) -> FeeSchedule {
-        self.fee_schedules.rwa_default_schedule()
-    }
+    pub fn rwa_fee_schedule(&self) -> FeeSchedule { self.fee_schedules.rwa_default_schedule() }
 
     /// Fee schedule registered under the given key, `None` for a custom
     /// schedule that has never been observed - one keyed by a perpetual the
@@ -162,53 +146,37 @@ impl Exchange {
 
     /// Converter of fixed-point <-> decimal numbers for collateral token
     /// amounts.
-    pub fn collateral_converter(&self) -> num::Converter {
-        self.collateral_converter
-    }
+    pub fn collateral_converter(&self) -> num::Converter { self.collateral_converter }
 
     /// Funding interval in blocks.
     ///
     /// Each perpetual contract has own [Perpetual::funding_start_block]  this
     /// interval applied to.
-    pub fn funding_interval_blocks(&self) -> u32 {
-        self.funding_interval_blocks
-    }
+    pub fn funding_interval_blocks(&self) -> u32 { self.funding_interval_blocks }
 
     /// Minimal amount in collateral token that can be posted to the book.
-    pub fn min_post(&self) -> UD128 {
-        self.min_post
-    }
+    pub fn min_post(&self) -> UD128 { self.min_post }
 
     /// Minimal amount in collateral token that can be settled.
-    pub fn min_settle(&self) -> UD128 {
-        self.min_settle
-    }
+    pub fn min_settle(&self) -> UD128 { self.min_settle }
 
     /// Amount in collateral token locked with each posted order to
     /// pay the account that cleans it up:
     /// * When cancelled/changed by the original poster -> the original poster
     /// * When filled -> the original poster
     /// * In all other cases -> the one that performed the recycling
-    pub fn recycle_fee(&self) -> UD128 {
-        self.recycle_fee
-    }
+    pub fn recycle_fee(&self) -> UD128 { self.recycle_fee }
 
     /// Perpetual contracts state tracked within the exchange, according to
     /// initial snapshot building configuration.
-    pub fn perpetuals(&self) -> &HashMap<types::PerpetualId, Perpetual> {
-        &self.perpetuals
-    }
+    pub fn perpetuals(&self) -> &HashMap<types::PerpetualId, Perpetual> { &self.perpetuals }
 
     /// Accounts state tracked within the exchange, according to initial
     /// snapshot building configuration.
-    pub fn accounts(&self) -> &HashMap<types::AccountId, Account> {
-        &self.accounts
-    }
+    pub fn accounts(&self) -> &HashMap<types::AccountId, Account> { &self.accounts }
 
     /// Indicates if exchange is being halted.
-    pub fn is_halted(&self) -> bool {
-        self.is_halted
-    }
+    pub fn is_halted(&self) -> bool { self.is_halted }
 
     /// Updates state snapshot by applying raw exchange events from the
     /// specific block.

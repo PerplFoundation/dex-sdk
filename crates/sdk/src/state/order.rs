@@ -406,52 +406,34 @@ impl Order {
     }
 
     /// Instant the order state is consistent with or was last updated at.
-    pub fn instant(&self) -> types::StateInstant {
-        self.instant
-    }
+    pub fn instant(&self) -> types::StateInstant { self.instant }
 
     /// ID of the request this order was posted or updated by.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn request_id(&self) -> Option<types::RequestId> {
-        self.request_id
-    }
+    pub fn request_id(&self) -> Option<types::RequestId> { self.request_id }
 
     /// Client order ID = ID of the request this order was placed by.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn client_order_id(&self) -> Option<types::RequestId> {
-        self.client_order_id
-    }
+    pub fn client_order_id(&self) -> Option<types::RequestId> { self.client_order_id }
 
     /// ID of the order in the book.
-    pub fn order_id(&self) -> types::OrderId {
-        self.order_id
-    }
+    pub fn order_id(&self) -> types::OrderId { self.order_id }
 
     /// Type of the order.
-    pub fn r#type(&self) -> types::OrderType {
-        self.r#type
-    }
+    pub fn r#type(&self) -> types::OrderType { self.r#type }
 
     /// ID of the account issued the order.
-    pub fn account_id(&self) -> types::AccountId {
-        self.account_id
-    }
+    pub fn account_id(&self) -> types::AccountId { self.account_id }
 
     /// Limit price of the order.
-    pub fn price(&self) -> UD64 {
-        self.price
-    }
+    pub fn price(&self) -> UD64 { self.price }
 
     /// Current size of the order.
-    pub fn size(&self) -> UD64 {
-        self.size
-    }
+    pub fn size(&self) -> UD64 { self.size }
 
     /// Size of the order that was placed.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn placed_size(&self) -> Option<UD64> {
-        self.placed_size
-    }
+    pub fn placed_size(&self) -> Option<UD64> { self.placed_size }
 
     /// Filled size of the order.
     /// Available only from real-time events, not from the initial snapshot.
@@ -460,9 +442,7 @@ impl Order {
     }
 
     /// Expiry block of the order, zero if was not specified.
-    pub fn expiry_block(&self) -> u64 {
-        self.expiry_block
-    }
+    pub fn expiry_block(&self) -> u64 { self.expiry_block }
 
     /// Check if the order is expired.
     /// NOTE: Valid only after the end of expiry block processing.
@@ -471,27 +451,19 @@ impl Order {
     }
 
     /// Leverage of the order.
-    pub fn leverage(&self) -> UD64 {
-        self.leverage
-    }
+    pub fn leverage(&self) -> UD64 { self.leverage }
 
     /// Post-only flag.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn post_only(&self) -> Option<bool> {
-        self.post_only
-    }
+    pub fn post_only(&self) -> Option<bool> { self.post_only }
 
     /// Fill-or-fill flag.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn fill_or_kill(&self) -> Option<bool> {
-        self.fill_or_kill
-    }
+    pub fn fill_or_kill(&self) -> Option<bool> { self.fill_or_kill }
 
     /// Immediate-or-cancel flag.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn immediate_or_cancel(&self) -> Option<bool> {
-        self.immediate_or_cancel
-    }
+    pub fn immediate_or_cancel(&self) -> Option<bool> { self.immediate_or_cancel }
 
     /// Builder the order is attributed to, along with the additive fee rate
     /// that builder charges on the size the order adds. `None` means no
@@ -502,23 +474,17 @@ impl Order {
     /// v1.1.7.4+, via `getOrderV2`) and from the `OrderRequestV2` event stream.
     /// What a builder actually earned per fill is reported by the `builder_fee`
     /// of [`super::OrderEventType::Filled`].
-    pub fn builder(&self) -> Option<types::BuilderAttribution> {
-        self.builder
-    }
+    pub fn builder(&self) -> Option<types::BuilderAttribution> { self.builder }
 
     /// Previous order ID in the FIFO queue at this price level.
     /// Available from snapshot, None for newly placed orders or if this is the
     /// first order.
-    pub fn prev_order_id(&self) -> Option<types::OrderId> {
-        self.prev_order_id
-    }
+    pub fn prev_order_id(&self) -> Option<types::OrderId> { self.prev_order_id }
 
     /// Next order ID in the FIFO queue at this price level.
     /// Available from snapshot, None for newly placed orders or if this is the
     /// last order.
-    pub fn next_order_id(&self) -> Option<types::OrderId> {
-        self.next_order_id
-    }
+    pub fn next_order_id(&self) -> Option<types::OrderId> { self.next_order_id }
 }
 
 impl std::fmt::Display for Order {

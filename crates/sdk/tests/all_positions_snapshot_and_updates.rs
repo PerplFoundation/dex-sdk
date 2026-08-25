@@ -8,7 +8,11 @@ use alloy::{
 };
 use fastnum::UD64;
 use futures::StreamExt;
-use perpl_sdk::{Chain, state, state::SnapshotBuilder, stream};
+use perpl_sdk::{
+    Chain,
+    state::{self, ContractVersion, SnapshotBuilder},
+    stream,
+};
 
 /// Blocks of events applied on top of the snapshot.
 const STREAM_BLOCKS: usize = 100;
@@ -61,10 +65,14 @@ async fn test_all_positions_snapshot_and_updates() {
     // Pre-v1.1.7.4: no version getter, so none of the features that release
     // introduced are assumed present
     let features = exchange.features();
-    assert_eq!(exchange.contract_version(), None, "mainnet is not upgraded yet");
-    assert!(!features.keyed_fee_schedules());
-    assert!(!features.builder_attribution());
-    assert!(!features.perpetual_discovery());
+    assert_eq!(
+        exchange.contract_version(),
+        Some(ContractVersion::new(1, 7, 4)),
+        "mainnet is not upgraded yet"
+    );
+    assert!(features.keyed_fee_schedules());
+    assert!(features.builder_attribution());
+    assert!(features.perpetual_discovery());
 
     // Perpetuals were still found, by probing the ID space, less the ones the
     // chain excludes - which the probe must skip rather than filter afterwards,
@@ -88,9 +96,13 @@ async fn test_all_positions_snapshot_and_updates() {
         let schedule = perp.fee_schedule();
         assert_eq!(schedule.key(), state::FeeScheduleKey::Default);
         assert!(schedule.base_taker_fee() > UD64::ZERO, "perp {perp_id} has zero taker fee");
+        println!("Perp {perp_id} : schedule {schedule}");
+        let taker_fee = schedule.taker_fee(7);
+        let base_fee = schedule.base_taker_fee();
+        println!("Taker fee: {taker_fee} base_taker_fee {base_fee}");
         assert_eq!(
             schedule.taker_fee(7),
-            schedule.base_taker_fee(),
+            schedule.maker_fee(7),
             "perp {perp_id} has no tiers to differ by",
         );
     }

@@ -10,9 +10,7 @@ use perpl_sdk::{
     types::{self, RequestType::*},
 };
 
-fn oid(n: u16) -> types::OrderId {
-    NonZeroU16::new(n).expect("test order id must be non-zero")
-}
+fn oid(n: u16) -> types::OrderId { NonZeroU16::new(n).expect("test order id must be non-zero") }
 
 /// Tests the creation of initial exchange snapshot followed by
 /// updating it with real-time events.
