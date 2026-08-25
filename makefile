@@ -1,7 +1,7 @@
 check: 
 	cargo check
 fmt:
-	cargo +nightly fmt
+	cargo +nightly-2026-08-22 fmt
 
 lint: 
 	cargo clippy
