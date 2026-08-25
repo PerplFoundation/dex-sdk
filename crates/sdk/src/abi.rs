@@ -37,6 +37,7 @@ pub mod errors {
 /// drive [`crate::testing::TestExchange::new_at_previous_version`]. Calling
 /// them against a current deployment reverts on the unknown selector.
 #[cfg(feature = "testing")]
+#[allow(clippy::too_many_arguments)]
 pub mod dex_legacy {
     alloy::sol! {
         #[sol(rpc)]
