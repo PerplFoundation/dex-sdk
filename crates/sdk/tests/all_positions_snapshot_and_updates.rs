@@ -96,14 +96,13 @@ async fn test_all_positions_snapshot_and_updates() {
         let schedule = perp.fee_schedule();
         assert_eq!(schedule.key(), state::FeeScheduleKey::Default);
         assert!(schedule.base_taker_fee() > UD64::ZERO, "perp {perp_id} has zero taker fee");
-        println!("Perp {perp_id} : schedule {schedule}");
-        let taker_fee = schedule.taker_fee(7);
-        let base_fee = schedule.base_taker_fee();
-        println!("Taker fee: {taker_fee} base_taker_fee {base_fee}");
-        assert_eq!(
-            schedule.taker_fee(7),
-            schedule.maker_fee(7),
-            "perp {perp_id} has no tiers to differ by",
+        assert!(
+            schedule.taker_fee(7) < schedule.taker_fee(1),
+            "perp {perp_id} has no taker tiers to differ by",
+        );
+        assert!(
+            schedule.maker_fee(7) < schedule.maker_fee(1),
+            "perp {perp_id} has no maker tiers to differ by",
         );
     }
 
