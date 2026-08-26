@@ -7,6 +7,27 @@ use crate::{abi::dex::Exchange::PerpetualInfoV2, types};
 const FUNDING_RATE_SCALE: u8 = 5;
 const LEVERAGE_SCALE: u8 = 2;
 
+/// The block of the first funding event strictly after `block`.
+///
+/// Funding events fall on one exchange-wide grid of multiples of
+/// `funding_interval`, shared by every contract. A contract activated
+/// part-way through an interval therefore anchors to the *next* grid block,
+/// not to the block on which it was activated.
+///
+/// The boundary case is deliberate: a `block` already on the grid advances a
+/// full interval, because the event at that block belongs to the schedule
+/// that was already running when the contract was activated.
+///
+/// A zero `funding_interval` has no grid to round onto; the block is returned
+/// unchanged rather than dividing by zero, so that a malformed exchange
+/// configuration degrades instead of panicking inside an event reducer.
+fn next_funding_event_block(block: u64, funding_interval: u64) -> u64 {
+    if funding_interval == 0 {
+        return block;
+    }
+    block - (block % funding_interval) + funding_interval
+}
+
 /// Perpetual contract tradeable at the exchange.
 ///
 /// Provides the current state of contract parameters, market data and
@@ -511,12 +532,20 @@ impl Perpetual {
             .map_err(|err| DexError::OrderBook(self.id, err))
     }
 
-    pub(crate) fn update_paused(&mut self, instant: types::StateInstant, paused: bool) {
+    pub(crate) fn update_paused(
+        &mut self,
+        instant: types::StateInstant,
+        paused: bool,
+        funding_interval: u64,
+    ) {
         self.is_paused = paused;
         self.instant = instant;
-        // Funding start block is set on first unpausing
+        // Funding start block is set on first unpausing. The anchor is the
+        // first funding-grid block after the unpause, not the unpause block
+        // itself - see `next_funding_event_block`.
         if !paused && self.funding_start_block == 0 {
-            self.funding_start_block = instant.block_number()
+            self.funding_start_block =
+                next_funding_event_block(instant.block_number(), funding_interval)
         }
     }
 
@@ -865,6 +894,82 @@ mod tests {
     use super::*;
 
     fn oid(n: u16) -> types::OrderId { NonZeroU16::new(n).expect("test order id must be non-zero") }
+
+    /// One hour of blocks, the funding interval the exchange reports on
+    /// mainnet. Any non-trivial value exercises the same arithmetic.
+    const INTERVAL: u64 = 8571;
+
+    fn at(block: u64) -> types::StateInstant { types::StateInstant::new(block, 1_700_000_000) }
+
+    #[test]
+    fn next_funding_event_block_rounds_up_to_the_grid() {
+        assert_eq!(next_funding_event_block(1, INTERVAL), INTERVAL);
+        assert_eq!(next_funding_event_block(INTERVAL - 1, INTERVAL), INTERVAL);
+        // A block already on the grid advances a whole interval - the event at
+        // that block belongs to the schedule already running.
+        assert_eq!(next_funding_event_block(INTERVAL, INTERVAL), 2 * INTERVAL);
+        assert_eq!(next_funding_event_block(0, INTERVAL), INTERVAL);
+        // Every result is on the grid and strictly ahead of the input.
+        for block in [1u64, 5_000, 8_570, 8_571, 97_627_404, 99_360_126] {
+            let next = next_funding_event_block(block, INTERVAL);
+            assert_eq!(next % INTERVAL, 0, "block {block} produced off-grid {next}");
+            assert!(next > block, "block {block} produced non-advancing {next}");
+        }
+    }
+
+    #[test]
+    fn next_funding_event_block_tolerates_a_zero_interval() {
+        assert_eq!(next_funding_event_block(1_234, 0), 1_234);
+    }
+
+    #[test]
+    fn first_unpause_anchors_funding_to_the_grid_not_the_observed_block() {
+        let mut perp = Perpetual::for_testing(1);
+        assert_eq!(perp.funding_start_block(), 0);
+
+        // Activation part-way through an interval: the observed block is NOT
+        // the anchor. Mirrors the mainnet listing at block 97,627,404, which
+        // the contract anchored to 97,632,261.
+        perp.update_paused(at(97_627_404), false, INTERVAL);
+
+        assert_eq!(perp.funding_start_block(), 97_632_261);
+        assert_eq!(perp.funding_start_block() % INTERVAL, 0);
+        assert!(!perp.is_paused());
+    }
+
+    #[test]
+    fn unpause_on_a_grid_block_anchors_to_the_following_interval() {
+        let mut perp = Perpetual::for_testing(1);
+        perp.update_paused(at(INTERVAL), false, INTERVAL);
+        assert_eq!(perp.funding_start_block(), 2 * INTERVAL);
+    }
+
+    #[test]
+    fn funding_anchor_is_written_once_and_survives_a_repause() {
+        let mut perp = Perpetual::for_testing(1);
+
+        // The listing batch unpauses and re-pauses in one transaction: the
+        // contract is activated but not tradeable. The anchor is taken on the
+        // unpause and must not move afterwards.
+        perp.update_paused(at(97_627_404), false, INTERVAL);
+        let anchor = perp.funding_start_block();
+        assert_eq!(anchor % INTERVAL, 0, "the preserved anchor must be a grid block");
+        perp.update_paused(at(97_627_404), true, INTERVAL);
+
+        assert_eq!(perp.funding_start_block(), anchor);
+        assert!(perp.is_paused());
+
+        // A later unpause must not re-anchor either.
+        perp.update_paused(at(98_000_000), false, INTERVAL);
+        assert_eq!(perp.funding_start_block(), anchor);
+    }
+
+    #[test]
+    fn pause_never_sets_the_funding_anchor() {
+        let mut perp = Perpetual::for_testing(1);
+        perp.update_paused(at(97_627_404), true, INTERVAL);
+        assert_eq!(perp.funding_start_block(), 0);
+    }
 
     #[test]
     fn update_order_expired_order_renewal_moves_to_back() {
