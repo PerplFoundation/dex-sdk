@@ -953,6 +953,7 @@ mod tests {
         // unpause and must not move afterwards.
         perp.update_paused(at(97_627_404), false, INTERVAL);
         let anchor = perp.funding_start_block();
+        assert_eq!(anchor % INTERVAL, 0, "the preserved anchor must be a grid block");
         perp.update_paused(at(97_627_404), true, INTERVAL);
 
         assert_eq!(perp.funding_start_block(), anchor);
