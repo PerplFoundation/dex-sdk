@@ -2821,6 +2821,7 @@ dependencies = [
  "alloy",
  "alloy-sol-types",
  "chrono",
+ "clap",
  "colored",
  "dashmap",
  "derive_more",

@@ -21,6 +21,8 @@ thiserror.workspace = true
 alloy = { workspace = true, features = ["node-bindings"] }
 tabled = { workspace = true }
 tokio = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+
 
 [features]
 default = ["display", "testing"]

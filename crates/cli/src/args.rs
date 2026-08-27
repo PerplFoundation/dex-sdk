@@ -1,5 +1,6 @@
 use alloy::primitives::{Address, TxHash};
 use clap::{Parser, Subcommand};
+use fastnum::decimal::Decimal;
 use perpl_sdk::types;
 
 pub(crate) const DEFAULT_MAINNET_RPC_PROVIDER: &str = "https://rpc.monad.xyz";
@@ -73,6 +74,22 @@ pub enum Commands {
         /// Transaction hash to trace
         tx_hash: TxHash,
     },
+    Order {
+        #[command(subcommand)]
+        command: OrderCommands,
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum OrderCommands {
+    Create {
+        #[arg(long, help="Market index to create order on.")]
+        perp: usize,
+        #[arg(long, help="Scaled human readable amount.")]
+        amount: String,
+        #[arg(long, help="(Optional) Price at which to create the order.")]
+        price: String
+    }
 }
 
 #[derive(Subcommand, Debug)]
