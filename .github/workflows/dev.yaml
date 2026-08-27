@@ -1,0 +1,50 @@
+name: Bump version
+on:
+  push:
+    branches:
+      - dev
+
+# set permissions for the workflow
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    ## NOT on a specific commit
+    # NOT IF THE LAST COMMIT IS A RELEASE COMMIT
+    if: "!contains(github.event.head_commit.message, 'Bump version to v')"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: 1.97
+          components: rustfmt, clippy
+
+
+      - name: Bump Version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          make dev-version
+

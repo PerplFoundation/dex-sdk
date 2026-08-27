@@ -1,10 +1,10 @@
 name: CI
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
+    branches:
+      - main
+      - dev
 
 jobs:
   ci:
@@ -13,6 +13,12 @@ jobs:
       CARGO_TERM_COLOR: always
 
     steps:
+      - name: Check PR branch
+        if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'dev'
+        run: |
+          echo "Pull requests to main must come from dev branch."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
