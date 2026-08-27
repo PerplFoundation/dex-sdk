@@ -12,6 +12,7 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
 
+    if: "!contains(github.event.head_commit.message, 'Bump version to v')"
     steps:
       - name: Check PR branch
         if: github.event.pull_request.base.ref == 'main' && github.event.pull_request.head.ref != 'dev'
