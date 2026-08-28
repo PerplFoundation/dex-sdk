@@ -31,3 +31,6 @@ display = ["tabled", "colored"]
 # mutation methods in production builds.
 test-utils = []
 testing = ["alloy/node-bindings"]
+
+[package.metadata.cargo-machete]
+ignored = ["alloy-sol-types"]

@@ -79,6 +79,9 @@ where
                             .data,
                     ));
                 }
+                // Monad RPC does not guarantee logs are returned in block-internal order
+                // (eg block 68747089 from https://rpc-mainnet.monadinfra.com)
+                events.sort_by_key(|e| e.log_index());
                 Ok(RawBlockEvents::new(
                     types::StateInstant::new(block_num, block_header.timestamp),
                     events,
@@ -109,7 +112,6 @@ mod tests {
     use crate::Chain;
 
     #[tokio::test]
-    #[ignore = "temporary ignored until updated smart contract is deployed"]
     async fn test_stream_recent_blocks() {
         let client = RpcClient::builder()
             .layer(RetryBackoffLayer::new(10, 100, 200))

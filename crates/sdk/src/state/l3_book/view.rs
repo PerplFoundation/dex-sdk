@@ -46,7 +46,7 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                         best_ask,
                         best_bid,
                         best_ask - best_bid,
-                        (best_ask - best_bid) / (best_ask + best_bid / 2) * 100
+                        (best_ask - best_bid) / ((best_ask + best_bid) / 2) * 100
                     ),
                 ));
                 table.modify(Row::from(row_idx), Alignment::right());
@@ -69,10 +69,10 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                         level_orders.push('\n');
                     }
                     if !order.is_expired() {
-                        level_orders.push_str(format!("{:#} ", &*(*order)).as_str());
+                        level_orders.push_str(format!("{:#} ", *(*order)).as_str());
                     } else {
                         level_orders.push_str(
-                            format!("{:#} ", &*(*order))
+                            format!("{:#} ", *(*order))
                                 .bright_red()
                                 .to_string()
                                 .as_str(),

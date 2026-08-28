@@ -1,7 +1,8 @@
-use fastnum::{D64, D256, UD64, UD128};
+use alloy::primitives::U256;
+use fastnum::{D64, D256, UD64, UD128, udec64};
 
 use super::num;
-use crate::{abi::dex::Exchange::PositionInfo, types};
+use crate::{abi::dex::Exchange::PositionInfoV2, types};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PositionType {
@@ -18,7 +19,7 @@ pub struct Position {
     account_id: types::AccountId,
     r#type: PositionType,
     #[debug("{entry_price}")]
-    entry_price: UD64, // SC allocates 32 bits
+    entry_price: UD64, // SC allocates 32 bits + 16 bits residue
     #[debug("{size}")]
     size: UD64, // SC allocates 40 bits
     #[debug("{deposit}")]
@@ -35,20 +36,26 @@ impl Position {
     pub(crate) fn new(
         instant: types::StateInstant,
         perpetual_id: types::PerpetualId,
-        info: &PositionInfo,
+        info: &PositionInfoV2,
         collateral_converter: num::Converter,
         price_converter: num::Converter,
         size_converter: num::Converter,
         maintenance_margin: UD64,
     ) -> Self {
-        let entry_price = price_converter.from_unsigned(info.pricePNS);
+        let r#type = info.positionType.into();
+        let entry_price = Self::effective_entry_price(
+            r#type,
+            info.pricePNS,
+            info.priceResiduePNSQ16.to(),
+            price_converter,
+        );
         let size = size_converter.from_unsigned(info.lotLNS);
         Self {
             instant,
             funding_instant: instant,
             perpetual_id,
             account_id: info.accountId.to(),
-            r#type: info.positionType.into(),
+            r#type,
             entry_price,
             size,
             deposit: collateral_converter.from_unsigned(info.depositCNS),
@@ -65,11 +72,15 @@ impl Position {
         perpetual_id: types::PerpetualId,
         account_id: types::AccountId,
         r#type: PositionType,
-        entry_price: UD64,
+        price_pns: U256,
+        price_residue_pnsq16: u32,
+        price_converter: num::Converter,
         size: UD64,
         deposit: UD128,
         maintenance_margin: UD64,
     ) -> Self {
+        let entry_price =
+            Self::effective_entry_price(r#type, price_pns, price_residue_pnsq16, price_converter);
         Self {
             instant,
             funding_instant: instant,
@@ -98,7 +109,7 @@ impl Position {
     /// Type of the position.
     pub fn r#type(&self) -> PositionType { self.r#type }
 
-    /// Position entry price.
+    /// Position entry price, full precision - including 16 bit rounding residue
     pub fn entry_price(&self) -> UD64 { self.entry_price }
 
     /// Size of the position.
@@ -147,8 +158,19 @@ impl Position {
         self.instant = instant;
     }
 
-    pub(crate) fn update_entry_price(&mut self, instant: types::StateInstant, entry_price: UD64) {
-        self.entry_price = entry_price;
+    pub(crate) fn update_entry_price(
+        &mut self,
+        instant: types::StateInstant,
+        price_pns: U256,
+        price_residue_pnsq16: u32,
+        price_converter: num::Converter,
+    ) {
+        self.entry_price = Self::effective_entry_price(
+            self.r#type,
+            price_pns,
+            price_residue_pnsq16,
+            price_converter,
+        );
         self.instant = instant;
     }
 
@@ -201,6 +223,43 @@ impl Position {
         self.maintenance_margin_requirement =
             self.entry_price.resize() * self.size.resize() / maintenance_margin.resize();
         self.instant = instant;
+    }
+
+    /// Calculates effective entry price considering:
+    /// - CEIL rounding for LONG positions
+    /// - FLOOR rounding for SHORT positions
+    /// - 16 bit rounding residue preserved by the smart contract separately
+    ///   from PNS rounded price
+    ///
+    ///   LONG  (stored entry_price = ceil):  
+    ///   = (entry_price - 1) + residue / Q    if residue > 0
+    ///   = entry_price                        if residue == 0
+    ///
+    ///   SHORT (stored entry_price = floor):
+    ///   = entry_price  + residue / Q
+    ///
+    ///   where Q = 2^16 = 65536
+    pub(crate) fn effective_entry_price(
+        position_type: PositionType,
+        price_pns: U256,
+        price_residue_pnsq16: u32,
+        price_converter: num::Converter,
+    ) -> UD64 {
+        const Q: UD64 = udec64!(65536).with_rounding_mode(fastnum::decimal::RoundingMode::Floor);
+        if price_residue_pnsq16 == 0 {
+            price_converter.from_unsigned(price_pns)
+        } else {
+            let mut entry_price = UD64::from_u64(price_pns.to())
+                .with_rounding_mode(fastnum::decimal::RoundingMode::Floor); // SC allocates 32 bits
+            if position_type.is_long() && entry_price >= UD64::ONE {
+                entry_price -= UD64::ONE;
+            }
+            (entry_price
+                + UD64::from_u32(price_residue_pnsq16)
+                    .with_rounding_mode(fastnum::decimal::RoundingMode::Floor)
+                    / Q)
+                / price_converter.scale()
+        }
     }
 }
 
@@ -289,43 +348,87 @@ mod tests {
     use crate::types::StateInstant;
 
     #[test]
+    fn test_effective_entry_price() {
+        let pc = num::Converter::new(4);
+        assert_eq!(
+            Position::effective_entry_price(PositionType::Long, U256::from(1), 0, pc),
+            udec64!(0.0001)
+        );
+        assert_eq!(
+            Position::effective_entry_price(PositionType::Long, U256::from(1), 1, pc),
+            udec64!(0.00000000152587890625) // 1 / 65536 * 10 ^ -4
+        );
+        assert_eq!(
+            Position::effective_entry_price(PositionType::Long, U256::from(10001), 8, pc),
+            udec64!(1.00000001220703125) // 1 + (8 / 65536 * 10 ^ -4)
+        );
+        assert_eq!(
+            Position::effective_entry_price(PositionType::Long, U256::from(10000), 65535, pc),
+            udec64!(0.9999999984741210937) // 1 - (1 / 65536 * 10 ^ -4)
+        );
+
+        assert_eq!(
+            Position::effective_entry_price(PositionType::Short, U256::from(1), 0, pc),
+            udec64!(0.0001)
+        );
+        assert_eq!(
+            Position::effective_entry_price(PositionType::Short, U256::from(0), 1, pc),
+            udec64!(0.00000000152587890625) // 1 / 65536 * 10 ^ -4
+        );
+        assert_eq!(
+            Position::effective_entry_price(PositionType::Short, U256::from(10000), 8, pc),
+            udec64!(1.00000001220703125) // 1 + (8 / 65536 * 10 ^ -4)
+        );
+        assert_eq!(
+            Position::effective_entry_price(PositionType::Short, U256::from(9999), 65535, pc),
+            udec64!(0.9999999984741210937) // 1 - (1 / 65536 * 10 ^ -4)
+        );
+    }
+
+    #[test]
     fn test_apply_mark_price() {
+        let pc = num::Converter::new(4);
         let mut pos = Position::opened(
             StateInstant::default(),
             1,
             1,
             PositionType::Long,
-            udec64!(100),
+            U256::from(100),
+            0,
+            pc,
             udec64!(10),
             UD128::ZERO,
             UD64::ONE,
         );
 
-        pos.apply_mark_price(StateInstant::default(), udec64!(150));
-        assert_eq!(pos.delta_pnl(), dec256!(500));
+        pos.apply_mark_price(StateInstant::default(), udec64!(0.015));
+        assert_eq!(pos.delta_pnl(), dec256!(0.05));
 
-        pos.apply_mark_price(StateInstant::default(), udec64!(50));
-        assert_eq!(pos.delta_pnl(), dec256!(-500));
+        pos.apply_mark_price(StateInstant::default(), udec64!(0.005));
+        assert_eq!(pos.delta_pnl(), dec256!(-0.05));
 
         let mut pos = Position::opened(
             StateInstant::default(),
             1,
             1,
             PositionType::Short,
-            udec64!(100),
+            U256::from(100),
+            0,
+            pc,
             udec64!(10),
             UD128::ZERO,
             UD64::ONE,
         );
-        pos.apply_mark_price(StateInstant::default(), udec64!(150));
-        assert_eq!(pos.delta_pnl(), dec256!(-500));
+        pos.apply_mark_price(StateInstant::default(), udec64!(0.015));
+        assert_eq!(pos.delta_pnl(), dec256!(-0.05));
 
-        pos.apply_mark_price(StateInstant::default(), udec64!(50));
-        assert_eq!(pos.delta_pnl(), dec256!(500));
+        pos.apply_mark_price(StateInstant::default(), udec64!(0.005));
+        assert_eq!(pos.delta_pnl(), dec256!(0.05));
     }
 
     #[test]
     fn test_apply_funding_payment() {
+        let pc = num::Converter::new(4);
         let (i0, i1, i2) =
             (StateInstant::default(), StateInstant::new(1, 1), StateInstant::new(2, 2));
         let mut pos = Position::opened(
@@ -333,7 +436,9 @@ mod tests {
             1,
             1,
             PositionType::Long,
-            udec64!(100),
+            U256::from(100),
+            0,
+            pc,
             udec64!(10),
             UD128::ZERO,
             UD64::ONE,
@@ -352,7 +457,9 @@ mod tests {
             1,
             1,
             PositionType::Short,
-            udec64!(100),
+            U256::from(100),
+            0,
+            pc,
             udec64!(10),
             UD128::ZERO,
             UD64::ONE,
@@ -365,8 +472,121 @@ mod tests {
         assert_eq!(pos.premium_pnl(), dec256!(-50));
     }
 
+    // Funding-accrual vs. position-mutating events (Bug 44).
+    //
+    // `Exchange::apply_events` settles the block's scheduled funding before the
+    // block's decreases, so the tick lands on each position's pre-decrease size
+    // and the SDK matches the contract's re-derived premium. The tests below
+    // verify that ordering at the Position level. A short of size 10 receives
+    // +5*10 = +50 for a `payment_per_unit` of 5.
+    fn short_at(instant: StateInstant) -> Position {
+        Position::opened(
+            instant,
+            1,
+            1,
+            PositionType::Short,
+            U256::from(100),
+            0,
+            num::Converter::new(4),
+            udec64!(10),
+            UD128::ZERO,
+            UD64::ONE,
+        )
+    }
+
+    // ── A/B/C: funding + decrease(s) in the SAME (funding-event) block ──────
+    //
+    // Scenario, matching the incident (one block holds the funding effect AND the
+    // decreases):
+    //
+    // Block N:
+    // the short (size 10) already exists and carries a funding balance —
+    // opened earlier, with a prior funding tick that set premium = 50.
+    //
+    // Block N + m:
+    // the funding-event block. Its scheduled funding takes effect here, in the
+    // same block as the decrease(s), in some on-chain order:
+    //     Tx A   decrease (10 -> 6)
+    //     Tx B   decrease   (6 -> 3) [two-decrease test only]
+    //     C      funding takes effect (effective-dated; not itself a tx)
+    //
+    // The contract re-derives premium at block N+m as
+    //   (fundingSumAtBlock - entryFundingSum) * size / scaling
+    // (`CalculationsLib::computePremiumPnl`), with `getFundingSumAtBlock`
+    // returning the sum "prior to OR AT" the block, so the remaining premium is
+    // (sn - entry) * final_size — independent of the on-chain order of A, B, C.
+    //
+    // `apply_events` settles the funding (C) in Pass 1, on each position's
+    // pre-decrease size, before Pass 2 applies the decreases (A, B) — so the
+    // SDK matches the contract for any order. These Position-level tests mirror
+    // that ordering (funding first, then the decreases). so=5 -> sn=6 gives a
+    // one-tick per-lot funding Δ=1; short of size 10, entry funding sum 0.
+
+    #[test]
+    fn test_funding_applied_before_same_block_decrease() {
+        // The tick due at i2 is applied even though the position is also touched by a
+        // decrease in the same block, because funding (Pass 1) runs first (Bug
+        // 44 fix).
+        let (i1, i2) = (StateInstant::new(1, 1), StateInstant::new(2, 2));
+        let mut pos = short_at(StateInstant::default());
+        assert!(pos.apply_funding_payment(i1, dec256!(5))); // premium = 50
+        // Pass 1: funding on the full pre-decrease size 10.
+        assert!(
+            pos.apply_funding_payment(i2, dec256!(5)),
+            "funding must be applied before the same-block decrease"
+        );
+        assert_eq!(pos.premium_pnl(), dec256!(100));
+        // Pass 2: a decrease at i2 (value unchanged here to isolate the tick) does not
+        // drop it.
+        pos.update_premium_pnl(i2, pos.premium_pnl());
+        assert_eq!(pos.premium_pnl(), dec256!(100));
+    }
+
+    #[test]
+    fn test_funding_block_single_decrease_matches_sc() {
+        let (i1, i2) = (StateInstant::new(1, 1), StateInstant::new(2, 2));
+        // Block N: short size 10 with a prior funding tick (premium = so*10 = 50).
+        let mut pos = short_at(StateInstant::default());
+        assert!(pos.apply_funding_payment(i1, dec256!(5)));
+        // Block N+m (funding-event block). Pass 1: the tick Δ=1 lands on the FULL
+        // pre-decrease size 10 first -> premium = 50 + 1*10 = 60 (per-lot sum
+        // now sn=6).
+        assert!(pos.apply_funding_payment(i2, dec256!(1)));
+        assert_eq!(pos.premium_pnl(), dec256!(60));
+        // Pass 2: decrease 10 -> 6 (closes 4), realized at sn=6: fundingCNS = 6*4 = 24.
+        pos.update_size(i2, udec64!(6));
+        pos.update_premium_pnl(i2, pos.premium_pnl() - dec256!(24));
+        // Matches the contract: (sn - entry) * final_size = 6 * 6 = 36 (the old bug
+        // gave 26).
+        assert_eq!(pos.premium_pnl(), dec256!(36));
+    }
+
+    #[test]
+    fn test_funding_block_two_decreases_matches_sc() {
+        // The A/B/C scenario: block N+m holds TWO decreases (A, B) AND the funding tick
+        // (C). Funding (Pass 1) runs first, so the result equals the contract's
+        // value for any on-chain tx order of A, B, C.
+        let (i1, i2) = (StateInstant::new(1, 1), StateInstant::new(2, 2));
+        // Block N: short size 10 with a prior funding tick (premium = 50).
+        let mut pos = short_at(StateInstant::default());
+        assert!(pos.apply_funding_payment(i1, dec256!(5)));
+        // Pass 1: tick Δ=1 on the FULL pre-decrease size 10 -> 60.
+        assert!(pos.apply_funding_payment(i2, dec256!(1)));
+        assert_eq!(pos.premium_pnl(), dec256!(60));
+        // Pass 2 -- A: 10 -> 6 (closes 4), fundingCNS_A = 6*4 = 24.
+        pos.update_size(i2, udec64!(6));
+        pos.update_premium_pnl(i2, pos.premium_pnl() - dec256!(24)); // 36
+        // Pass 2 -- B: 6 -> 3 (closes 3), fundingCNS_B = 6*3 = 18.
+        pos.update_size(i2, udec64!(3));
+        pos.update_premium_pnl(i2, pos.premium_pnl() - dec256!(18)); // 18
+        // Matches the contract: (sn - entry) * final_size = 6 * 3 = 18 (the old bug
+        // gave 8).
+        assert_eq!(pos.premium_pnl(), dec256!(18));
+    }
+
     #[test]
     fn test_maintenance_margin_requirement() {
+        let pc = num::Converter::new(4);
         let i0 = StateInstant::default();
         let (mm1, mm2) = (udec64!(20), udec64!(10));
 
@@ -375,14 +595,16 @@ mod tests {
             1,
             1,
             PositionType::Long,
-            udec64!(100),
+            U256::from(1000000),
+            0,
+            pc,
             udec64!(10),
             udec128!(100),
             mm1,
         );
         assert_eq!(pos.maintenance_margin_requirement(), udec128!(50));
 
-        pos.update_entry_price(i0, udec64!(80));
+        pos.update_entry_price(i0, U256::from(800000), 0, pc);
         pos.apply_maintenance_margin(i0, mm1);
         assert_eq!(pos.maintenance_margin_requirement(), udec128!(40));
 
@@ -398,14 +620,16 @@ mod tests {
             1,
             1,
             PositionType::Short,
-            udec64!(100),
+            U256::from(1000000),
+            0,
+            pc,
             udec64!(10),
             udec128!(100),
             mm1,
         );
         assert_eq!(pos.maintenance_margin_requirement(), udec128!(50));
 
-        pos.update_entry_price(i0, udec64!(80));
+        pos.update_entry_price(i0, U256::from(800000), 0, pc);
         pos.apply_maintenance_margin(i0, mm1);
         assert_eq!(pos.maintenance_margin_requirement(), udec128!(40));
 
@@ -419,6 +643,7 @@ mod tests {
 
     #[test]
     fn test_liquidation_price() {
+        let pc = num::Converter::new(4);
         let (i0, i1) = (StateInstant::default(), StateInstant::new(1, 1));
         let mm1 = udec64!(20);
 
@@ -427,7 +652,9 @@ mod tests {
             1,
             1,
             PositionType::Long,
-            udec64!(100),
+            U256::from(1000000),
+            0,
+            pc,
             udec64!(10),
             udec128!(100),
             mm1,
@@ -442,7 +669,9 @@ mod tests {
             1,
             1,
             PositionType::Short,
-            udec64!(100),
+            U256::from(1000000),
+            0,
+            pc,
             udec64!(10),
             udec128!(100),
             mm1,
@@ -455,6 +684,7 @@ mod tests {
 
     #[test]
     fn test_bankruptcy_price() {
+        let pc = num::Converter::new(4);
         let (i0, i1) = (StateInstant::default(), StateInstant::new(1, 1));
         let mm1 = udec64!(20);
 
@@ -463,7 +693,9 @@ mod tests {
             1,
             1,
             PositionType::Long,
-            udec64!(100),
+            U256::from(1000000),
+            0,
+            pc,
             udec64!(10),
             udec128!(100),
             mm1,
@@ -478,7 +710,9 @@ mod tests {
             1,
             1,
             PositionType::Short,
-            udec64!(100),
+            U256::from(1000000),
+            0,
+            pc,
             udec64!(10),
             udec128!(100),
             mm1,
@@ -487,5 +721,151 @@ mod tests {
 
         assert!(pos.apply_funding_payment(i1, dec256!(-5)));
         assert_eq!(pos.bankruptcy_price(), udec64!(105));
+    }
+
+    #[test]
+    fn test_liquidation_price_after_funding_received() {
+        // Complements test_liquidation_price, which only drives premium NEGATIVE
+        // (funding paid). Here the position RECEIVES funding, driving premium
+        // to +50 and moving the liquidation price AWAY from entry — long 95 ->
+        // 90, short 105 -> 110. Setup mirrors test_liquidation_price (entry
+        // 100, size 10, deposit 100, mm 20 -> MMR 50).
+        let pc = num::Converter::new(4);
+        let (i0, i1) = (StateInstant::default(), StateInstant::new(1, 1));
+        let mm1 = udec64!(20);
+
+        // Long receives funding when longs are paid (negative payment).
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            U256::from(1000000),
+            0,
+            pc,
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.liquidation_price(), udec64!(95)); // 100 + (50-100-0)/10
+        assert!(pos.apply_funding_payment(i1, dec256!(-5)), "long receives funding");
+        assert_eq!(pos.premium_pnl(), dec256!(50)); // long sign -1: += -1*(-5)*10 = +50
+        assert_eq!(pos.liquidation_price(), udec64!(90)); // 100 + (50-100-50)/10
+
+        // Short receives funding when shorts are paid (positive payment).
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Short,
+            U256::from(1000000),
+            0,
+            pc,
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.liquidation_price(), udec64!(105)); // 100 - (50-100-0)/10
+        assert!(pos.apply_funding_payment(i1, dec256!(5)), "short receives funding");
+        assert_eq!(pos.premium_pnl(), dec256!(50)); // short sign +1: += 1*5*10 = +50
+        assert_eq!(pos.liquidation_price(), udec64!(110)); // 100 - (50-100-50)/10
+    }
+
+    #[test]
+    fn test_bankruptcy_price_after_funding_received() {
+        // Complements test_bankruptcy_price (premium negative only). The position
+        // RECEIVES funding (+50): long bank 90 -> 85, short bank 110 -> 115.
+        // Same setup as test_bankruptcy_price.
+        let pc = num::Converter::new(4);
+        let (i0, i1) = (StateInstant::default(), StateInstant::new(1, 1));
+        let mm1 = udec64!(20);
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            U256::from(1000000),
+            0,
+            pc,
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.bankruptcy_price(), udec64!(90)); // 100 - (100+0)/10
+        assert!(pos.apply_funding_payment(i1, dec256!(-5)), "long receives funding"); // premium +50
+        assert_eq!(pos.bankruptcy_price(), udec64!(85)); // 100 - (100+50)/10
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Short,
+            U256::from(1000000),
+            0,
+            pc,
+            udec64!(10),
+            udec128!(100),
+            mm1,
+        );
+        assert_eq!(pos.bankruptcy_price(), udec64!(110)); // 100 + (100+0)/10
+        assert!(pos.apply_funding_payment(i1, dec256!(5)), "short receives funding"); // premium +50
+        assert_eq!(pos.bankruptcy_price(), udec64!(115)); // 100 + (100+50)/10
+    }
+
+    #[test]
+    fn test_apply_mark_price_with_residue() {
+        let i0 = StateInstant::default();
+        let half_lsb = dec256!(0.0000005);
+        let pc = num::Converter::new(6);
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            U256::from(100000000),
+            32768, // residue = Q/2
+            pc,
+            udec64!(10),
+            UD128::ZERO,
+            UD64::ONE,
+        );
+        pos.apply_mark_price(i0, udec64!(100));
+        // mark - effective = 100 - (100 - 0.5e-6) = +0.5e-6, * size 10 = 0.5e-5
+        assert_eq!(pos.delta_pnl(), half_lsb * dec256!(10));
+
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Short,
+            U256::from(100000000),
+            32768,
+            pc,
+            udec64!(10),
+            UD128::ZERO,
+            UD64::ONE,
+        );
+        pos.apply_mark_price(i0, udec64!(100));
+        // short: sign flip, effective = entry + 0.5e-6, (mark - effective) = -0.5e-6
+        // delta_pnl = -1 * -0.5e-6 * 10 = 0.5e-5
+        assert_eq!(pos.delta_pnl(), half_lsb * dec256!(10));
+
+        // residue = 0 reproduces legacy behavior byte-identically.
+        let mut pos = Position::opened(
+            i0,
+            1,
+            1,
+            PositionType::Long,
+            U256::from(100000000),
+            0,
+            pc,
+            udec64!(10),
+            UD128::ZERO,
+            UD64::ONE,
+        );
+        pos.apply_mark_price(i0, udec64!(150));
+        assert_eq!(pos.delta_pnl(), dec256!(500));
     }
 }

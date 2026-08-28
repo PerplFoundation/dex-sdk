@@ -2,9 +2,20 @@ use std::pin::pin;
 
 use alloy::providers::Provider;
 use colored::Colorize;
+use fastnum::UD64;
 use futures::StreamExt;
-use perpl_sdk::{Chain, stream, types::StateInstant};
+use perpl_sdk::{
+    Chain, stream,
+    types::{BuilderAttribution, StateInstant},
+};
 use tokio_util::sync::CancellationToken;
+
+/// Renders the builder attribution of a fill, empty without a builder.
+fn builder_suffix(builder: Option<BuilderAttribution>, builder_fee: UD64) -> String {
+    builder
+        .map(|b| format!(" [builder {}: {}]", b.builder_id(), builder_fee))
+        .unwrap_or_default()
+}
 
 pub(crate) async fn render<P: Provider + Clone>(
     chain: Chain,
@@ -36,18 +47,24 @@ pub(crate) async fn render<P: Provider + Clone>(
             for event in trades.events() {
                 let trade = event.event();
                 println!(
-                    "\n  Taker {} {:?} {} @ {} on perp={} (fee: {})",
+                    "\n  Taker {} {:?} {} @ {} on perp={} (fee: {}){}",
                     trade.taker_account_id,
                     trade.taker_side,
                     trade.total_size(),
                     trade.avg_price().unwrap_or_default(),
                     trade.perpetual_id,
                     trade.taker_fee,
+                    builder_suffix(trade.taker_builder, trade.taker_builder_fee),
                 );
                 for fill in &trade.maker_fills {
                     println!(
-                        "    <- Maker {} order {} filled {} @ {} (fee: {})",
-                        fill.maker_account_id, fill.maker_order_id, fill.size, fill.price, fill.fee,
+                        "    <- Maker {} order {} filled {} @ {} (fee: {}){}",
+                        fill.maker_account_id,
+                        fill.maker_order_id,
+                        fill.size,
+                        fill.price,
+                        fill.fee,
+                        builder_suffix(fill.builder, fill.builder_fee),
                     );
                 }
             }

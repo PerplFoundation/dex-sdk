@@ -65,9 +65,12 @@ async fn test_snapshot_and_events() {
         assert_eq!(perp.id(), btc_perp.id);
         assert_eq!(perp.name(), "BTC".to_string());
         assert_eq!(perp.symbol(), "BTC".to_string());
-        assert_eq!(perp.is_paused(), false);
-        assert_eq!(perp.maker_fee(), udec64!(0.00010));
-        assert_eq!(perp.taker_fee(), udec64!(0.00035));
+        assert!(!perp.is_paused());
+        // Base (tier 0) rates of the exchange-wide default schedule, seeded at
+        // deployment by `Exchange::_seedDefaultFeeSchedule` - a listing does not
+        // set its own fees
+        assert_eq!(perp.maker_fee(), udec64!(0.00009));
+        assert_eq!(perp.taker_fee(), udec64!(0.00069));
         assert_eq!(perp.initial_margin(), udec64!(10));
         assert_eq!(perp.maintenance_margin(), udec64!(20));
         assert_eq!(perp.last_price(), udec64!(100000));
@@ -112,24 +115,25 @@ async fn test_snapshot_and_events() {
     o(taker.id, 21, None, CloseLong, udec64!(100100), udec64!(0.2)).await;
 
     // Collect and (partially) validate produced events
+    let mut snapshot_maker_fill_seen = false;
     while let Some(block_events) = state.next_state_events().await {
-        for event in block_events.events().iter().map(|e| e.event()).flatten() {
+        for event in block_events.events().iter().flat_map(|e| e.event()) {
             match event {
                 state::StateEvents::Account(AccountEvent {
                     account_id: 1,
                     request_id: Some(10),
                     r#type: AccountEventType::BalanceUpdated(balance),
-                }) => assert_eq!(*balance, udec128!(998998.9)),
+                }) => assert_eq!(*balance, udec128!(998999)),
                 state::StateEvents::Account(AccountEvent {
                     account_id: 1,
                     request_id: Some(11),
                     r#type: AccountEventType::BalanceUpdated(balance),
-                }) => assert_eq!(*balance, udec128!(997996.899)),
+                }) => assert_eq!(*balance, udec128!(997997.0991)),
                 state::StateEvents::Account(AccountEvent {
                     account_id: 2,
                     request_id: Some(11),
                     r#type: AccountEventType::BalanceUpdated(balance),
-                }) => assert_eq!(*balance, udec128!(97981.9965)),
+                }) => assert_eq!(*balance, udec128!(97975.1931)),
 
                 state::StateEvents::Order(OrderEvent {
                     perpetual_id: 16,
@@ -137,6 +141,7 @@ async fn test_snapshot_and_events() {
                     request_id: Some(10),
                     client_order_id: Some(1), // Original request ID
                     order_id: Some(order_id),
+                    builder: None,
                     r#type: OrderEventType::Updated { price, size, expiry_block },
                 }) if *order_id == oid(1) => {
                     assert_eq!(*price, Some(udec64!(100100)));
@@ -149,12 +154,26 @@ async fn test_snapshot_and_events() {
                     request_id: Some(11),
                     client_order_id: Some(11),
                     order_id: Some(order_id),
-                    r#type: OrderEventType::Filled { fill_price, fill_size, fee, is_maker },
+                    builder: None,
+                    r#type:
+                        OrderEventType::Filled { fill_price, fill_size, fee, builder_fee, is_maker },
                 }) if *order_id == oid(1) => {
                     assert_eq!(*fill_price, udec64!(100100));
                     assert_eq!(*fill_size, udec64!(0.1));
-                    assert_eq!(*fee, udec64!(1.001));
-                    assert_eq!(*is_maker, true);
+                    // Maker rate on the filled notional: 0.1 * 100100 * 0.00009
+                    assert_eq!(*fee, udec64!(0.9009));
+                    assert_eq!(*builder_fee, udec64!(0));
+                    assert!(*is_maker);
+                },
+
+                state::StateEvents::Trade(types::Trade {
+                    taker_request_id: 11,
+                    maker_fills,
+                    ..
+                }) => {
+                    let maker_fill = maker_fills.first().expect("maker fill exists");
+                    assert_eq!(maker_fill.maker_client_order_id, None);
+                    snapshot_maker_fill_seen = true;
                 },
 
                 state::StateEvents::Position(PositionEvent {
@@ -178,6 +197,7 @@ async fn test_snapshot_and_events() {
             break;
         }
     }
+    assert!(snapshot_maker_fill_seen);
 
     // Validate updated snapshot
     {

@@ -25,9 +25,9 @@ async fn test_full_book_snapshot() {
         .enumerate()
     {
         let orders = levels
-            .into_iter()
+            .iter()
             .enumerate()
-            .map(|(level, (ask, bid))| {
+            .flat_map(|(level, (ask, bid))| {
                 vec![
                     types::OrderRequest::new(
                         chunk as u64 * 100 + level as u64,
@@ -65,7 +65,6 @@ async fn test_full_book_snapshot() {
                     ),
                 ]
             })
-            .flatten()
             .collect();
 
         pending_txs.push(btc_perp.orders(maker.id, orders).await);
@@ -168,7 +167,7 @@ async fn test_full_book_snapshot() {
         "actual block num: {}",
         snap.instant().block_number()
     );
-    assert_eq!(snap.is_halted(), false);
+    assert!(!snap.is_halted());
     assert_eq!(snap.perpetuals().len(), 1);
     assert_eq!(snap.accounts().len(), 2);
 
@@ -177,9 +176,12 @@ async fn test_full_book_snapshot() {
     assert_eq!(perp.id(), btc_perp.id);
     assert_eq!(perp.name(), "BTC".to_string());
     assert_eq!(perp.symbol(), "BTC".to_string());
-    assert_eq!(perp.is_paused(), false);
-    assert_eq!(perp.maker_fee(), udec64!(0.00010));
-    assert_eq!(perp.taker_fee(), udec64!(0.00035));
+    assert!(!perp.is_paused());
+    // Base (tier 0) rates of the exchange-wide default schedule, seeded at
+    // deployment by `Exchange::_seedDefaultFeeSchedule` - a listing does not set
+    // its own fees
+    assert_eq!(perp.maker_fee(), udec64!(0.00009));
+    assert_eq!(perp.taker_fee(), udec64!(0.00069));
     assert_eq!(perp.initial_margin(), udec64!(10));
     assert_eq!(perp.maintenance_margin(), udec64!(20));
     assert_eq!(perp.last_price(), udec64!(99900));

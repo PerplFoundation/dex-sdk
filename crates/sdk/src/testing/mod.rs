@@ -14,15 +14,23 @@ mod account;
 mod indexer;
 mod perp;
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    str::FromStr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 pub use account::*;
 use alloy::{
     hex::ToHexExt,
+    network::TransactionBuilder,
     node_bindings::{Anvil, AnvilInstance},
-    primitives::{Address, U256, address, hex},
+    primitives::{Address, Bytes, U256, address, hex},
     providers::{DynProvider, Provider, ProviderBuilder, ext::AnvilApi},
-    rpc::client::RpcClient,
+    rpc::{client::RpcClient, types::TransactionRequest},
 };
 use dashmap::{DashMap, DashSet};
 use fastnum::{UD64, udec64};
@@ -33,7 +41,7 @@ use crate::{
     Chain,
     abi::{dex::Exchange, erc1967_proxy::ERC1967Proxy, testing::TestToken},
     error::DexError,
-    num, types,
+    num, state, types,
 };
 
 const CHAIN_ID: u64 = 1337;
@@ -41,6 +49,17 @@ const BLOCK_TIME_SEC: f64 = 0.4;
 const POLL_INTERVAL_MS: u64 = 50;
 
 const USD_DECIMALS: u8 = 6;
+
+/// Creation bytecode of the previous exchange implementation
+/// (`rc_v1.1.7-99-g3afdb99`, contract generation v1.1.7.3b), deployed by
+/// [`TestExchange::new_at_previous_version`].
+///
+/// Only the bytecode is kept: every function the pre-upgrade path calls has an
+/// unchanged signature, so the current bindings drive it, and the current
+/// `ExchangeEvents` still decodes its events - the V1 event signatures are
+/// retained in the ABI for exactly this reason.
+const PREVIOUS_IMPLEMENTATION: &str =
+    include_str!("../../../../abi/dex/legacy/Exchange.v1.1.7.3.bin");
 
 #[derive(Debug)]
 pub struct TestExchange {
@@ -58,11 +77,77 @@ pub struct TestExchange {
     pub collateral_converter: num::Converter,
     perpetual_ids: Arc<DashSet<types::PerpetualId>>,
     account_address: Arc<DashMap<types::AccountId, Address>>,
+    // True while the deployed generation predates v1.1.7.4 (set by
+    // `new_at_previous_version`, cleared by `upgrade`). That generation's
+    // `addContract` carries two extra genesis-fee args, so `perp` must reach it
+    // through the legacy interface; a v1.1.7.4 deployment uses the current one.
+    legacy: AtomicBool,
     anvil: AnvilInstance,
 }
 
 impl TestExchange {
-    pub async fn new() -> Self {
+    /// Spins up the environment running the exchange implementation the SDK
+    /// targets ([`state::Exchange::revision`]).
+    pub async fn new() -> Self { Self::deploy(None).await }
+
+    /// Spins up the environment running the *previous* contract generation
+    /// (v1.1.7.3b: V2 information getters, but no version getter, keyed fee
+    /// schedules, builder attribution or existence bitmap) - the generation
+    /// deployed on mainnet before the v1.1.7.4 upgrade.
+    ///
+    /// Use with [`Self::upgrade`] to exercise the SDK across the upgrade
+    /// itself.
+    pub async fn new_at_previous_version() -> Self {
+        Self::deploy(Some(PREVIOUS_IMPLEMENTATION)).await
+    }
+
+    /// Upgrades the proxy to the implementation the SDK targets, seeding the
+    /// exchange-wide fee schedules and repointing every listed perpetual
+    /// contract at the default one.
+    ///
+    /// Runs `initializeV3` in the upgrade transaction, exactly as the real
+    /// upgrade does, so the log sequence a live indexer observes is the real
+    /// one.
+    pub async fn upgrade(
+        &self,
+        taker_fees: [UD64; state::FEE_TIERS],
+        maker_fees: [UD64; state::FEE_TIERS],
+    ) {
+        let implementation = Exchange::deploy(self.provider.clone())
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap();
+        let fee_converter = num::fee_converter();
+        let initialize = self
+            .exchange
+            .initializeV3(
+                taker_fees.map(|fee| fee_converter.to_unsigned(fee)),
+                maker_fees.map(|fee| fee_converter.to_unsigned(fee)),
+                // RWA schedule left blank, as in the real upgrade configuration
+                [U256::ZERO; state::FEE_TIERS],
+                [U256::ZERO; state::FEE_TIERS],
+                // Must list every live perpetual: `initializeV3` rejects an
+                // incomplete list rather than leave one on a stale fee key
+                self.perpetual_ids.iter().map(|p| U256::from(*p)).collect(),
+            )
+            .calldata()
+            .clone();
+        self.exchange
+            .upgradeToAndCall(*implementation.address(), initialize)
+            .gas(30_000_000)
+            .send()
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
+        // The proxy now runs the v1.1.7.4 implementation, whose `addContract`
+        // dropped the two genesis-fee args, so subsequent listings use it.
+        self.legacy.store(false, Ordering::Relaxed);
+    }
+
+    async fn deploy(implementation: Option<&str>) -> Self {
         let anvil = Anvil::new()
             .block_time_f64(BLOCK_TIME_SEC)
             .chain_id(CHAIN_ID)
@@ -115,16 +200,22 @@ impl TestExchange {
             .await
             .unwrap();
 
-        // Exchange implementation and upgradeable proxy
-        let exchange_impl = Exchange::deploy(provider.clone())
-            .await
-            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
-            .unwrap();
-        let init_calldata = exchange_impl
+        // Exchange implementation and upgradeable proxy. `initialize` is
+        // unchanged across the generations, so its calldata can be built from the
+        // current bindings whichever implementation is deployed.
+        let exchange_impl = match implementation {
+            None => *Exchange::deploy(provider.clone())
+                .await
+                .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+                .unwrap()
+                .address(),
+            Some(bytecode) => deploy_bytecode(&provider, bytecode).await,
+        };
+        let init_calldata = Exchange::new(exchange_impl, provider.clone())
             .initialize(*token.address())
             .calldata()
             .clone();
-        let proxy = ERC1967Proxy::deploy(provider.clone(), *exchange_impl.address(), init_calldata)
+        let proxy = ERC1967Proxy::deploy(provider.clone(), exchange_impl, init_calldata)
             .await
             .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
             .unwrap();
@@ -176,19 +267,26 @@ impl TestExchange {
             collateral_converter: num::Converter::new(USD_DECIMALS),
             perpetual_ids: Arc::new(DashSet::new()),
             account_address: Arc::new(DashMap::new()),
+            // A specific implementation is only ever requested by
+            // `new_at_previous_version`, so this marks the pre-upgrade generation.
+            legacy: AtomicBool::new(implementation.is_some()),
             anvil,
         }
     }
 
     pub fn chain(&self) -> Chain {
-        Chain {
-            chain_id: self.chain_id,
-            collateral_token: *self.token.address(),
-            deployed_at_block: 0,
-            exchange: *self.exchange.address(),
-            perpetuals: self.perpetual_ids.iter().map(|p| *p).collect(),
-        }
+        Chain::custom(
+            self.chain_id,
+            *self.token.address(),
+            0,
+            *self.exchange.address(),
+            self.perpetual_ids.iter().map(|p| *p).collect(),
+        )
     }
+
+    /// Same chain with no perpetual contracts configured, so clients discover
+    /// every listed contract on-chain instead.
+    pub fn chain_with_perpetual_discovery(&self) -> Chain { self.chain().with_perpetuals(vec![]) }
 
     pub async fn account(&self, idx: usize, usd_balance: u64) -> TestAccount<'_> {
         let address = self.anvil.addresses()[idx + 3]; // skipping owner, admin and price admin
@@ -231,6 +329,82 @@ impl TestExchange {
         TestAccount { id: log.id.to(), address: log.account, exchange: self }
     }
 
+    /// Sets the exchange-wide default fee schedule, eight `(taker, maker)`
+    /// rates indexed by an account's fee tier. Every perpetual contract
+    /// that has not been repointed resolves its fees from this schedule.
+    pub async fn set_fee_schedule(
+        &self,
+        taker_fees: [UD64; state::FEE_TIERS],
+        maker_fees: [UD64; state::FEE_TIERS],
+    ) {
+        let fee_converter = num::fee_converter();
+        self.exchange
+            .setDefaultPerpFeeSchedValues(
+                taker_fees.map(|fee| fee_converter.to_unsigned(fee)),
+                maker_fees.map(|fee| fee_converter.to_unsigned(fee)),
+            )
+            .send()
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
+    }
+
+    /// Sets the exchange-wide RWA default fee schedule, see
+    /// [`Self::set_fee_schedule`].
+    pub async fn set_rwa_fee_schedule(
+        &self,
+        taker_fees: [UD64; state::FEE_TIERS],
+        maker_fees: [UD64; state::FEE_TIERS],
+    ) {
+        let fee_converter = num::fee_converter();
+        self.exchange
+            .setDefaultRwaFeeSchedValues(
+                taker_fees.map(|fee| fee_converter.to_unsigned(fee)),
+                maker_fees.map(|fee| fee_converter.to_unsigned(fee)),
+            )
+            .send()
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
+    }
+
+    /// Assigns fee tiers to accounts, indexing the fee schedule of every
+    /// perpetual contract they trade.
+    pub async fn set_account_fee_tiers(&self, tiers: Vec<(types::AccountId, types::FeeTier)>) {
+        self.exchange
+            .setAccountFeeTiers(
+                tiers
+                    .into_iter()
+                    .map(|(account_id, tier)| Exchange::AccountFeeTier {
+                        accountId: U256::from(account_id),
+                        tier: U256::from(tier),
+                    })
+                    .collect(),
+            )
+            .from(self.admin)
+            .send()
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
+    }
+
+    /// Adds a perpetual contract, placed on the exchange-wide default fee
+    /// schedule.
+    ///
+    /// Fees are not a listing parameter: the schedule is seeded once at
+    /// deployment, and `addContract` retains its fee arguments for ABI
+    /// stability while ignoring them (v1.1.7.4). Use
+    /// [`Self::set_fee_schedule`] to retune the shared schedule, or
+    /// [`TestPerp::set_fee_schedule`] to give this contract its own.
     #[allow(clippy::too_many_arguments)]
     pub async fn perp(
         &self,
@@ -239,15 +413,21 @@ impl TestExchange {
         base_price: UD64,
         price_decimals: u8,
         size_decimals: u8,
-        taker_fee: UD64,
-        maker_fee: UD64,
         initial_margin: UD64,
         maintenance_margin: UD64,
     ) -> TestPerp<'_> {
         let price_converter = num::Converter::new(price_decimals);
-        let fee_converter = num::Converter::new(5); // Fees are in 1/100K
         let leverage_converter = num::Converter::new(2); // Margin and leverage are in 100th
-        self.exchange
+        if self.legacy.load(Ordering::Relaxed) {
+            // The pre-v1.1.7.4 generation's `addContract` still carries the two
+            // genesis-fee args (dropped in v1.1.7.4); reach it through the legacy
+            // interface so the selector matches the deployed contract. Genesis
+            // fees are seeded to zero and set separately via
+            // `TestPerp::with_legacy_fees`.
+            crate::abi::dex_legacy::LegacyExchange::new(
+                *self.exchange.address(),
+                self.provider.clone(),
+            )
             .addContract(
                 name.to_string(),
                 name.to_string(),
@@ -255,8 +435,8 @@ impl TestExchange {
                 price_converter.to_unsigned(base_price),
                 U256::from(price_decimals),
                 U256::from(size_decimals),
-                fee_converter.to_unsigned(taker_fee),
-                fee_converter.to_unsigned(maker_fee),
+                U256::ZERO,
+                U256::ZERO,
                 leverage_converter.to_unsigned(initial_margin),
                 leverage_converter.to_unsigned(maintenance_margin),
             )
@@ -267,6 +447,26 @@ impl TestExchange {
             .get_receipt()
             .await
             .unwrap();
+        } else {
+            self.exchange
+                .addContract(
+                    name.to_string(),
+                    name.to_string(),
+                    U256::from(perp_id),
+                    price_converter.to_unsigned(base_price),
+                    U256::from(price_decimals),
+                    U256::from(size_decimals),
+                    leverage_converter.to_unsigned(initial_margin),
+                    leverage_converter.to_unsigned(maintenance_margin),
+                )
+                .send()
+                .await
+                .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+                .unwrap()
+                .get_receipt()
+                .await
+                .unwrap();
+        }
         // Ignore oracle to eliminate ChainLink dependency
         self.exchange
             .setIgnOracle(U256::from(perp_id), true)
@@ -289,80 +489,56 @@ impl TestExchange {
     }
 
     pub async fn btc_perp(&self) -> TestPerp<'_> {
-        self.perp(
-            "BTC",
-            0x10,
-            udec64!(5000),
-            1,
-            5,
-            udec64!(0.00035),
-            udec64!(0.00010),
-            udec64!(10),
-            udec64!(20),
-        )
-        .await
-        .with_mark_price(udec64!(100000))
-        .await
-        .unpause()
-        .await
+        self.perp("BTC", 0x10, udec64!(5000), 1, 5, udec64!(10), udec64!(20))
+            .await
+            .with_mark_price(udec64!(100000))
+            .await
+            .unpause()
+            .await
     }
 
     pub async fn eth_perp(&self) -> TestPerp<'_> {
-        self.perp(
-            "ETH",
-            0x20,
-            udec64!(1),
-            2,
-            3,
-            udec64!(0.00035),
-            udec64!(0.00010),
-            udec64!(10),
-            udec64!(20),
-        )
-        .await
-        .with_mark_price(udec64!(4000))
-        .await
-        .unpause()
-        .await
+        self.perp("ETH", 0x20, udec64!(1), 2, 3, udec64!(10), udec64!(20))
+            .await
+            .with_mark_price(udec64!(4000))
+            .await
+            .unpause()
+            .await
     }
 
     pub async fn sol_perp(&self) -> TestPerp<'_> {
-        self.perp(
-            "SOL",
-            0x30,
-            udec64!(1),
-            2,
-            3,
-            udec64!(0.00035),
-            udec64!(0.00010),
-            udec64!(10),
-            udec64!(20),
-        )
-        .await
-        .with_mark_price(udec64!(200))
-        .await
-        .unpause()
-        .await
+        self.perp("SOL", 0x30, udec64!(1), 2, 3, udec64!(10), udec64!(20))
+            .await
+            .with_mark_price(udec64!(200))
+            .await
+            .unpause()
+            .await
     }
 
     pub async fn trx_perp(&self) -> TestPerp<'_> {
-        self.perp(
-            "TRX",
-            0x40,
-            udec64!(1),
-            5,
-            0,
-            udec64!(0.00035),
-            udec64!(0.00010),
-            udec64!(10),
-            udec64!(20),
-        )
-        .await
-        .with_mark_price(udec64!(0.3))
-        .await
-        .unpause()
-        .await
+        self.perp("TRX", 0x40, udec64!(1), 5, 0, udec64!(10), udec64!(20))
+            .await
+            .with_mark_price(udec64!(0.3))
+            .await
+            .unpause()
+            .await
     }
+}
+
+/// Deploys a contract from raw creation bytecode, for an implementation the SDK
+/// has no bindings for.
+async fn deploy_bytecode(provider: &DynProvider, bytecode: &str) -> Address {
+    let code = Bytes::from_str(bytecode.trim()).expect("implementation bytecode");
+    provider
+        .send_transaction(TransactionRequest::default().with_deploy_code(code))
+        .await
+        .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+        .unwrap()
+        .get_receipt()
+        .await
+        .unwrap()
+        .contract_address
+        .expect("implementation deployed")
 }
 
 pub fn scale(amount: u64, decimals: u8) -> U256 {

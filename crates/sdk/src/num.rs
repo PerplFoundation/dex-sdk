@@ -4,6 +4,14 @@ use fastnum::{
     decimal::{Context, Decimal, RoundingMode, UnsignedDecimal},
 };
 
+/// Scale of on-chain fee rates: the exchange expresses every fee rate in
+/// hundred-thousandths of the traded amount (`Per100K`, 1 = 0.1bps), exchange
+/// wide and independent of the perpetual contract.
+pub const FEE_SCALE: u8 = 5;
+
+/// Converter for fee rates, see [`FEE_SCALE`].
+pub fn fee_converter() -> Converter { Converter::new(FEE_SCALE) }
+
 /// Fixed-point to decimal converter.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Converter {
@@ -11,9 +19,19 @@ pub struct Converter {
 }
 
 impl Converter {
-    pub(crate) fn new(decimals: u8) -> Self { Self { decimals: decimals as i32 } }
+    /// Fixed-point converter for `decimals` decimal places. `pub` to match the
+    /// other public constructors, so callers can build one directly.
+    pub fn new(decimals: u8) -> Self { Self { decimals: decimals as i32 } }
 
     pub fn decimals(&self) -> u8 { self.decimals as u8 }
+
+    pub fn scale<const N: usize>(&self) -> UnsignedDecimal<N> {
+        UnsignedDecimal::<N>::from_parts(
+            bint::UInt::ONE,
+            self.decimals,
+            Context::default().with_rounding_mode(RoundingMode::Floor),
+        )
+    }
 
     pub fn from_unsigned<const N: usize>(&self, value: U256) -> UnsignedDecimal<N> {
         let unscaled = bint::UInt::<N>::from_le_slice(value.as_le_slice())

@@ -1,5 +1,6 @@
 use std::num::NonZeroU16;
 
+use alloy::primitives::U256;
 use fastnum::UD64;
 use thiserror::Error;
 
@@ -58,6 +59,10 @@ pub struct Order {
     post_only: Option<bool>,
     fill_or_kill: Option<bool>,
     immediate_or_cancel: Option<bool>,
+    // Builder the order is attributed to, with the additive fee rate it charges.
+    // None means no builder, which is also the only possibility on contracts
+    // without builder attribution.
+    builder: Option<types::BuilderAttribution>,
     // Linked list pointers for FIFO ordering at each price level.
     // Available from snapshot, None for newly placed orders (until refreshed).
     prev_order_id: Option<types::OrderId>,
@@ -67,7 +72,7 @@ pub struct Order {
 impl Order {
     pub(crate) fn from_snapshot(
         instant: types::StateInstant,
-        order: dex::Exchange::Order,
+        order: dex::Exchange::OrderV2,
         base_price: UD64,
         price_converter: num::Converter,
         size_converter: num::Converter,
@@ -96,6 +101,14 @@ impl Order {
             post_only: None,
             fill_or_kill: None,
             immediate_or_cancel: None,
+            // Unlike the flags above, builder attribution IS persisted with the
+            // resting order, so the snapshot recovers it in full
+            builder: (order.builderId != 0).then(|| {
+                types::BuilderAttribution::from_raw(
+                    order.builderId,
+                    U256::from(order.builderFeePer100K),
+                )
+            }),
             prev_order_id,
             next_order_id,
         })
@@ -125,6 +138,7 @@ impl Order {
             post_only: Some(ctx.post_only),
             fill_or_kill: Some(ctx.fill_or_kill),
             immediate_or_cancel: Some(ctx.immediate_or_cancel),
+            builder: ctx.builder,
             // New orders don't have linked list info from events
             prev_order_id: None,
             next_order_id: None,
@@ -156,6 +170,7 @@ impl Order {
             post_only: self.post_only,
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
+            builder: self.builder,
             // Preserve linked list info (may be stale after update, but we maintain
             // ordering separately in BookLevel via sequence numbers)
             prev_order_id: self.prev_order_id,
@@ -193,6 +208,7 @@ impl Order {
             post_only: None,
             fill_or_kill: None,
             immediate_or_cancel: None,
+            builder: None,
             prev_order_id: None,
             next_order_id: None,
         }
@@ -224,6 +240,7 @@ impl Order {
             post_only: None,
             fill_or_kill: None,
             immediate_or_cancel: None,
+            builder: None,
             prev_order_id: None,
             next_order_id: None,
         }
@@ -257,6 +274,7 @@ impl Order {
             post_only: None,
             fill_or_kill: None,
             immediate_or_cancel: None,
+            builder: None,
             prev_order_id,
             next_order_id,
         }
@@ -280,6 +298,7 @@ impl Order {
             post_only: self.post_only,
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
+            builder: self.builder,
             prev_order_id: self.prev_order_id,
             next_order_id: self.next_order_id,
         }
@@ -303,6 +322,7 @@ impl Order {
             post_only: self.post_only,
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
+            builder: self.builder,
             prev_order_id: self.prev_order_id,
             next_order_id: self.next_order_id,
         }
@@ -326,6 +346,7 @@ impl Order {
             post_only: self.post_only,
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
+            builder: self.builder,
             prev_order_id: self.prev_order_id,
             next_order_id: self.next_order_id,
         }
@@ -354,6 +375,7 @@ impl Order {
             post_only: self.post_only,
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
+            builder: self.builder,
             prev_order_id,
             next_order_id,
         }
@@ -377,6 +399,7 @@ impl Order {
             post_only: self.post_only,
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
+            builder: self.builder,
             prev_order_id: self.prev_order_id,
             next_order_id: self.next_order_id,
         }
@@ -442,6 +465,17 @@ impl Order {
     /// Available only from real-time events, not from the initial snapshot.
     pub fn immediate_or_cancel(&self) -> Option<bool> { self.immediate_or_cancel }
 
+    /// Builder the order is attributed to, along with the additive fee rate
+    /// that builder charges on the size the order adds. `None` means no
+    /// builder.
+    ///
+    /// Unlike the flags above, attribution is persisted with the resting order
+    /// on-chain, so it is available both from the initial snapshot (contract
+    /// v1.1.7.4+, via `getOrderV2`) and from the `OrderRequestV2` event stream.
+    /// What a builder actually earned per fill is reported by the `builder_fee`
+    /// of [`super::OrderEventType::Filled`].
+    pub fn builder(&self) -> Option<types::BuilderAttribution> { self.builder }
+
     /// Previous order ID in the FIFO queue at this price level.
     /// Available from snapshot, None for newly placed orders or if this is the
     /// first order.
@@ -488,7 +522,7 @@ impl std::fmt::Display for Order {
 
 #[cfg(feature = "display")]
 impl tabled::Tabled for Order {
-    const LENGTH: usize = 11;
+    const LENGTH: usize = 13;
 
     fn fields(&self) -> Vec<std::borrow::Cow<'_, str>> {
         use colored::Colorize;
@@ -542,6 +576,10 @@ impl tabled::Tabled for Order {
             if self.immediate_or_cancel.unwrap_or_default() { "+" } else { "" }
                 .to_string()
                 .into(),
+            match self.builder {
+                Some(builder) => format!("{}@{}", builder.builder_id(), builder.fee()).into(),
+                None => "-".to_string().into(),
+            },
         ]
     }
 
@@ -559,6 +597,7 @@ impl tabled::Tabled for Order {
             "PO".into(),
             "FoK".into(),
             "IoC".into(),
+            "Builder".into(),
         ]
     }
 }

@@ -18,6 +18,7 @@ pub struct Account {
     #[debug("{locked_balance}")]
     locked_balance: UD128, // SC allocates 80 bits
     frozen: bool,
+    fee_tier: Option<types::FeeTier>,
     positions: HashMap<types::PerpetualId, Position>,
 }
 
@@ -26,6 +27,7 @@ impl Account {
         instant: types::StateInstant,
         id: types::AccountId,
         info: &AccountInfo,
+        fee_tier: Option<types::FeeTier>,
         positions: HashMap<types::PerpetualId, Position>,
         collateral_converter: num::Converter,
     ) -> Self {
@@ -36,11 +38,15 @@ impl Account {
             balance: collateral_converter.from_unsigned(info.balanceCNS),
             locked_balance: collateral_converter.from_unsigned(info.lockedBalanceCNS),
             frozen: info.frozen != 0,
+            fee_tier,
             positions,
         }
     }
 
-    pub(crate) fn from_event(
+    /// Account observed being created by the event stream, so its whole state
+    /// is known from the start - including the base fee tier every account
+    /// is created at.
+    pub(crate) fn created(
         instant: types::StateInstant,
         id: types::AccountId,
         address: Address,
@@ -52,6 +58,23 @@ impl Account {
             balance: UD128::ZERO,
             locked_balance: UD128::ZERO,
             frozen: false,
+            fee_tier: Some(0),
+            positions: HashMap::new(),
+        }
+    }
+
+    /// Placeholder for an account that predates the snapshot and was not
+    /// snapshotted, tracked because the event stream mutates it. Only the
+    /// updates observed since are known.
+    pub(crate) fn untracked(instant: types::StateInstant, id: types::AccountId) -> Self {
+        Self {
+            instant,
+            id,
+            address: Address::ZERO,
+            balance: UD128::ZERO,
+            locked_balance: UD128::ZERO,
+            frozen: false,
+            fee_tier: None,
             positions: HashMap::new(),
         }
     }
@@ -67,6 +90,9 @@ impl Account {
             balance: UD128::ZERO,
             locked_balance: UD128::ZERO,
             frozen: false,
+            // Not snapshotted for position-only accounts, see
+            // [`crate::state::SnapshotBuilder::with_all_positions`]
+            fee_tier: None,
             positions,
         }
     }
@@ -105,11 +131,26 @@ impl Account {
     /// Indicator of the account being frozen.
     pub fn frozen(&self) -> bool { self.frozen }
 
+    /// Fee tier of the account, indexing the
+    /// [`Perpetual::fee_schedule`] of every contract it trades. Tier 0 is the
+    /// base rate.
+    ///
+    /// `None` when the tier was never observed: contracts before v1.1.7.4 have
+    /// no per-account tiers, and accounts tracked via
+    /// [`SnapshotBuilder::with_all_positions`] are not snapshotted - such an
+    /// account reports a tier only once `AccountFeeTierSet` is observed for it.
+    pub fn fee_tier(&self) -> Option<types::FeeTier> { self.fee_tier }
+
     /// Positions the account has, up to one per each perpetual contract.
     pub fn positions(&self) -> &HashMap<types::PerpetualId, position::Position> { &self.positions }
 
     pub(crate) fn update_frozen(&mut self, instant: types::StateInstant, frozen: bool) {
         self.frozen = frozen;
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_fee_tier(&mut self, instant: types::StateInstant, tier: types::FeeTier) {
+        self.fee_tier = Some(tier);
         self.instant = instant;
     }
 
@@ -143,7 +184,8 @@ impl std::fmt::Display for Account {
             let pnl = self.unrealized_pnl();
             writeln!(
                 f,
-                "{} ({}) {}\n    Balance: {} | Available: {} | Locked: {} | Unrealized PnL: {}",
+                "{} ({}) {}\n    Balance: {} | Available: {} | Locked: {} | Unrealized PnL: {} | \
+                 Fee Tier: {}",
                 format!("Account #{}", self.id).blue(),
                 self.address,
                 if self.frozen { "FROZEN ".bright_red() } else { Default::default() },
@@ -151,6 +193,9 @@ impl std::fmt::Display for Account {
                 self.available_balance().to_string().green(),
                 self.locked_balance,
                 if pnl.is_negative() { pnl.to_string().red() } else { pnl.to_string().green() },
+                self.fee_tier
+                    .map(|tier| tier.to_string())
+                    .unwrap_or("?".to_string()),
             )?;
         } else {
             // Only ID is known
