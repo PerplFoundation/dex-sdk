@@ -46,21 +46,43 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     client.set_poll_interval(Duration::from_millis(100));
     let provider = ProviderBuilder::new().connect_client(client);
 
-    if let Some(unknown_perp) = cli
-        .perp
-        .iter()
-        .find(|perp_id| !chain.perpetuals().contains(perp_id))
-    {
-        return Err(anyhow::anyhow!("unknown perpetual ID: {}", unknown_perp));
-    }
-
+    // An empty perpetual list makes the SDK track every contract listed on the
+    // exchange, discovered on-chain
     let chain = Chain::custom(
         provider.get_chain_id().await?,
         chain.collateral_token(),
         chain.deployed_at_block(),
         cli.exchange.unwrap_or(chain.exchange()),
-        if !cli.perp.is_empty() { cli.perp.clone() } else { chain.perpetuals().to_vec() },
-    );
+        cli.perp.clone(),
+    )
+    // Carried over: `custom` starts with no exclusions, but the base chain's
+    // apply just as much to a custom exchange address on the same network
+    .with_excluded_perpetuals(chain.excluded_perpetuals().to_vec());
+
+    if !cli.perp.is_empty() {
+        let listed = perpl_sdk::state::listed_perpetuals(
+            &chain,
+            provider.clone(),
+            cli.block.map(BlockId::number).unwrap_or(BlockId::safe()),
+        )
+        .await
+        .context("discovering listed perpetuals")?;
+        if let Some(unknown_perp) = cli.perp.iter().find(|perp_id| !listed.contains(perp_id)) {
+            // Discovery leaves the chain's excluded contracts out, so say which
+            // of the two it is
+            if chain.excluded_perpetuals().contains(unknown_perp) {
+                return Err(anyhow::anyhow!(
+                    "perpetual ID {} is excluded from indexing for this chain",
+                    unknown_perp,
+                ));
+            }
+            return Err(anyhow::anyhow!(
+                "unknown perpetual ID: {}, listed: {:?}",
+                unknown_perp,
+                listed,
+            ));
+        }
+    }
 
     let mut builder = SnapshotBuilder::new(&chain, provider.clone());
     if let Some(block) = cli.block {

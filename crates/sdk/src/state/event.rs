@@ -1,8 +1,11 @@
 use alloy::primitives::{B256, U256};
 use fastnum::{D64, D256, UD64, UD128};
 
-use super::{account, order, perpetual, position};
-use crate::{abi::dex::Exchange::OrderRequest, types};
+use super::{ContractVersion, FeeSchedule, account, order, perpetual, position};
+use crate::{
+    abi::dex::Exchange::{OrderRequest, OrderRequestV2},
+    types,
+};
 
 /// Exchange state processing events.
 ///
@@ -60,6 +63,11 @@ pub enum AccountEventType {
 
     /// Account locked balance updated.
     LockedBalanceUpdated(#[debug("{_0}")] UD128),
+
+    /// Account fee tier updated, taking effect on the account's next fill.
+    /// The tier indexes the [`FeeSchedule`] of every contract the account
+    /// trades.
+    FeeTierUpdated(types::FeeTier),
 }
 
 /// Order request processing error with corresponding reason
@@ -139,6 +147,12 @@ pub enum OrderErrorType {
     /// Order does not exist.
     OrderDoesNotExist,
 
+    /// Builder-code order extension failed a recoverable decode check (unknown
+    /// envelope version, or a builder field out of range) on a batched or
+    /// forwarded V2 request, so this single order was skipped while the rest of
+    /// the batch proceeded.
+    OrderExtensionRejected,
+
     /// Order posting failed with status.
     OrderPostFailed(u16),
 
@@ -164,8 +178,25 @@ pub enum OrderErrorType {
     WrongAccountForOrder,
 }
 
+// A `FeeSchedule` carries 16 rates, dwarfing the scalar variants. Boxing it
+// would only move an allocation onto a path that is not hot - fee changes are
+// rare - at the cost of every consumer's pattern match.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, derive_more::Debug)]
 pub enum ExchangeEvent {
+    /// Deployed contract version stamped by an upgrade, along with the feature
+    /// set it resolves to.
+    ContractVersionUpdated(ContractVersion),
+
+    /// A fee schedule in [`super::Exchange::fee_schedules`] was rewritten,
+    /// under the key it is registered by ([`FeeSchedule::key`]).
+    ///
+    /// Every tracked perpetual contract *currently pointing at* that schedule
+    /// gets a corresponding [`PerpetualEventType::FeeScheduleUpdated`];
+    /// rewriting a schedule never repoints a contract at it, only
+    /// `PerpFeeSchedIdSet` does.
+    FeeScheduleUpdated(FeeSchedule),
+
     /// Exchange halted/unhalted.
     Halted(bool),
 
@@ -197,6 +228,13 @@ pub struct OrderEvent {
     /// ID of the order affected, if knonw.
     pub order_id: Option<types::OrderId>,
 
+    /// Builder the order is attributed to, with the fee rate it charges, if
+    /// any.
+    ///
+    /// Available on contract v1.1.7.4+ for orders whose placement was observed
+    /// in the event stream or recovered from the initial snapshot.
+    pub builder: Option<types::BuilderAttribution>,
+
     /// Type of the event with corresponding details.
     pub r#type: OrderEventType,
 }
@@ -214,6 +252,15 @@ pub enum OrderEventType {
         fill_size: UD64,
         #[debug("{fee}")]
         fee: UD64, // Precision of SC calculations is limited to 5 decimals.
+        /// Portion of `fee` earned by the builder the order is attributed to,
+        /// routed entirely to the protocol balance and paid out off-chain.
+        ///
+        /// Included in `fee`, so consumers must not add it on top. Always zero
+        /// on close/decrease and liquidation fills, and on contracts without
+        /// builder attribution - a non-zero
+        /// [`OrderEvent::builder`] does not imply a non-zero fee here.
+        #[debug("{builder_fee}")]
+        builder_fee: UD64,
         is_maker: bool,
     },
 
@@ -256,6 +303,8 @@ pub struct PerpetualEvent {
 }
 
 /// Type of perpetual event with corresponding details.
+// See the note on `ExchangeEvent` about the `FeeSchedule` variant's size.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, derive_more::Debug)]
 pub enum PerpetualEventType {
     /// Perpetual contract being added
@@ -269,6 +318,18 @@ pub enum PerpetualEventType {
         payment_per_unit: D256,
     },
 
+    /// Fee schedule of the contract updated, taking effect on its next fill.
+    ///
+    /// Emitted when the contract's own schedule is rewritten, when it is
+    /// repointed at another schedule ([`FeeSchedule::key`] changed), and when
+    /// the exchange-wide schedule it points at is rewritten.
+    FeeScheduleUpdated(FeeSchedule),
+
+    /// Funding sum scaling exponent updated. The exponent `e` defines the
+    /// divider `10^e` applied when interpreting on-chain funding sums and
+    /// per-unit funding payments for premium PnL calculations.
+    FundingSumScalingExpUpdated(u8),
+
     /// Initial margin requirement updated.
     InitialMarginFractionUpdated(#[debug("{_0}")] UD64),
 
@@ -281,7 +342,11 @@ pub enum PerpetualEventType {
     /// Mark price updated.
     MarkPriceUpdated(#[debug("{_0}")] UD64),
 
-    /// PMaker fee updated.
+    /// Base (fee tier 0) maker fee updated.
+    ///
+    /// Deprecated: only replayed from pre-v1.1.7.4 history, where fees were a
+    /// single per-contract pair. Current contracts report every fee change as
+    /// [`PerpetualEventType::FeeScheduleUpdated`].
     MakerFeeUpdated(#[debug("{_0}")] UD64),
 
     /// Open interest updated.
@@ -296,7 +361,9 @@ pub enum PerpetualEventType {
     /// Perpetual contract paused/unpaused.
     Paused(bool),
 
-    /// Taker fee updated.
+    /// Base (fee tier 0) taker fee updated.
+    ///
+    /// Deprecated, see [`PerpetualEventType::MakerFeeUpdated`].
     TakerFeeUpdated(#[debug("{_0}")] UD64),
 }
 
@@ -542,6 +609,7 @@ impl StateEvents {
             request_id: ctx.as_ref().map(|c| c.request_id),
             client_order_id: ord.client_order_id(),
             order_id: Some(ord.order_id()),
+            builder: ord.builder(),
             r#type,
         })
     }
@@ -590,12 +658,15 @@ impl StateEvents {
         })
     }
 
-    pub(crate) fn trade(ctx: &OrderContext, taker_fee: UD64) -> Self {
+    pub(crate) fn trade(ctx: &OrderContext, taker_fee: UD64, taker_builder_fee: UD64) -> Self {
         Self::Trade(types::Trade {
             perpetual_id: ctx.perpetual_id,
             taker_account_id: ctx.account_id,
+            taker_request_id: ctx.request_id,
             taker_side: ctx.r#type.try_side().expect("order type with side"),
             taker_fee,
+            taker_builder: ctx.builder,
+            taker_builder_fee,
             maker_fills: ctx.maker_fills.clone(),
         })
     }
@@ -615,9 +686,20 @@ pub(crate) struct OrderContext {
     pub(crate) post_only: bool,
     pub(crate) fill_or_kill: bool,
     pub(crate) immediate_or_cancel: bool,
+    pub(crate) builder: Option<types::BuilderAttribution>,
     pub(crate) maker_fills: Vec<types::MakerFill>,
     pub(crate) clearing_remaining_order: bool,
     pub(crate) position_closed_at_log_index: Option<u64>,
+}
+
+/// Order ID of a request, `None` for trigger order requests - their order IDs
+/// might exceed `u16::MAX` and they are not supported by the SDK yet.
+fn request_order_id(order_id: U256) -> Option<types::OrderId> {
+    if order_id <= U256::from(u16::MAX) {
+        std::num::NonZeroU16::new(order_id.to::<u16>())
+    } else {
+        None
+    }
 }
 
 impl From<&OrderRequest> for OrderContext {
@@ -626,13 +708,7 @@ impl From<&OrderRequest> for OrderContext {
             perpetual_id: value.perpId.to(),
             account_id: value.accountId.to(),
             request_id: value.orderDescId.to(),
-            order_id: if value.orderId <= U256::from(u16::MAX) {
-                std::num::NonZeroU16::new(value.orderId.to::<u16>())
-            } else {
-                // Trigger order requests might have order_id > u16::MAX, but they are not
-                // supported by the SDK yet.
-                None
-            },
+            order_id: request_order_id(value.orderId),
             r#type: value.orderType.into(),
             price: value.pricePNS,
             expiry_block: value.expiryBlock.to(),
@@ -640,6 +716,37 @@ impl From<&OrderRequest> for OrderContext {
             post_only: value.postOnly,
             fill_or_kill: value.fillOrKill,
             immediate_or_cancel: value.immediateOrCancel,
+            // V1 entrypoints cannot carry builder attribution
+            builder: None,
+            maker_fills: vec![],
+            clearing_remaining_order: false,
+            position_closed_at_log_index: None,
+        }
+    }
+}
+
+impl From<&OrderRequestV2> for OrderContext {
+    fn from(value: &OrderRequestV2) -> Self {
+        Self {
+            perpetual_id: value.perpId.to(),
+            account_id: value.accountId.to(),
+            request_id: value.orderDescId.to(),
+            order_id: request_order_id(value.orderId),
+            r#type: value.orderType.into(),
+            price: value.pricePNS,
+            expiry_block: value.expiryBlock.to(),
+            leverage: value.leverageHdths,
+            post_only: value.postOnly,
+            fill_or_kill: value.fillOrKill,
+            immediate_or_cancel: value.immediateOrCancel,
+            // Attribution is not duplicated as event fields: it is recovered by
+            // decoding the raw envelope the request carried. An envelope the
+            // contract itself rejected leaves no attribution, and the contract
+            // reports the rejection separately - either by reverting or with
+            // `OrderExtensionRejected`.
+            builder: types::BuilderAttribution::decode(&value.extension)
+                .ok()
+                .flatten(),
             maker_fills: vec![],
             clearing_remaining_order: false,
             position_closed_at_log_index: None,

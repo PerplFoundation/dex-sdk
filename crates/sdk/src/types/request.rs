@@ -1,8 +1,8 @@
-use alloy::primitives::U256;
+use alloy::primitives::{Bytes, U256};
 use fastnum::{UD64, UD128};
 
 use super::*;
-use crate::{abi::dex::Exchange::OrderDesc, num, state};
+use crate::{abi::dex::Exchange::OrderDesc, error::DexError, num, state};
 
 /// Type of the order request.
 ///
@@ -56,7 +56,8 @@ pub struct OrderRequest {
     leverage: UD64,
     last_exec_block: Option<u64>,
     amount: Option<UD128>,
-    max_slippage_bps: u16,
+    max_neg_pnl_collat_bps: u16,
+    builder: Option<BuilderAttribution>,
 }
 
 impl OrderRequest {
@@ -65,9 +66,11 @@ impl OrderRequest {
     /// Provided [`request_id`] is stored as [`client_order_id`] once the order
     /// gets placed.
     ///
-    /// Use [`Self::prepare`] to get [`OrderDesc`]s and then issue transactions
-    /// with
-    /// [`crate::abi::dex::Exchange::ExchangeInstance::execOrders`] calls.
+    /// Use [`Self::prepare_v2`] to get an [`OrderDesc`] with its order
+    /// extension and then issue transactions with
+    /// [`crate::abi::dex::Exchange::ExchangeInstance::execOrdersV2`] calls, or
+    /// [`Self::prepare`] for the builder-blind V1
+    /// [`crate::abi::dex::Exchange::ExchangeInstance::execOrders`].
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         request_id: RequestId,
@@ -84,7 +87,7 @@ impl OrderRequest {
         leverage: UD64,
         last_exec_block: Option<u64>,
         amount: Option<UD128>,
-        max_slippage_bps: u16,
+        max_neg_pnl_collat_bps: u16,
     ) -> Self {
         Self {
             request_id,
@@ -101,11 +104,32 @@ impl OrderRequest {
             leverage,
             last_exec_block,
             amount,
-            max_slippage_bps,
+            max_neg_pnl_collat_bps,
+            builder: None,
         }
     }
 
-    /// Prepare order request to execution.
+    /// Attributes the order to a builder, which charges its own additive fee on
+    /// the size the order adds.
+    ///
+    /// Only the V2 entrypoints carry attribution: use [`Self::prepare_v2`] to
+    /// get the corresponding order extension envelope. Attribution is *silently
+    /// dropped* by [`Self::prepare`], as the V1 entrypoints have nothing to
+    /// carry it in.
+    pub fn with_builder(mut self, builder: BuilderAttribution) -> Self {
+        self.builder = Some(builder);
+        self
+    }
+
+    /// Builder attribution of the request, if any.
+    pub fn builder(&self) -> Option<BuilderAttribution> { self.builder }
+
+    /// Prepare order request for execution via the V1 entrypoints
+    /// (`execOrder`/`execOrders`), which cannot carry builder attribution.
+    ///
+    /// # Panics
+    ///
+    /// If the perpetual contract of the request is not tracked by `exchange`.
     pub fn prepare(&self, exchange: &state::Exchange) -> OrderDesc {
         let perp = exchange
             .perpetuals()
@@ -117,6 +141,55 @@ impl OrderRequest {
             perp.leverage_converter(),
             Some(exchange.collateral_converter()),
         )
+    }
+
+    /// Prepare order request for execution via the V2 entrypoints
+    /// (`execOrderV2`/`execOrdersV2`), returning the order descriptor along
+    /// with its order extension envelope.
+    ///
+    /// The envelope is empty for a request without builder attribution, which
+    /// is the V1-identical fast path on-chain. A batch where no order
+    /// carries attribution can omit the `extensions` array entirely.
+    ///
+    /// Fails if the request carries builder attribution the deployed contract
+    /// does not support, or a builder fee rate the contract's decoder would
+    /// reject - which reverts `execOrderV2` and skips the order on the batched
+    /// path.
+    pub fn prepare_v2(&self, exchange: &state::Exchange) -> Result<(OrderDesc, Bytes), DexError> {
+        let perp = exchange
+            .perpetuals()
+            .get(&self.perp_id)
+            .ok_or(DexError::PerpetualNotTracked(self.perp_id))?;
+        let extension = match self.builder {
+            None => Bytes::new(),
+            Some(builder) => {
+                if !exchange.features().builder_attribution() {
+                    return Err(DexError::UnsupportedByContract(
+                        "builder attribution",
+                        exchange.features(),
+                    ));
+                }
+                builder.encode()?
+            },
+        };
+        Ok((
+            self.to_order_desc(
+                perp.price_converter(),
+                perp.size_converter(),
+                perp.leverage_converter(),
+                Some(exchange.collateral_converter()),
+            ),
+            extension,
+        ))
+    }
+
+    /// Order extension envelope of the request, empty without builder
+    /// attribution.
+    pub fn to_order_extension(&self) -> Result<Bytes, OrderExtensionError> {
+        self.builder
+            .map(|builder| builder.encode())
+            .transpose()
+            .map(Option::unwrap_or_default)
     }
 
     pub(crate) fn to_order_desc(
@@ -145,7 +218,7 @@ impl OrderRequest {
                 .zip(collateral_converter)
                 .map(|(a, conv)| conv.to_unsigned(a))
                 .unwrap_or_default(),
-            maxSlippageBps: U256::from(self.max_slippage_bps),
+            maxNegPnlCollatBPS: U256::from(self.max_neg_pnl_collat_bps),
         }
     }
 }

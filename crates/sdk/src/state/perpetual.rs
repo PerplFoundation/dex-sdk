@@ -2,11 +2,31 @@ use alloy::primitives::{B256, I256, U256};
 use fastnum::{D64, D256, UD64, UD128};
 
 use super::*;
-use crate::{abi::dex::Exchange::PerpetualInfo, types};
+use crate::{abi::dex::Exchange::PerpetualInfoV2, types};
 
-const FEE_SCALE: u8 = 5;
 const FUNDING_RATE_SCALE: u8 = 5;
 const LEVERAGE_SCALE: u8 = 2;
+
+/// The block of the first funding event strictly after `block`.
+///
+/// Funding events fall on one exchange-wide grid of multiples of
+/// `funding_interval`, shared by every contract. A contract activated
+/// part-way through an interval therefore anchors to the *next* grid block,
+/// not to the block on which it was activated.
+///
+/// The boundary case is deliberate: a `block` already on the grid advances a
+/// full interval, because the event at that block belongs to the schedule
+/// that was already running when the contract was activated.
+///
+/// A zero `funding_interval` has no grid to round onto; the block is returned
+/// unchanged rather than dividing by zero, so that a malformed exchange
+/// configuration degrades instead of panicking inside an event reducer.
+fn next_funding_event_block(block: u64, funding_interval: u64) -> u64 {
+    if funding_interval == 0 {
+        return block;
+    }
+    block - (block % funding_interval) + funding_interval
+}
 
 /// Perpetual contract tradeable at the exchange.
 ///
@@ -26,13 +46,11 @@ pub struct Perpetual {
     leverage_converter: num::Converter,
     fee_converter: num::Converter,
     funding_rate_converter: num::Converter,
+    funding_sum_converter: num::Converter,
     #[debug("{base_price}")]
     base_price: UD64, // SC allocates 32 bits
 
-    #[debug("{maker_fee}")]
-    maker_fee: UD64, // SC allocates 16 bits
-    #[debug("{taker_fee}")]
-    taker_fee: UD64, // SC allocates 16 bits
+    fee_schedule: FeeSchedule,
     #[debug("{initial_margin}")]
     initial_margin: UD64, // SC allocates 16 bits
     #[debug("{maintenance_margin}")]
@@ -77,17 +95,21 @@ impl Perpetual {
     pub(crate) fn new(
         instant: types::StateInstant,
         id: types::PerpetualId,
-        info: &PerpetualInfo,
-        maker_fee: U256,
-        taker_fee: U256,
+        info: &PerpetualInfoV2,
+        fee_schedule: FeeSchedule,
         initial_margin: U256,
         maintenance_margin: U256,
     ) -> Self {
         let price_converter = num::Converter::new(info.priceDecimals.to());
         let size_converter = num::Converter::new(info.lotDecimals.to());
         let leverage_converter = num::Converter::new(LEVERAGE_SCALE);
-        let fee_converter = num::Converter::new(FEE_SCALE);
+        let fee_converter = num::fee_converter();
         let funding_rate_converter = num::Converter::new(FUNDING_RATE_SCALE);
+        // Funding sum converter applies to PNS funding payments/sums, combines scaling
+        // exponent and price decimals
+        let funding_sum_converter = num::Converter::new(
+            info.fundingSumScalingExp.to::<u8>() + info.priceDecimals.to::<u8>(),
+        );
         Self {
             instant,
             state_instant: instant,
@@ -101,10 +123,10 @@ impl Perpetual {
             leverage_converter,
             fee_converter,
             funding_rate_converter,
+            funding_sum_converter,
             base_price: price_converter.from_unsigned(info.basePricePNS),
 
-            maker_fee: fee_converter.from_unsigned(maker_fee), // Fees are per 100K
-            taker_fee: fee_converter.from_unsigned(taker_fee), // Fees are per 100K
+            fee_schedule,
             // Margins are in hundredths
             initial_margin: leverage_converter.from_unsigned(initial_margin),
             // Margins are in hundredths
@@ -149,16 +171,18 @@ impl Perpetual {
         price_decimals: u8,
         size_decimals: u8,
         base_price: U256,
-        maker_fee: U256,
-        taker_fee: U256,
+        fee_schedule: FeeSchedule,
         initial_margin: U256,
         maintenance_margin: U256,
     ) -> Self {
         let price_converter = num::Converter::new(price_decimals);
         let size_converter = num::Converter::new(size_decimals);
         let leverage_converter = num::Converter::new(LEVERAGE_SCALE);
-        let fee_converter = num::Converter::new(FEE_SCALE);
+        let fee_converter = num::fee_converter();
         let funding_rate_converter = num::Converter::new(FUNDING_RATE_SCALE);
+        // Funding sum scaling exp is configured separately via
+        // `setFundingSumScalingExp` and starts at 0 until that event arrives
+        let funding_sum_converter = num::Converter::new(price_decimals);
         Self {
             instant,
             state_instant: instant,
@@ -172,10 +196,10 @@ impl Perpetual {
             leverage_converter,
             fee_converter,
             funding_rate_converter,
+            funding_sum_converter,
             base_price: price_converter.from_unsigned(base_price),
 
-            maker_fee: fee_converter.from_unsigned(maker_fee), // Fees are per 100K
-            taker_fee: fee_converter.from_unsigned(taker_fee), // Fees are per 100K
+            fee_schedule,
             // Margins are in hundredths
             initial_margin: leverage_converter.from_unsigned(initial_margin),
             // Margins are in hundredths
@@ -245,11 +269,39 @@ impl Perpetual {
     /// representations.
     pub fn funding_rate_converter(&self) -> num::Converter { self.funding_rate_converter }
 
-    /// Maker fee, gets collected only on position opening/increasing.
-    pub fn maker_fee(&self) -> UD64 { self.maker_fee }
+    /// Converter for funding sums / per-unit funding payments.
+    /// Scales by `10^(fundingSumScalingExp + priceDecimals)` as funding
+    /// sums/payments are originaly in price numeric system.
+    pub fn funding_sum_converter(&self) -> num::Converter { self.funding_sum_converter }
 
-    /// Taker fee, gets collected only on position opening/increasing.
-    pub fn taker_fee(&self) -> UD64 { self.taker_fee }
+    /// Fee schedule the contract resolves its fees from: a `(taker, maker)` fee
+    /// pair per account fee tier, plus the key identifying whether the schedule
+    /// is shared with other contracts.
+    pub fn fee_schedule(&self) -> FeeSchedule { self.fee_schedule }
+
+    /// Base (fee tier 0) maker fee, gets collected only on position
+    /// opening/increasing.
+    ///
+    /// Use [`Self::maker_fee_for_tier`] with an account's
+    /// [`Account::fee_tier`] for the rate that account is actually charged.
+    pub fn maker_fee(&self) -> UD64 { self.fee_schedule.base_maker_fee() }
+
+    /// Base (fee tier 0) taker fee, gets collected only on position
+    /// opening/increasing.
+    ///
+    /// Use [`Self::taker_fee_for_tier`] with an account's
+    /// [`Account::fee_tier`] for the rate that account is actually charged.
+    pub fn taker_fee(&self) -> UD64 { self.fee_schedule.base_taker_fee() }
+
+    /// Maker fee charged to an account of the given fee tier.
+    pub fn maker_fee_for_tier(&self, tier: types::FeeTier) -> UD64 {
+        self.fee_schedule.maker_fee(tier)
+    }
+
+    /// Taker fee charged to an account of the given fee tier.
+    pub fn taker_fee_for_tier(&self, tier: types::FeeTier) -> UD64 {
+        self.fee_schedule.taker_fee(tier)
+    }
 
     /// Minimal initial margin fraction required to open a position.
     pub fn initial_margin(&self) -> UD64 { self.initial_margin }
@@ -377,31 +429,39 @@ impl Perpetual {
 
     pub(crate) fn base_price(&self) -> UD64 { self.base_price }
 
-    pub(crate) fn update_state_instant(
-        &mut self,
-        instant: types::StateInstant,
-    ) -> Vec<StateEvents> {
+    pub(crate) fn update_state_instant(&mut self, instant: types::StateInstant) {
         // Update state instant first
         self.state_instant = instant;
 
         // Check for expired orders
         self.l3_book.check_expired(instant);
+    }
 
-        // Check if next funding event is due
-        if let Some(payment) = self.next_funding_payment
-            && self
-                .next_funding_event_block
-                .is_some_and(|fe| fe == instant.block_number())
+    /// If a scheduled funding payment takes effect at `instant` (i.e. this is
+    /// the funding-event block), returns the now-effective rate together with
+    /// the per-unit payment, and consumes the payment so it cannot fire again;
+    /// otherwise returns `None`.
+    ///
+    /// Funding is effective-dated: the payment was scheduled by an earlier
+    /// `FundingEventCompleted` for this later block. `Exchange::apply_events`
+    /// applies it in Pass 1 — to every position on its **pre-event** size,
+    /// before the block's size-changing events — matching the contract, which
+    /// settles a funding-event block at the new funding sum regardless of
+    /// same-block decreases.
+    pub(crate) fn take_funding_payment(
+        &mut self,
+        instant: types::StateInstant,
+    ) -> Option<(D64, D256)> {
+        if self
+            .next_funding_event_block
+            .is_some_and(|fe| fe == instant.block_number())
         {
-            vec![StateEvents::perpetual(
-                self,
-                PerpetualEventType::FundingEvent {
-                    rate: self.funding_rate(),
-                    payment_per_unit: payment,
-                },
-            )]
+            let rate = self.next_funding_rate.unwrap_or(self.prev_funding_rate);
+            self.next_funding_payment
+                .take()
+                .map(|payment| (rate, payment))
         } else {
-            vec![]
+            None
         }
     }
 
@@ -472,22 +532,51 @@ impl Perpetual {
             .map_err(|err| DexError::OrderBook(self.id, err))
     }
 
-    pub(crate) fn update_paused(&mut self, instant: types::StateInstant, paused: bool) {
+    pub(crate) fn update_paused(
+        &mut self,
+        instant: types::StateInstant,
+        paused: bool,
+        funding_interval: u64,
+    ) {
         self.is_paused = paused;
         self.instant = instant;
-        // Funding start block is set on first unpausing
+        // Funding start block is set on first unpausing. The anchor is the
+        // first funding-grid block after the unpause, not the unpause block
+        // itself - see `next_funding_event_block`.
         if !paused && self.funding_start_block == 0 {
-            self.funding_start_block = instant.block_number()
+            self.funding_start_block =
+                next_funding_event_block(instant.block_number(), funding_interval)
         }
     }
 
-    pub(crate) fn update_maker_fee(&mut self, instant: types::StateInstant, maker_fee: UD64) {
-        self.maker_fee = maker_fee;
+    pub(crate) fn update_fee_schedule(
+        &mut self,
+        instant: types::StateInstant,
+        fee_schedule: FeeSchedule,
+    ) {
+        self.fee_schedule = fee_schedule;
         self.instant = instant;
     }
 
-    pub(crate) fn update_taker_fee(&mut self, instant: types::StateInstant, taker_fee: UD64) {
-        self.taker_fee = taker_fee;
+    /// Repoints the contract at another schedule, keeping the rates when the
+    /// new key is the contract's own custom schedule - the `FeeScheduleSet`
+    /// under that id carries the values in that case.
+    pub(crate) fn update_fee_schedule_key(
+        &mut self,
+        instant: types::StateInstant,
+        key: FeeScheduleKey,
+    ) {
+        self.fee_schedule = self.fee_schedule.with_key(key);
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_base_maker_fee(&mut self, instant: types::StateInstant, maker_fee: UD64) {
+        self.fee_schedule = self.fee_schedule.with_base_maker_fee(maker_fee);
+        self.instant = instant;
+    }
+
+    pub(crate) fn update_base_taker_fee(&mut self, instant: types::StateInstant, taker_fee: UD64) {
+        self.fee_schedule = self.fee_schedule.with_base_taker_fee(taker_fee);
         self.instant = instant;
     }
 
@@ -551,6 +640,13 @@ impl Perpetual {
         self.instant = instant;
     }
 
+    pub(crate) fn update_funding_sum_scaling_exp(&mut self, instant: types::StateInstant, exp: u8) {
+        // Funding sum converter applies to PNS funding payments/sums,
+        // so combines specified scaling exponent and price decimals
+        self.funding_sum_converter = num::Converter::new(exp + self.price_converter.decimals());
+        self.instant = instant;
+    }
+
     pub(crate) fn update_oracle_feed_id(
         &mut self,
         instant: types::StateInstant,
@@ -607,11 +703,11 @@ impl Perpetual {
             price_converter: num::Converter::new(0),
             size_converter: num::Converter::new(0),
             leverage_converter: num::Converter::new(2),
-            fee_converter: num::Converter::new(5),
+            fee_converter: num::fee_converter(),
             funding_rate_converter: num::Converter::new(5),
+            funding_sum_converter: num::Converter::new(0),
             base_price: UD64::ZERO,
-            maker_fee: UD64::ZERO,
-            taker_fee: UD64::ZERO,
+            fee_schedule: FeeSchedule::flat(FeeScheduleKey::Default, UD64::ZERO, UD64::ZERO),
             initial_margin: UD64::ZERO,
             maintenance_margin: UD64::ZERO,
             last_price: UD64::ZERO,
@@ -753,7 +849,15 @@ impl std::fmt::Display for Perpetual {
                 ),
             ],
             vec![
-                format!("Fees: {} / {} (mkr/tkr)", self.maker_fee, self.taker_fee),
+                // Base rates only, plus the schedule they resolve from - the
+                // discounted tiers are rendered once per schedule with the
+                // exchange rather than repeated per contract
+                format!(
+                    "Fees: {} / {} (tkr/mkr, {})",
+                    self.fee_schedule.base_taker_fee(),
+                    self.fee_schedule.base_maker_fee(),
+                    self.fee_schedule.key(),
+                ),
                 format!("Margin: {} / {} (ini/mnt)", self.initial_margin, self.maintenance_margin),
                 format!("Price Max Age: {}", self.price_max_age_sec),
                 format!("Funding Start: {}", self.funding_start_block),
@@ -773,7 +877,7 @@ impl std::fmt::Display for Perpetual {
             table,
         )?;
 
-        // Render order book in alternate mode
+        // Render the order book in alternate mode
         if f.alternate() && self.l3_book().total_orders() > 0 {
             writeln!(f, "{:}", self.l3_book)?;
         }
@@ -785,11 +889,87 @@ impl std::fmt::Display for Perpetual {
 mod tests {
     use std::num::NonZeroU16;
 
-    use fastnum::udec64;
+    use fastnum::{dec64, dec256, udec64};
 
     use super::*;
 
     fn oid(n: u16) -> types::OrderId { NonZeroU16::new(n).expect("test order id must be non-zero") }
+
+    /// One hour of blocks, the funding interval the exchange reports on
+    /// mainnet. Any non-trivial value exercises the same arithmetic.
+    const INTERVAL: u64 = 8571;
+
+    fn at(block: u64) -> types::StateInstant { types::StateInstant::new(block, 1_700_000_000) }
+
+    #[test]
+    fn next_funding_event_block_rounds_up_to_the_grid() {
+        assert_eq!(next_funding_event_block(1, INTERVAL), INTERVAL);
+        assert_eq!(next_funding_event_block(INTERVAL - 1, INTERVAL), INTERVAL);
+        // A block already on the grid advances a whole interval - the event at
+        // that block belongs to the schedule already running.
+        assert_eq!(next_funding_event_block(INTERVAL, INTERVAL), 2 * INTERVAL);
+        assert_eq!(next_funding_event_block(0, INTERVAL), INTERVAL);
+        // Every result is on the grid and strictly ahead of the input.
+        for block in [1u64, 5_000, 8_570, 8_571, 97_627_404, 99_360_126] {
+            let next = next_funding_event_block(block, INTERVAL);
+            assert_eq!(next % INTERVAL, 0, "block {block} produced off-grid {next}");
+            assert!(next > block, "block {block} produced non-advancing {next}");
+        }
+    }
+
+    #[test]
+    fn next_funding_event_block_tolerates_a_zero_interval() {
+        assert_eq!(next_funding_event_block(1_234, 0), 1_234);
+    }
+
+    #[test]
+    fn first_unpause_anchors_funding_to_the_grid_not_the_observed_block() {
+        let mut perp = Perpetual::for_testing(1);
+        assert_eq!(perp.funding_start_block(), 0);
+
+        // Activation part-way through an interval: the observed block is NOT
+        // the anchor. Mirrors the mainnet listing at block 97,627,404, which
+        // the contract anchored to 97,632,261.
+        perp.update_paused(at(97_627_404), false, INTERVAL);
+
+        assert_eq!(perp.funding_start_block(), 97_632_261);
+        assert_eq!(perp.funding_start_block() % INTERVAL, 0);
+        assert!(!perp.is_paused());
+    }
+
+    #[test]
+    fn unpause_on_a_grid_block_anchors_to_the_following_interval() {
+        let mut perp = Perpetual::for_testing(1);
+        perp.update_paused(at(INTERVAL), false, INTERVAL);
+        assert_eq!(perp.funding_start_block(), 2 * INTERVAL);
+    }
+
+    #[test]
+    fn funding_anchor_is_written_once_and_survives_a_repause() {
+        let mut perp = Perpetual::for_testing(1);
+
+        // The listing batch unpauses and re-pauses in one transaction: the
+        // contract is activated but not tradeable. The anchor is taken on the
+        // unpause and must not move afterwards.
+        perp.update_paused(at(97_627_404), false, INTERVAL);
+        let anchor = perp.funding_start_block();
+        assert_eq!(anchor % INTERVAL, 0, "the preserved anchor must be a grid block");
+        perp.update_paused(at(97_627_404), true, INTERVAL);
+
+        assert_eq!(perp.funding_start_block(), anchor);
+        assert!(perp.is_paused());
+
+        // A later unpause must not re-anchor either.
+        perp.update_paused(at(98_000_000), false, INTERVAL);
+        assert_eq!(perp.funding_start_block(), anchor);
+    }
+
+    #[test]
+    fn pause_never_sets_the_funding_anchor() {
+        let mut perp = Perpetual::for_testing(1);
+        perp.update_paused(at(97_627_404), true, INTERVAL);
+        assert_eq!(perp.funding_start_block(), 0);
+    }
 
     #[test]
     fn update_order_expired_order_renewal_moves_to_back() {
@@ -888,5 +1068,65 @@ mod tests {
         // Order 1 should keep its position: FIFO is [1, 2]
         let orders: Vec<_> = perp.l3_book.ask_orders().map(|o| o.order_id()).collect();
         assert_eq!(orders, vec![oid(1), oid(2)], "Non-expired order should keep position");
+    }
+
+    // ── Funding schedule: effective-dating, single-consumption, prev/next rate
+    // boundary ── These pin `take_funding_payment` / `update_funding` /
+    // `funding_rate`, which the fix's Pass-1 funding relies on. `for_testing`
+    // applies no converter, so scheduled values pass through unchanged.
+
+    #[test]
+    fn perpetual_funding_effective_dated_consumed_once() {
+        // take_funding_payment yields the scheduled (rate, payment) ONLY at the exact
+        // funding-event block, consumes it (cannot fire twice), and never auto-applies
+        // a block that was skipped.
+        let mut perp = Perpetual::for_testing(1);
+        perp.update_funding(types::StateInstant::new(1, 1), dec64!(0.02), dec256!(1.25), 3);
+
+        // Before the event block: not due.
+        assert_eq!(perp.take_funding_payment(types::StateInstant::new(2, 2)), None);
+        // At the event block: due, exactly once.
+        assert_eq!(
+            perp.take_funding_payment(types::StateInstant::new(3, 3)),
+            Some((dec64!(0.02), dec256!(1.25))),
+        );
+        // Consumed: a second read at the same block yields nothing.
+        assert_eq!(perp.take_funding_payment(types::StateInstant::new(3, 3)), None);
+        // A later block never picks up the (already-passed) schedule.
+        assert_eq!(perp.take_funding_payment(types::StateInstant::new(4, 4)), None);
+    }
+
+    #[test]
+    fn perpetual_funding_rate_prev_next_boundary() {
+        // funding_rate() reads state_instant: prev while state_instant.block < the
+        // event block, next at/after it. state_instant advances only via
+        // update_state_instant (NOT update_funding / take_funding_payment).
+        let mut perp = Perpetual::for_testing(2);
+        perp.update_funding(types::StateInstant::new(1, 1), dec64!(0.02), dec256!(1.25), 3);
+
+        assert_eq!(perp.funding_rate(), D64::ZERO); // state (0,0): 3 <= 0? no -> prev
+        assert!(perp.has_next_funding_rate()); // 3 > 0
+        perp.update_state_instant(types::StateInstant::new(2, 2));
+        assert_eq!(perp.funding_rate(), D64::ZERO); // 3 <= 2? no -> prev
+        perp.update_state_instant(types::StateInstant::new(3, 3));
+        assert_eq!(perp.funding_rate(), dec64!(0.02)); // 3 <= 3? yes -> next (at boundary)
+        assert!(!perp.has_next_funding_rate()); // 3 > 3? no
+        perp.update_state_instant(types::StateInstant::new(4, 4));
+        assert_eq!(perp.funding_rate(), dec64!(0.02)); // 3 <= 4? yes -> next
+    }
+
+    #[test]
+    fn perpetual_update_funding_prev_rollover() {
+        // A second update_funding that supersedes an unconsumed schedule (older event
+        // block < new block) rolls the old next rate into prev — the only
+        // post-construction writer of prev_funding_rate.
+        let mut perp = Perpetual::for_testing(3);
+        perp.update_funding(types::StateInstant::new(1, 1), dec64!(0.02), dec256!(1.0), 3);
+        perp.update_funding(types::StateInstant::new(2, 2), dec64!(0.03), dec256!(2.0), 5);
+        // prev is now the superseded 0.02; next is 0.03 @ block 5.
+        perp.update_state_instant(types::StateInstant::new(4, 4));
+        assert_eq!(perp.funding_rate(), dec64!(0.02)); // 5 <= 4? no -> prev (rolled 0.02)
+        perp.update_state_instant(types::StateInstant::new(5, 5));
+        assert_eq!(perp.funding_rate(), dec64!(0.03)); // 5 <= 5? yes -> next
     }
 }

@@ -1,5 +1,7 @@
 use fastnum::UD64;
 
+use super::BuilderAttribution;
+
 /// A single maker fill within a taker trade.
 #[derive(Clone, derive_more::Debug)]
 pub struct MakerFill {
@@ -12,6 +14,12 @@ pub struct MakerFill {
     /// Maker order ID.
     pub maker_order_id: super::OrderId,
 
+    /// Maker client order ID, if known.
+    ///
+    /// Available only when the order placement was observed in processed
+    /// events, not for orders loaded from the initial snapshot.
+    pub maker_client_order_id: Option<super::RequestId>,
+
     /// Fill price (normalized decimal).
     #[debug("{price}")]
     pub price: UD64,
@@ -23,6 +31,22 @@ pub struct MakerFill {
     /// Maker fee paid (normalized decimal, in collateral token).
     #[debug("{fee}")]
     pub fee: UD64,
+
+    /// Builder the maker order is attributed to, with the fee rate it charges,
+    /// if any.
+    ///
+    /// Available only when the order placement was observed in processed events
+    /// or recovered from the initial snapshot, on contract v1.1.7.4+.
+    pub builder: Option<super::BuilderAttribution>,
+
+    /// Builder fee earned on this fill (normalized decimal, in collateral
+    /// token).
+    ///
+    /// Included in [`Self::fee`], so consumers must not add it on top. Zero on
+    /// close/decrease fills and on contracts without builder attribution, even
+    /// when [`Self::builder`] is set.
+    #[debug("{builder_fee}")]
+    pub builder_fee: UD64,
 }
 
 /// A complete trade event: one taker matched against one or more makers.
@@ -38,12 +62,26 @@ pub struct Trade {
     /// Taker account ID.
     pub taker_account_id: super::AccountId,
 
+    /// Taker request ID.
+    pub taker_request_id: super::RequestId,
+
     /// Taker side (Bid = buying, Ask = selling).
     pub taker_side: super::OrderSide,
 
     /// Taker fee paid (normalized decimal, in collateral token).
     #[debug("{taker_fee}")]
     pub taker_fee: UD64,
+
+    /// Builder the taker order is attributed to, with the fee rate it charges,
+    /// if any.
+    pub taker_builder: Option<BuilderAttribution>,
+
+    /// Builder fee earned on the taker side (normalized decimal, in collateral
+    /// token).
+    ///
+    /// Included in [`Self::taker_fee`], so consumers must not add it on top.
+    #[debug("{taker_builder_fee}")]
+    pub taker_builder_fee: UD64,
 
     /// All maker fills matched by this taker order.
     pub maker_fills: Vec<MakerFill>,
@@ -70,6 +108,29 @@ impl Trade {
 
     /// Total maker fees paid across all fills.
     pub fn total_maker_fees(&self) -> UD64 { self.maker_fills.iter().map(|f| f.fee).sum() }
+
+    /// Total builder fees earned on this trade, taker and maker sides combined.
+    ///
+    /// Part of [`Self::taker_fee`] and the maker fees, not additional to them.
+    pub fn total_builder_fees(&self) -> UD64 {
+        self.taker_builder_fee + self.maker_fills.iter().map(|f| f.builder_fee).sum::<UD64>()
+    }
+
+    /// Total builder fees earned by a specific builder on this trade.
+    pub fn builder_total(&self, builder_id: super::BuilderId) -> UD64 {
+        let taker = self
+            .taker_builder
+            .filter(|b| b.builder_id() == builder_id)
+            .map(|_| self.taker_builder_fee)
+            .unwrap_or(UD64::ZERO);
+        taker
+            + self
+                .maker_fills
+                .iter()
+                .filter(|f| f.builder.is_some_and(|b| b.builder_id() == builder_id))
+                .map(|f| f.builder_fee)
+                .sum::<UD64>()
+    }
 
     /// Volume-weighted average price, total size and total fees for a specific
     /// maker.

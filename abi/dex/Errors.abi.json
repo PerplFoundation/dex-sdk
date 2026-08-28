@@ -1,22 +1,6 @@
 [
   {
     "type": "error",
-    "name": "AbsValueExceedsMaximum",
-    "inputs": [
-      {
-        "name": "value",
-        "type": "int256",
-        "internalType": "int256"
-      },
-      {
-        "name": "maximum",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "AccountDoesNotExist",
     "inputs": [
       {
@@ -50,22 +34,6 @@
         "name": "status",
         "type": "uint8",
         "internalType": "enum FreezeStatusEnum"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "AccountIdAlreadySet",
-    "inputs": [
-      {
-        "name": "proposedAccountId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "accountId",
-        "type": "uint256",
-        "internalType": "uint256"
       }
     ]
   },
@@ -534,42 +502,6 @@
   },
   {
     "type": "error",
-    "name": "CantSettleMatchOrder",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "accountId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "orderType",
-        "type": "uint8",
-        "internalType": "enum OrderEnum"
-      },
-      {
-        "name": "pricePNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "lotLNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "reason",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "ChangeExpiredOrderNeedsNewExpiry",
     "inputs": [
       {
@@ -623,6 +555,22 @@
         "name": "orderType",
         "type": "uint8",
         "internalType": "enum OrderEnum"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ConfigEntryLimit",
+    "inputs": [
+      {
+        "name": "requested",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "max",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },
@@ -888,6 +836,27 @@
   },
   {
     "type": "error",
+    "name": "DepositExceedsCNS64",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "accountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "depositCNS",
+        "type": "uint80",
+        "internalType": "uint80"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "DifferenceExceedsInt256",
     "inputs": [
       {
@@ -925,6 +894,28 @@
   },
   {
     "type": "error",
+    "name": "DuplicatePerpIdInConfig",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DuplicatePerpIdInResidueXfers",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ExceedsLastExecutionBlock",
     "inputs": [
       {
@@ -938,32 +929,6 @@
     "type": "error",
     "name": "ExchangeHalted",
     "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "ExpiryTimestampOutsideRange",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "value",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "minimum",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "maximum",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
   },
   {
     "type": "error",
@@ -1002,53 +967,6 @@
       },
       {
         "name": "exitBlock",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "FundingIntervalIncorrect",
-    "inputs": [
-      {
-        "name": "proposed",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "required",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "FundingPaymentExceedsMaxPnsSevere",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "positionId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "fundingPaymentPnsPerLot",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "startFundingBlock",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "exitFundingBlock",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1364,6 +1282,27 @@
   },
   {
     "type": "error",
+    "name": "InvalidFundingSumScalingExp",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "newExp",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxExp",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidLinkReportForContract",
     "inputs": [
       {
@@ -1451,6 +1390,17 @@
       },
       {
         "name": "proposedCNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidOrderExtensionVersion",
+    "inputs": [
+      {
+        "name": "version",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1926,6 +1876,22 @@
   },
   {
     "type": "error",
+    "name": "OrderExtensionsLengthMismatch",
+    "inputs": [
+      {
+        "name": "ordersLength",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "extensionsLength",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "OrderIdIsNotAtSpecifiedPriceLevel",
     "inputs": [
       {
@@ -2051,6 +2017,17 @@
   },
   {
     "type": "error",
+    "name": "OverflowPremiumCnsSevere",
+    "inputs": [
+      {
+        "name": "premiumPnlCNS",
+        "type": "int256",
+        "internalType": "int256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "PermissionlessCancelOrdersOutOfRange",
     "inputs": [
       {
@@ -2065,6 +2042,22 @@
       },
       {
         "name": "maximum",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PerpIdListIncomplete",
+    "inputs": [
+      {
+        "name": "provided",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "expected",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2091,6 +2084,17 @@
       },
       {
         "name": "amountCNS",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PerpetualActivated",
+    "inputs": [
+      {
+        "name": "perpId",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2182,22 +2186,6 @@
   },
   {
     "type": "error",
-    "name": "PositionInsufficientFunds",
-    "inputs": [
-      {
-        "name": "unrealizedDeltaPnlCNS",
-        "type": "int256",
-        "internalType": "int256"
-      },
-      {
-        "name": "posValueAboveMarginCNS",
-        "type": "int256",
-        "internalType": "int256"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "PositionTypeMismatch",
     "inputs": [
       {
@@ -2270,27 +2258,6 @@
       },
       {
         "name": "maxPricePNS",
-        "type": "uint256",
-        "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "ProposedFeeExceedsMax",
-    "inputs": [
-      {
-        "name": "perpId",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "proposedFeePer100K",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "maxFeePer100K",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2461,7 +2428,34 @@
   },
   {
     "type": "error",
+    "name": "ResidueTransferEntryLimit",
+    "inputs": [
+      {
+        "name": "requested",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "max",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "SenderIsNotAdministrator",
+    "inputs": [
+      {
+        "name": "sender",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SenderIsNotMonitorAdministrator",
     "inputs": [
       {
         "name": "sender",
@@ -2609,22 +2603,6 @@
         "name": "maxBytes",
         "type": "uint256",
         "internalType": "uint256"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "UintIntSumIsNegative",
-    "inputs": [
-      {
-        "name": "amount",
-        "type": "uint256",
-        "internalType": "uint256"
-      },
-      {
-        "name": "addend",
-        "type": "int256",
-        "internalType": "int256"
       }
     ]
   },

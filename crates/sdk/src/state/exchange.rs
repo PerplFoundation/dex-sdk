@@ -1,6 +1,6 @@
 use std::iter;
 
-use fastnum::{D256, UD64, UD128};
+use fastnum::{D64, D256, UD64, UD128};
 use itertools::chain;
 
 use super::*;
@@ -13,6 +13,41 @@ use crate::{
 
 pub type StateBlockEvents = types::BlockEvents<types::EventContext<Vec<StateEvents>>>;
 
+/// Raw maker fill data, common to the V1 and V2 `MakerOrderFilled*` events.
+struct RawMakerFill {
+    perp_id: U256,
+    account_id: U256,
+    order_id: U256,
+    price_pns: U256,
+    lot_lns: U256,
+    fee_cns: U256,
+    builder_fee_cns: U256,
+    locked_balance_cns: U256,
+    balance_cns: U256,
+}
+
+/// Raw listing data, common to the V1 and V2 `ContractAdded*` events. The
+/// versions differ in how the new contract's fees are reported: V1 carried the
+/// resolved base rates, V2 carries the fee schedule key they resolve from.
+struct RawContractAdded {
+    perp_id: U256,
+    status: u8,
+    price_decimals: U256,
+    lot_decimals: U256,
+    base_price_pns: U256,
+    init_margin_frac_hdths: U256,
+    maint_margin_frac_hdths: U256,
+}
+
+/// Raw taker fill data, common to the V1 and V2 `TakerOrderFilled*` events.
+struct RawTakerFill {
+    collat_price_pns: U256,
+    lot_lns: U256,
+    fee_cns: U256,
+    builder_fee_cns: U256,
+    balance_cns: U256,
+}
+
 /// Exchange state snapshot.
 ///
 /// [`super::SnapshotBuilder`] can be used to create the snapshot at
@@ -22,6 +57,7 @@ pub type StateBlockEvents = types::BlockEvents<types::EventContext<Vec<StateEven
 pub struct Exchange {
     chain: Chain,
     instant: types::StateInstant,
+    features: ContractFeatures,
     collateral_converter: num::Converter,
     funding_interval_blocks: u32,
     #[debug("{min_post}")]
@@ -30,6 +66,7 @@ pub struct Exchange {
     min_settle: UD128,
     #[debug("{recycle_fee}")]
     recycle_fee: UD128,
+    fee_schedules: FeeScheduleRegistry,
     perpetuals: HashMap<types::PerpetualId, Perpetual>,
     accounts: HashMap<types::AccountId, Account>,
     is_halted: bool,
@@ -41,11 +78,13 @@ impl Exchange {
     pub(crate) fn new(
         chain: Chain,
         instant: types::StateInstant,
+        features: ContractFeatures,
         collateral_converter: num::Converter,
         funding_interval_blocks: u32,
         min_post: UD128,
         min_settle: UD128,
         recycle_fee: UD128,
+        fee_schedules: FeeScheduleRegistry,
         perpetuals: HashMap<types::PerpetualId, Perpetual>,
         accounts: HashMap<types::AccountId, Account>,
         is_halted: bool,
@@ -54,11 +93,13 @@ impl Exchange {
         Self {
             chain,
             instant,
+            features,
             collateral_converter,
             funding_interval_blocks,
             min_post,
             min_settle,
             recycle_fee,
+            fee_schedules,
             perpetuals,
             accounts,
             is_halted,
@@ -74,6 +115,34 @@ impl Exchange {
 
     /// Instant the snapshot is consistent with or was last updated at.
     pub fn instant(&self) -> types::StateInstant { self.instant }
+
+    /// Feature set of the *deployed* contract, which can lag behind the
+    /// revision the SDK targets ([`Self::revision`]). Detected while
+    /// building the snapshot and kept up to date by `ContractVersionSet`.
+    pub fn features(&self) -> ContractFeatures { self.features }
+
+    /// Version reported by the deployed contract, `None` before v1.1.7.4 which
+    /// has no version getter.
+    pub fn contract_version(&self) -> Option<ContractVersion> { self.features.version() }
+
+    /// Every fee schedule known to the exchange, which perpetual contracts
+    /// resolve their fees from by pointing at one (see
+    /// [`Perpetual::fee_schedule`]).
+    pub fn fee_schedules(&self) -> &FeeScheduleRegistry { &self.fee_schedules }
+
+    /// Exchange-wide default fee schedule, shared by every perpetual contract
+    /// that has not been repointed at another one.
+    pub fn default_fee_schedule(&self) -> FeeSchedule { self.fee_schedules.default_schedule() }
+
+    /// Exchange-wide default fee schedule for real-world assets.
+    pub fn rwa_fee_schedule(&self) -> FeeSchedule { self.fee_schedules.rwa_default_schedule() }
+
+    /// Fee schedule registered under the given key, `None` for a custom
+    /// schedule that has never been observed - one keyed by a perpetual the
+    /// snapshot does not track, and not written since.
+    pub fn fee_schedule(&self, key: FeeScheduleKey) -> Option<FeeSchedule> {
+        self.fee_schedules.get(key)
+    }
 
     /// Converter of fixed-point <-> decimal numbers for collateral token
     /// amounts.
@@ -165,11 +234,63 @@ impl Exchange {
             ));
         }
 
-        // Apply events sequentially and accumulate produced state events,
-        // keeping intermediate context as many order events are incremental
+        // apply_events runs three passes over the block:
+        // Pass 1 — funding: settle the block's scheduled funding on each
+        // position's pre-event size (before any decreases).
+        // Pass 2 — raw events: apply the block's on-chain events
+        // in order (orders, position changes, perpetual-parameter updates);
+        // a perpetual-parameter change updates the perpetual here and is set
+        // aside for Pass 3.
+        // Pass 3 — fan-out: fan the perpetual-parameter changes set aside in
+        // Pass 2 (e.g. a maintenance-margin-fraction change) out to
+        // every tracked position.
         let mut order_context: Option<OrderContext> = None;
         let mut prev_tx_index: Option<u64> = None;
         let mut state_events = vec![];
+        let mut perp_events = vec![];
+
+        // Pass 1 — funding: the contract settles a funding-event block at the new
+        // funding sum regardless of same-block decreases, so funding must land
+        // on each position's PRE-event size, before the block's size-changing
+        // events. This is the only place funding is applied.
+        let funding_due: Vec<(types::PerpetualId, D64, D256)> = self
+            .perpetuals
+            .values_mut()
+            .filter_map(|perp| {
+                perp.take_funding_payment(next_instant)
+                    .map(|(rate, payment)| (perp.id(), rate, payment))
+            })
+            .collect();
+        for (perp_id, rate, payment) in funding_due {
+            let mut funding_events = vec![];
+            if let Some(perp) = self.perpetuals.get(&perp_id) {
+                funding_events.push(StateEvents::perpetual(
+                    perp,
+                    PerpetualEventType::FundingEvent { rate, payment_per_unit: payment },
+                ));
+            }
+            for acc in self.accounts.values_mut() {
+                if let Some(pos) = acc.positions_mut().get_mut(&perp_id)
+                    && pos.apply_funding_payment(next_instant, payment)
+                {
+                    funding_events.push(StateEvents::position(
+                        pos,
+                        &None,
+                        PositionEventType::UnrealizedPnLUpdated {
+                            pnl: pos.pnl(),
+                            delta_pnl: pos.delta_pnl(),
+                            premium_pnl: pos.premium_pnl(),
+                        },
+                    ));
+                }
+            }
+            if !funding_events.is_empty() {
+                state_events.push(EventContext::empty(funding_events));
+            }
+        }
+
+        // Pass 2 — raw events: apply the block's on-chain events in order, keeping
+        // incremental order context across events within a transaction.
         for event in events.events() {
             if prev_tx_index.is_some_and(|idx| idx < event.tx_index()) {
                 // Reset order context at the transaction boundary
@@ -177,23 +298,30 @@ impl Exchange {
             }
             let result = self.apply_raw_event(next_instant, event, &mut order_context)?;
             if !result.is_empty() {
+                // Set aside perpetual-parameter events for the Pass 3 fan-out below.
+                let block_perp_events = result
+                    .iter()
+                    .filter(|e| e.as_perpetual_event().is_some())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !block_perp_events.is_empty() {
+                    perp_events.push(block_perp_events);
+                }
                 state_events.push(event.pass(result));
             }
             prev_tx_index = Some(event.tx_index());
         }
 
-        // Commit instant, can produce its own set of events
+        // Commit the instant: advance each perpetual's state instant and expire stale
+        // orders.
         self.instant = events.instant();
-        let mut perp_events = vec![];
         for perp in self.perpetuals.values_mut() {
-            let result = perp.update_state_instant(self.instant);
-            if !result.is_empty() {
-                perp_events.push(result.clone());
-                state_events.push(EventContext::empty(result));
-            }
+            perp.update_state_instant(self.instant);
         }
 
-        // Applying produced state events as a second pass
+        // Pass 3 — fan-out: apply the perpetual-parameter changes set aside in Pass 2
+        // (e.g. a maintenance-margin-fraction change) to every tracked
+        // position.
         for event in perp_events.iter().flatten() {
             let result = self.apply_state_event(self.instant, event)?;
             if !result.is_empty() {
@@ -221,7 +349,7 @@ impl Exchange {
             ExchangeEvents::AccountCreated(e) => {
                 if self.track_all_accounts {
                     self.accounts
-                        .insert(e.id.to(), Account::from_event(instant, e.id.to(), e.account));
+                        .insert(e.id.to(), Account::created(instant, e.id.to(), e.account));
                     vec![StateEvents::Account(AccountEvent {
                         account_id: e.id.to(),
                         request_id: None,
@@ -231,6 +359,15 @@ impl Exchange {
                     vec![]
                 }
             },
+            ExchangeEvents::AccountFeeTierSet(e) => self
+                .account(e.accountId)
+                .map(|acc| {
+                    let tier = e.tier.to();
+                    acc.update_fee_tier(instant, tier);
+                    StateEvents::account(acc, ctx, AccountEventType::FeeTierUpdated(tier))
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::AccountFreeze(e) => self
                 .account(e.accountId)
                 .map(|acc| {
@@ -271,7 +408,9 @@ impl Exchange {
             ExchangeEvents::BeaconUpgraded(_) => vec![],
             ExchangeEvents::BlockStatusChanged(_) => vec![],
             ExchangeEvents::BorrowMarginNotMetAfterDecCollateral(_) => vec![],
+            ExchangeEvents::BuyToLiquidateSettled(_) => vec![],
             ExchangeEvents::BuyToLiquidateSlippageExceeded(_) => vec![],
+            ExchangeEvents::BuyToLiquidateStarted(_) => vec![],
             ExchangeEvents::BuyToLiquidateBuyerRestricted(_) => vec![],
             ExchangeEvents::BuyToLiquidateParamsUpdated(_) => vec![],
             ExchangeEvents::BuyToLiquidateThresholdUpdated(_) => vec![],
@@ -473,24 +612,59 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            // Superseded by `ContractAddedV2` in v1.1.7.4, replayed from earlier
+            // history only, where the listing carried resolved base fees rather
+            // than a fee schedule key
             ExchangeEvents::ContractAdded(e) => {
-                let perp = Perpetual::added(
+                let fee_converter = num::fee_converter();
+                vec![self.add_perpetual(
                     instant,
-                    e.perpId.to(),
-                    e.name.clone(),
-                    e.symbol.clone(),
-                    e.status == 0, // PerpStatusEnum::Paused
-                    e.priceDecimals.to(),
-                    e.lotDecimals.to(),
-                    e.basePricePNS,
-                    e.makerFeePer100K,
-                    e.takerFeePer100K,
-                    e.initMarginFracHdths,
-                    e.maintMarginFracHdths,
-                );
-                let event = StateEvents::perpetual(&perp, PerpetualEventType::Added);
-                self.perpetuals.insert(perp.id(), perp);
-                vec![event]
+                    &e.name,
+                    &e.symbol,
+                    RawContractAdded {
+                        perp_id: e.perpId,
+                        status: e.status,
+                        price_decimals: e.priceDecimals,
+                        lot_decimals: e.lotDecimals,
+                        base_price_pns: e.basePricePNS,
+                        init_margin_frac_hdths: e.initMarginFracHdths,
+                        maint_margin_frac_hdths: e.maintMarginFracHdths,
+                    },
+                    FeeSchedule::flat(
+                        FeeScheduleKey::Default,
+                        fee_converter.from_unsigned(e.takerFeePer100K),
+                        fee_converter.from_unsigned(e.makerFeePer100K),
+                    ),
+                )]
+            },
+            ExchangeEvents::ContractAddedV2(e) => {
+                // The listing reports the contract's fee schedule KEY, the rates
+                // being resolvable from it - a new contract is placed on the
+                // exchange-wide default schedule, and no `PerpFeeSchedIdSet`
+                // accompanies the listing to report the id separately.
+                let key = FeeScheduleKey::from_raw(e.perpFeeSchedId);
+                let fee_schedule = self.fee_schedule(key).ok_or(
+                    // A custom schedule of a contract that does not exist yet has
+                    // no rates to resolve; the contract documents that a listing
+                    // is always placed on a shared schedule, so this is
+                    // unreachable in practice
+                    DexError::FeeScheduleNotFound(key),
+                )?;
+                vec![self.add_perpetual(
+                    instant,
+                    &e.name,
+                    &e.symbol,
+                    RawContractAdded {
+                        perp_id: e.perpId,
+                        status: e.status,
+                        price_decimals: e.priceDecimals,
+                        lot_decimals: e.lotDecimals,
+                        base_price_pns: e.basePricePNS,
+                        init_margin_frac_hdths: e.initMarginFracHdths,
+                        maint_margin_frac_hdths: e.maintMarginFracHdths,
+                    },
+                    fee_schedule,
+                )]
             },
             ExchangeEvents::ContractNotOperational(_) => self
                 .err_ctx(ctx, event)?
@@ -511,22 +685,33 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::ContractPaused(e) => self
-                .perpetual(e.perpId)
-                .map(|perp| {
-                    perp.update_paused(instant, e.paused);
-                    StateEvents::perpetual(perp, PerpetualEventType::Paused(perp.is_paused()))
-                })
-                .into_iter()
-                .collect(),
-            ExchangeEvents::ContractRemoved(e) => self
-                .perpetual(e.perpId)
-                .map(|perp| {
-                    perp.update_paused(instant, true);
-                    StateEvents::perpetual(perp, PerpetualEventType::Paused(perp.is_paused()))
-                })
-                .into_iter()
-                .collect(),
+            ExchangeEvents::ContractPaused(e) => {
+                // Bound before the `&mut self` borrow below; a first unpause
+                // anchors the contract's funding schedule to this grid.
+                let funding_interval = self.funding_interval_blocks as u64;
+                self.perpetual(e.perpId)
+                    .map(|perp| {
+                        perp.update_paused(instant, e.paused, funding_interval);
+                        StateEvents::perpetual(perp, PerpetualEventType::Paused(perp.is_paused()))
+                    })
+                    .into_iter()
+                    .collect()
+            },
+            ExchangeEvents::ContractRemoved(e) => {
+                let funding_interval = self.funding_interval_blocks as u64;
+                self.perpetual(e.perpId)
+                    .map(|perp| {
+                        perp.update_paused(instant, true, funding_interval);
+                        StateEvents::perpetual(perp, PerpetualEventType::Paused(perp.is_paused()))
+                    })
+                    .into_iter()
+                    .collect()
+            },
+            ExchangeEvents::ContractVersionSet(e) => {
+                let version = ContractVersion::new(e.major.to(), e.minor.to(), e.patch.to());
+                self.features.observe_version(version);
+                vec![StateEvents::Exchange(ExchangeEvent::ContractVersionUpdated(version))]
+            },
             ExchangeEvents::CrossesBook(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::CrossesBook))
@@ -534,6 +719,24 @@ impl Exchange {
                 .collect(),
             ExchangeEvents::DcpBorrowThreshUpdated(_) => vec![],
             ExchangeEvents::DecreaseCollateralBeyondMarkPrice(_) => vec![],
+            ExchangeEvents::DefaultPerpFeeScheduleSet(e) => self.update_fee_schedule(
+                instant,
+                FeeSchedule::new(
+                    FeeScheduleKey::Default,
+                    e.takerFeesPer100K,
+                    e.makerFeesPer100K,
+                    num::fee_converter(),
+                ),
+            ),
+            ExchangeEvents::DefaultRwaFeeScheduleSet(e) => self.update_fee_schedule(
+                instant,
+                FeeSchedule::new(
+                    FeeScheduleKey::RwaDefault,
+                    e.takerFeesPer100K,
+                    e.makerFeesPer100K,
+                    num::fee_converter(),
+                ),
+            ),
             ExchangeEvents::DeleveragePositionListEmpty(_) => vec![],
             ExchangeEvents::ExceedsLastExecutionBlock(_) => self
                 .err_ctx(ctx, event)?
@@ -546,6 +749,22 @@ impl Exchange {
             },
             ExchangeEvents::ExchangeInitialized(_) => vec![],
             ExchangeEvents::FeeParamsUpdated(_) => vec![],
+            ExchangeEvents::FeeScheduleSet(e) => {
+                // `setFeeSchedValues(id, …)` rewrites the rates of the schedule
+                // registered under `id`, whichever contracts happen to point at
+                // it. It does NOT repoint anything: a custom id names a schedule
+                // *keyed by* a perpetual's id, not that perpetual's current
+                // schedule - only `PerpFeeSchedIdSet` moves a contract onto it.
+                self.update_fee_schedule(
+                    instant,
+                    FeeSchedule::new(
+                        FeeScheduleKey::from_raw(e.feeSchedId),
+                        e.takerFeesPer100K,
+                        e.makerFeesPer100K,
+                        num::fee_converter(),
+                    ),
+                )
+            },
             ExchangeEvents::FundingClampPctUpdated(_) => vec![],
             ExchangeEvents::FundingEventCompleted(e) => {
                 if let Some(perp) = self.perpetual(e.perpId) {
@@ -553,7 +772,7 @@ impl Exchange {
                         instant,
                         perp.funding_rate_converter()
                             .from_signed(e.actualRatePct100k),
-                        perp.price_converter()
+                        perp.funding_sum_converter()
                             .from_i64(e.fundingPaymentPNS.as_i64()),
                         e.fundingEventBlock.to(),
                     );
@@ -563,6 +782,17 @@ impl Exchange {
             ExchangeEvents::FundingEventSetTooEarly(_) => vec![],
             ExchangeEvents::FundingPriceExceedsTol(_) => vec![],
             ExchangeEvents::FundingSumAlreadySet(_) => vec![],
+            ExchangeEvents::FundingSumScalingExpUpdated(e) => self
+                .perpetual(e.perpId)
+                .map(|perp| {
+                    perp.update_funding_sum_scaling_exp(instant, e.newExp.to());
+                    StateEvents::perpetual(
+                        perp,
+                        PerpetualEventType::FundingSumScalingExpUpdated(e.newExp.to()),
+                    )
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::IgnoreOracleUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
@@ -682,10 +912,11 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            // Deprecated in v1.1.7.4, replayed from earlier history only
             ExchangeEvents::MakerFeeUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
-                    perp.update_maker_fee(
+                    perp.update_base_maker_fee(
                         instant,
                         perp.fee_converter().from_unsigned(e.makerFeePer100K),
                     );
@@ -696,89 +927,40 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::MakerOrderFilled(e) => chain!(
-                if let Some((perp, order)) = self.order(e.perpId, e.orderId)? {
-                    let fill_price = perp.price_converter().from_unsigned(e.pricePNS);
-                    let fill_size = perp.size_converter().from_unsigned(e.lotLNS);
-                    let fee = cc.from_unsigned(e.feeCNS);
-                    perp.update_last_price(instant, fill_price);
-                    let clearing_remaining_order = if let Some(ctx) = ctx {
-                        ctx.maker_fills.push(types::MakerFill {
-                            log_index: event.log_index(),
-                            maker_account_id: order.account_id(),
-                            maker_order_id: order.order_id(),
-                            price: fill_price,
-                            size: fill_size,
-                            fee,
-                        });
-                        let position_closed_by_smart_contract = if event.log_index() > 0 {
-                            match order.r#type() {
-                                OrderType::CloseLong | OrderType::CloseShort => {
-                                    Some(event.log_index() - 1) == ctx.position_closed_at_log_index
-                                },
-                                _ => false,
-                            }
-                        } else {
-                            false
-                        };
-                        ctx.clearing_remaining_order | position_closed_by_smart_contract
-                    } else {
-                        false
-                    };
-                    vec![
-                        if order.size() > fill_size && !clearing_remaining_order {
-                            let new_size = order.size() - fill_size;
-                            perp.update_order(order.updated(
-                                instant,
-                                ctx,
-                                None,
-                                Some(new_size),
-                                None,
-                                None,
-                            ))
-                            .expect("order exists");
-                            StateEvents::order(
-                                perp,
-                                &order,
-                                ctx,
-                                OrderEventType::Updated {
-                                    price: None,
-                                    size: Some(new_size),
-                                    expiry_block: None,
-                                },
-                            )
-                        } else {
-                            perp.remove_order(order.order_id()).expect("order exists");
-                            StateEvents::order(perp, &order, ctx, OrderEventType::Removed)
-                        },
-                        StateEvents::order(
-                            perp,
-                            &order,
-                            ctx,
-                            OrderEventType::Filled { fill_price, fill_size, fee, is_maker: true },
-                        ),
-                        StateEvents::perpetual(
-                            perp,
-                            PerpetualEventType::LastPriceUpdated(perp.last_price()),
-                        ),
-                    ]
-                } else {
-                    vec![]
+            // Superseded by `MakerOrderFilledV2` in v1.1.7.4, replayed from
+            // earlier history only, hence no builder fee
+            ExchangeEvents::MakerOrderFilled(e) => self.apply_maker_order_filled(
+                instant,
+                event,
+                ctx,
+                RawMakerFill {
+                    perp_id: e.perpId,
+                    account_id: e.accountId,
+                    order_id: e.orderId,
+                    price_pns: e.pricePNS,
+                    lot_lns: e.lotLNS,
+                    fee_cns: e.feeCNS,
+                    builder_fee_cns: U256::ZERO,
+                    locked_balance_cns: e.lockedBalanceCNS,
+                    balance_cns: e.balanceCNS,
                 },
-                self.account(e.accountId).map(|acc| {
-                    acc.update_locked_balance(instant, cc.from_unsigned(e.lockedBalanceCNS));
-                    StateEvents::account(
-                        acc,
-                        ctx,
-                        AccountEventType::LockedBalanceUpdated(acc.locked_balance()),
-                    )
-                }),
-                self.account(e.accountId).map(|acc| {
-                    acc.update_balance(instant, cc.from_unsigned(e.balanceCNS));
-                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
-                }),
-            )
-            .collect(),
+            )?,
+            ExchangeEvents::MakerOrderFilledV2(e) => self.apply_maker_order_filled(
+                instant,
+                event,
+                ctx,
+                RawMakerFill {
+                    perp_id: e.perpId,
+                    account_id: e.accountId,
+                    order_id: e.orderId,
+                    price_pns: e.pricePNS,
+                    lot_lns: e.lotLNS,
+                    fee_cns: e.feeCNS,
+                    builder_fee_cns: e.builderFeeCNS,
+                    locked_balance_cns: e.lockedBalanceCNS,
+                    balance_cns: e.balanceCNS,
+                },
+            )?,
             ExchangeEvents::MakerOrderSettlementFailed(e) => chain!(
                 if let Some(perp) = self.perpetual(e.perpId) {
                     let order_id = std::num::NonZeroU16::new(e.orderId.to::<u16>())
@@ -877,6 +1059,8 @@ impl Exchange {
                 self.min_settle = cc.from_unsigned(e.minSettleCNS);
                 vec![StateEvents::Exchange(ExchangeEvent::MinSettleUpdated(self.min_settle))]
             },
+            ExchangeEvents::MonitorAdministratorUpdated(_) => vec![],
+            ExchangeEvents::MonitorPauseAttempted(_) => vec![],
             ExchangeEvents::OracleAgeExceedsMax(_) => vec![],
             ExchangeEvents::OracleDisabled(_) => vec![],
             ExchangeEvents::OrderBatchCompleted(_) => {
@@ -1015,6 +1199,11 @@ impl Exchange {
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::OrderDoesNotExist))
                 .into_iter()
                 .collect(),
+            ExchangeEvents::OrderExtensionRejected(_) => self
+                .err_ctx(ctx, event)?
+                .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::OrderExtensionRejected))
+                .into_iter()
+                .collect(),
             ExchangeEvents::OrderForwardingNotAllowed(_) => vec![],
             ExchangeEvents::OrderForwardingUpdated(_) => vec![],
             ExchangeEvents::OrderPlaced(e) => {
@@ -1074,9 +1263,15 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            // Superseded by `OrderRequestV2` in v1.1.7.4, replayed from earlier
+            // history only
             ExchangeEvents::OrderRequest(e) => {
                 // Store order request context as it is required to handle
                 // future events
+                ctx.replace(OrderContext::from(e));
+                vec![]
+            },
+            ExchangeEvents::OrderRequestV2(e) => {
                 ctx.replace(OrderContext::from(e));
                 vec![]
             },
@@ -1098,18 +1293,47 @@ impl Exchange {
             ExchangeEvents::OwnershipTransferStarted(_) => vec![],
             ExchangeEvents::OwnershipTransferred(_) => vec![],
             ExchangeEvents::PermissonedCancelParamsUpdated(_) => vec![],
+            ExchangeEvents::PerpFeeSchedIdSet(e) => {
+                // The only event that repoints a contract at another schedule.
+                // Id-only, so the rates come from the registry entry now pointed
+                // at.
+                //
+                // A schedule never observed has no rates to resolve: the id is
+                // applied on its own and the `FeeScheduleSet` that eventually
+                // writes it reports the rates, rather than surfacing an
+                // intermediate schedule pairing the new id with the old rates -
+                // a state that never applies to a fill.
+                let key = FeeScheduleKey::from_raw(e.feeSchedId);
+                let schedule = self.fee_schedules.get(key);
+                self.perpetual(e.perpId)
+                    .and_then(|perp| match schedule {
+                        Some(schedule) => {
+                            perp.update_fee_schedule(instant, schedule);
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::FeeScheduleUpdated(perp.fee_schedule()),
+                            ))
+                        },
+                        None => {
+                            perp.update_fee_schedule_key(instant, key);
+                            None
+                        },
+                    })
+                    .into_iter()
+                    .collect()
+            },
             ExchangeEvents::PerpPositionBalCreditPositiveSevere(_) => vec![],
             ExchangeEvents::PositionAdministratorUpdated(_) => vec![],
             ExchangeEvents::PositionClosed(e) => {
+                if let Some(ctx) = ctx {
+                    ctx.position_closed_at_log_index = Some(event.log_index());
+                }
+
                 if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
                     let pos = acc
                         .positions_mut()
                         .remove(&perp.id())
                         .ok_or(DexError::PositionNotFound(acc.id(), perp.id()))?;
-
-                    if let Some(ctx) = ctx {
-                        ctx.position_closed_at_log_index = Some(event.log_index());
-                    }
 
                     chain!(
                         Some(StateEvents::position(
@@ -1142,10 +1366,7 @@ impl Exchange {
             ExchangeEvents::PositionCollateralDecreased(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_entry_price = pos.entry_price();
-                    pos.update_entry_price(
-                        instant,
-                        perp.price_converter().from_unsigned(e.endEntryPricePNS),
-                    );
+                    pos.update_entry_price(instant, e.endEntryPricePNS, 0, perp.price_converter());
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.apply_mark_price(instant, perp.mark_price());
                     pos.apply_maintenance_margin(instant, perp.maintenance_margin());
@@ -1253,13 +1474,104 @@ impl Exchange {
                 }),
             )
             .collect(),
+            ExchangeEvents::PositionDeleveragedV2(e) => chain!(
+                if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
+                    let prev_size = pos.size();
+                    pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
+                    pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
+                    pos.apply_mark_price(instant, perp.mark_price());
+                    pos.update_premium_pnl(
+                        instant,
+                        pos.premium_pnl().sub(cc.from_signed(e.fundingCNS)),
+                    );
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    chain!(
+                        Some(StateEvents::position(
+                            pos,
+                            ctx,
+                            PositionEventType::Deleveraged {
+                                force_close: e.forceClose,
+                                r#type: pos.r#type(),
+                                entry_price: pos.entry_price(),
+                                exit_price: perp
+                                    .price_converter()
+                                    .from_unsigned(e.deleveragePricePNS),
+                                prev_size,
+                                new_size: pos.size(),
+                                deposit: pos.deposit(),
+                                delta_pnl: pos.delta_pnl(),
+                                premium_pnl: pos.premium_pnl(),
+                            }
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, prev_size, pos.size());
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                },
+                self.account(e.accountId).map(|acc| {
+                    if e.endLotLNS == U256::ZERO {
+                        acc.positions_mut()
+                            .remove(&e.perpId.to::<types::PerpetualId>());
+                    }
+                    acc.update_balance(instant, cc.from_unsigned(e.balanceCNS));
+                    StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
+                }),
+            )
+            .collect(),
             ExchangeEvents::PositionDoesNotExist(_) => vec![],
             ExchangeEvents::PositionIncreased(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_size = pos.size();
+                    pos.update_entry_price(instant, e.pricePNS, 0, perp.price_converter());
+                    pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
+                    pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
+                    pos.apply_mark_price(instant, perp.mark_price());
+                    pos.update_premium_pnl(instant, D256::ZERO);
+                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+
+                    chain!(
+                        Some(StateEvents::position(
+                            pos,
+                            ctx,
+                            PositionEventType::Increased {
+                                entry_price: pos.entry_price(),
+                                prev_size,
+                                new_size: pos.size(),
+                                deposit: pos.deposit(),
+                            }
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, prev_size, pos.size());
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                }
+            },
+            ExchangeEvents::PositionIncreasedV2(e) => {
+                if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
+                    let prev_size = pos.size();
                     pos.update_entry_price(
                         instant,
-                        perp.price_converter().from_unsigned(e.pricePNS),
+                        e.pricePNS,
+                        e.priceResiduePNSQ16.to(),
+                        perp.price_converter(),
                     );
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
@@ -1299,10 +1611,7 @@ impl Exchange {
                     let prev_entry_price = pos.entry_price();
                     let prev_size = pos.size();
                     pos.update_type(instant, PositionType::from(e.positionType));
-                    pos.update_entry_price(
-                        instant,
-                        perp.price_converter().from_unsigned(e.pricePNS),
-                    );
+                    pos.update_entry_price(instant, e.pricePNS, 0, perp.price_converter());
                     pos.update_size(instant, perp.size_converter().from_unsigned(e.endLotLNS));
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.apply_mark_price(instant, perp.mark_price());
@@ -1418,7 +1727,51 @@ impl Exchange {
                         perp.id(),
                         acc.id(),
                         PositionType::from(e.positionType),
-                        perp.price_converter().from_unsigned(e.pricePNS),
+                        e.pricePNS,
+                        0,
+                        perp.price_converter(),
+                        perp.size_converter().from_unsigned(e.lotLNS),
+                        cc.from_unsigned(e.depositCNS),
+                        perp.maintenance_margin(),
+                    );
+                    let events = chain!(
+                        Some(StateEvents::position(
+                            &pos,
+                            ctx,
+                            PositionEventType::Opened {
+                                r#type: pos.r#type(),
+                                entry_price: pos.entry_price(),
+                                size: pos.size(),
+                                deposit: pos.deposit(),
+                            }
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, UD64::ZERO, pos.size());
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect();
+                    acc.positions_mut().insert(perp.id(), pos);
+                    events
+                } else {
+                    vec![]
+                }
+            },
+            ExchangeEvents::PositionOpenedV2(e) => {
+                if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
+                    let pos = Position::opened(
+                        instant,
+                        perp.id(),
+                        acc.id(),
+                        PositionType::from(e.positionType),
+                        e.pricePNS,
+                        e.priceResiduePNSQ16.to(),
+                        perp.price_converter(),
                         perp.size_converter().from_unsigned(e.lotLNS),
                         cc.from_unsigned(e.depositCNS),
                         perp.maintenance_margin(),
@@ -1452,6 +1805,47 @@ impl Exchange {
                 }
             },
             ExchangeEvents::PositionUnwound(e) => {
+                if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
+                    let pos = acc
+                        .positions_mut()
+                        .remove(&perp.id())
+                        .ok_or(DexError::PositionNotFound(acc.id(), perp.id()))?;
+                    acc.update_balance(instant, cc.from_unsigned(e.balanceCNS));
+                    chain!(
+                        Some(StateEvents::position(
+                            &pos,
+                            ctx,
+                            PositionEventType::Unwound {
+                                r#type: pos.r#type(),
+                                entry_price: pos.entry_price(),
+                                exit_price: perp.price_converter().from_unsigned(e.pricePNS),
+                                size: pos.size(),
+                                fair_market_value: cc.from_signed(e.positionFmvCNS),
+                                payment: cc.from_unsigned(e.paymentCNS),
+                            }
+                        )),
+                        Some(StateEvents::account(
+                            acc,
+                            ctx,
+                            AccountEventType::BalanceUpdated(acc.balance())
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, pos.size(), UD64::ZERO);
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                }
+            },
+            ExchangeEvents::PositionUnwoundV2(e) => {
+                // Position is being removed; residue field is informational only.
                 if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
                     let pos = acc
                         .positions_mut()
@@ -1525,6 +1919,41 @@ impl Exchange {
                     vec![]
                 }
             },
+            ExchangeEvents::PositionUnwoundWithoutPaymentV2(e) => {
+                // Position is being removed; residue field is informational only.
+                if let Some((acc, perp)) = self.account_perpetual(e.accountId, e.perpId) {
+                    let pos = acc
+                        .positions_mut()
+                        .remove(&perp.id())
+                        .ok_or(DexError::PositionNotFound(acc.id(), perp.id()))?;
+                    chain!(
+                        Some(StateEvents::position(
+                            &pos,
+                            ctx,
+                            PositionEventType::Unwound {
+                                r#type: pos.r#type(),
+                                entry_price: pos.entry_price(),
+                                exit_price: perp.price_converter().from_unsigned(e.pricePNS),
+                                size: pos.size(),
+                                fair_market_value: cc.from_signed(e.positionFmvCNS),
+                                payment: UD128::ZERO,
+                            }
+                        )),
+                        if pos.r#type() == PositionType::Long {
+                            perp.update_open_interest(instant, pos.size(), UD64::ZERO);
+                            Some(StateEvents::perpetual(
+                                perp,
+                                PerpetualEventType::OpenInterestUpdated(perp.open_interest()),
+                            ))
+                        } else {
+                            None
+                        },
+                    )
+                    .collect()
+                } else {
+                    vec![]
+                }
+            },
             ExchangeEvents::PostOrderUnderMinimum(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::PostOrderUnderMinimum))
@@ -1559,10 +1988,13 @@ impl Exchange {
             ExchangeEvents::ReportExpiresTooSoon(_) => vec![],
             ExchangeEvents::ReportFromFuture(_) => vec![],
             ExchangeEvents::ReportPriceIsNegative(_) => vec![],
+            ExchangeEvents::ResidueBalanceInsufficient(_) => vec![],
+            ExchangeEvents::ResidueTransferred(_) => vec![],
+            // Deprecated in v1.1.7.4, replayed from earlier history only
             ExchangeEvents::TakerFeeUpdated(e) => self
                 .perpetual(e.perpId)
                 .map(|perp| {
-                    perp.update_taker_fee(
+                    perp.update_base_taker_fee(
                         instant,
                         perp.fee_converter().from_unsigned(e.takerFeePer100K),
                     );
@@ -1573,37 +2005,32 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::TakerOrderFilled(e) => {
-                let c = must_ctx()?;
-                let taker_fee = cc.from_unsigned(e.feeCNS);
-                chain!(
-                    self.perpetuals
-                        .get(&c.perpetual_id)
-                        .map(|perp| StateEvents::Order(OrderEvent {
-                            perpetual_id: perp.id(),
-                            account_id: c.account_id,
-                            request_id: Some(c.request_id),
-                            client_order_id: Some(c.request_id),
-                            order_id: None,
-                            r#type: OrderEventType::Filled {
-                                fill_price: perp.price_converter().from_unsigned(e.collatPricePNS),
-                                fill_size: perp.size_converter().from_unsigned(e.lotLNS),
-                                fee: taker_fee,
-                                is_maker: false,
-                            },
-                        })),
-                    self.accounts.get_mut(&c.account_id).map(|acc| {
-                        acc.update_balance(instant, cc.from_unsigned(e.balanceCNS));
-                        StateEvents::account(
-                            acc,
-                            ctx,
-                            AccountEventType::BalanceUpdated(acc.balance()),
-                        )
-                    }),
-                    iter::once(StateEvents::trade(c, taker_fee)),
-                )
-                .collect()
-            },
+            // Superseded by `TakerOrderFilledV2` in v1.1.7.4, replayed from
+            // earlier history only, hence no builder fee
+            ExchangeEvents::TakerOrderFilled(e) => self.apply_taker_order_filled(
+                instant,
+                event,
+                ctx,
+                RawTakerFill {
+                    collat_price_pns: e.collatPricePNS,
+                    lot_lns: e.lotLNS,
+                    fee_cns: e.feeCNS,
+                    builder_fee_cns: U256::ZERO,
+                    balance_cns: e.balanceCNS,
+                },
+            )?,
+            ExchangeEvents::TakerOrderFilledV2(e) => self.apply_taker_order_filled(
+                instant,
+                event,
+                ctx,
+                RawTakerFill {
+                    collat_price_pns: e.collatPricePNS,
+                    lot_lns: e.lotLNS,
+                    fee_cns: e.feeCNS,
+                    builder_fee_cns: e.builderFeeCNS,
+                    balance_cns: e.balanceCNS,
+                },
+            )?,
             ExchangeEvents::ToleranceAdministratorUpdated(_) => vec![],
             ExchangeEvents::TransferAccountToProtocol(e) => self
                 .account(e.accountId)
@@ -1662,6 +2089,212 @@ impl Exchange {
         })
     }
 
+    /// Starts tracking a newly listed perpetual contract, shared by the V1 and
+    /// V2 listing events.
+    fn add_perpetual(
+        &mut self,
+        instant: types::StateInstant,
+        name: &str,
+        symbol: &str,
+        listing: RawContractAdded,
+        fee_schedule: FeeSchedule,
+    ) -> StateEvents {
+        let perp = Perpetual::added(
+            instant,
+            listing.perp_id.to(),
+            name.to_string(),
+            symbol.to_string(),
+            listing.status == 0, // PerpStatusEnum::Paused
+            listing.price_decimals.to(),
+            listing.lot_decimals.to(),
+            listing.base_price_pns,
+            fee_schedule,
+            listing.init_margin_frac_hdths,
+            listing.maint_margin_frac_hdths,
+        );
+        let event = StateEvents::perpetual(&perp, PerpetualEventType::Added);
+        self.perpetuals.insert(perp.id(), perp);
+        event
+    }
+
+    /// Applies a maker fill, shared by the V1 and V2 event variants which
+    /// differ only in carrying the builder fee earned on the fill.
+    fn apply_maker_order_filled(
+        &mut self,
+        instant: types::StateInstant,
+        event: &stream::RawEvent,
+        ctx: &mut Option<OrderContext>,
+        fill: RawMakerFill,
+    ) -> Result<Vec<StateEvents>, DexError> {
+        let cc = self.collateral_converter;
+        Ok(chain!(
+            if let Some((perp, order)) = self.order(fill.perp_id, fill.order_id)? {
+                let fill_price = perp.price_converter().from_unsigned(fill.price_pns);
+                let fill_size = perp.size_converter().from_unsigned(fill.lot_lns);
+                let fee = cc.from_unsigned(fill.fee_cns);
+                let builder_fee = cc.from_unsigned(fill.builder_fee_cns);
+                perp.update_last_price(instant, fill_price);
+                let clearing_remaining_order = if let Some(ctx) = ctx {
+                    ctx.maker_fills.push(types::MakerFill {
+                        log_index: event.log_index(),
+                        maker_account_id: order.account_id(),
+                        maker_order_id: order.order_id(),
+                        maker_client_order_id: order.client_order_id(),
+                        price: fill_price,
+                        size: fill_size,
+                        fee,
+                        builder: order.builder(),
+                        builder_fee,
+                    });
+                    let position_closed_by_smart_contract = if event.log_index() > 0 {
+                        // Smart contract explicitly removes Close* order if position was
+                        // closed, between `PositionClosed` and `MakerOrderFilled` events
+                        // there can be a `RecycleFeeToAccount` event as well
+                        match order.r#type() {
+                            OrderType::CloseLong | OrderType::CloseShort => {
+                                Some(event.log_index() - 1) == ctx.position_closed_at_log_index
+                                    || Some(event.log_index() - 2)
+                                        == ctx.position_closed_at_log_index
+                            },
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+                    ctx.clearing_remaining_order | position_closed_by_smart_contract
+                } else {
+                    false
+                };
+                vec![
+                    if order.size() > fill_size && !clearing_remaining_order {
+                        let new_size = order.size() - fill_size;
+                        perp.update_order(order.updated(
+                            instant,
+                            ctx,
+                            None,
+                            Some(new_size),
+                            None,
+                            None,
+                        ))
+                        .expect("order exists");
+                        StateEvents::order(
+                            perp,
+                            &order,
+                            ctx,
+                            OrderEventType::Updated {
+                                price: None,
+                                size: Some(new_size),
+                                expiry_block: None,
+                            },
+                        )
+                    } else {
+                        perp.remove_order(order.order_id()).expect("order exists");
+                        StateEvents::order(perp, &order, ctx, OrderEventType::Removed)
+                    },
+                    StateEvents::order(
+                        perp,
+                        &order,
+                        ctx,
+                        OrderEventType::Filled {
+                            fill_price,
+                            fill_size,
+                            fee,
+                            builder_fee,
+                            is_maker: true,
+                        },
+                    ),
+                    StateEvents::perpetual(
+                        perp,
+                        PerpetualEventType::LastPriceUpdated(perp.last_price()),
+                    ),
+                ]
+            } else {
+                vec![]
+            },
+            self.account(fill.account_id).map(|acc| {
+                acc.update_locked_balance(instant, cc.from_unsigned(fill.locked_balance_cns));
+                StateEvents::account(
+                    acc,
+                    ctx,
+                    AccountEventType::LockedBalanceUpdated(acc.locked_balance()),
+                )
+            }),
+            self.account(fill.account_id).map(|acc| {
+                acc.update_balance(instant, cc.from_unsigned(fill.balance_cns));
+                StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
+            }),
+        )
+        .collect())
+    }
+
+    /// Applies a taker fill, shared by the V1 and V2 event variants which
+    /// differ only in carrying the builder fee earned on the fill.
+    fn apply_taker_order_filled(
+        &mut self,
+        instant: types::StateInstant,
+        event: &stream::RawEvent,
+        ctx: &mut Option<OrderContext>,
+        fill: RawTakerFill,
+    ) -> Result<Vec<StateEvents>, DexError> {
+        let cc = self.collateral_converter;
+        let c = ctx
+            .as_ref()
+            .ok_or(DexError::OrderContextExpected(event.tx_index(), event.log_index()))?;
+        let taker_fee = cc.from_unsigned(fill.fee_cns);
+        let taker_builder_fee = cc.from_unsigned(fill.builder_fee_cns);
+        Ok(chain!(
+            self.perpetuals
+                .get(&c.perpetual_id)
+                .map(|perp| StateEvents::Order(OrderEvent {
+                    perpetual_id: perp.id(),
+                    account_id: c.account_id,
+                    request_id: Some(c.request_id),
+                    client_order_id: Some(c.request_id),
+                    order_id: None,
+                    builder: c.builder,
+                    r#type: OrderEventType::Filled {
+                        fill_price: perp.price_converter().from_unsigned(fill.collat_price_pns),
+                        fill_size: perp.size_converter().from_unsigned(fill.lot_lns),
+                        fee: taker_fee,
+                        builder_fee: taker_builder_fee,
+                        is_maker: false,
+                    },
+                })),
+            self.accounts.get_mut(&c.account_id).map(|acc| {
+                acc.update_balance(instant, cc.from_unsigned(fill.balance_cns));
+                StateEvents::account(acc, ctx, AccountEventType::BalanceUpdated(acc.balance()))
+            }),
+            iter::once(StateEvents::trade(c, taker_fee, taker_builder_fee)),
+        )
+        .collect())
+    }
+
+    /// Registers a rewrite of a fee schedule, fanning it out to every tracked
+    /// contract *currently pointing at it* - a contract keyed by the same id
+    /// but resolving its fees elsewhere is left alone, as only
+    /// `PerpFeeSchedIdSet` moves a contract between schedules.
+    fn update_fee_schedule(
+        &mut self,
+        instant: types::StateInstant,
+        schedule: FeeSchedule,
+    ) -> Vec<StateEvents> {
+        self.fee_schedules.set(schedule);
+        chain!(
+            iter::once(StateEvents::Exchange(ExchangeEvent::FeeScheduleUpdated(schedule))),
+            self.perpetuals
+                .values_mut()
+                .filter(|perp| perp.fee_schedule().key() == schedule.key())
+                .map(|perp| {
+                    perp.update_fee_schedule(instant, schedule);
+                    StateEvents::perpetual(
+                        perp,
+                        PerpetualEventType::FeeScheduleUpdated(perp.fee_schedule()),
+                    )
+                }),
+        )
+        .collect()
+    }
+
     fn apply_state_event(
         &mut self,
         instant: types::StateInstant,
@@ -1670,31 +2303,6 @@ impl Exchange {
         Ok(match event {
             StateEvents::Perpetual(pe) => {
                 match pe.r#type {
-                    PerpetualEventType::FundingEvent { rate: _, payment_per_unit } => {
-                        // Applying funding to all tracked positions
-                        self.accounts
-                            .values_mut()
-                            .filter_map(|acc| {
-                                acc.positions_mut()
-                                    .get_mut(&pe.perpetual_id)
-                                    .and_then(|pos| {
-                                        pos.apply_funding_payment(instant, payment_per_unit).then(
-                                            || {
-                                                StateEvents::position(
-                                                    pos,
-                                                    &None,
-                                                    PositionEventType::UnrealizedPnLUpdated {
-                                                        pnl: pos.pnl(),
-                                                        delta_pnl: pos.delta_pnl(),
-                                                        premium_pnl: pos.premium_pnl(),
-                                                    },
-                                                )
-                                            },
-                                        )
-                                    })
-                            })
-                            .collect()
-                    },
                     PerpetualEventType::MaintenanceMarginFractionUpdated(maintenance_margin) => {
                         // Applying new maintenance margin to all tracked positions
                         self.accounts
@@ -1735,7 +2343,7 @@ impl Exchange {
         let id = id.to::<types::AccountId>();
         if self.track_all_accounts && !self.accounts.contains_key(&id) {
             self.accounts
-                .insert(id, Account::from_event(types::StateInstant::default(), id, Address::ZERO));
+                .insert(id, Account::untracked(types::StateInstant::default(), id));
         }
     }
 
@@ -1805,26 +2413,59 @@ impl Exchange {
 impl std::fmt::Display for Exchange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use colored::Colorize;
+        use tabled::{Table, settings::Style};
 
         writeln!(
             f,
             "{}",
             format!(
-                "{} | {}{} | ver {} | chain {}",
+                "{} | {}{} | {} (sdk {}) | chain {}",
                 self.instant,
                 if self.is_halted { "[HALTED] ".bold().bright_red() } else { Default::default() },
                 self.chain.exchange(),
+                self.features,
                 Self::revision(),
                 self.chain.chain_id(),
             )
             .bold()
             .purple(),
         )?;
-        writeln!(
-            f,
-            "    Min Post: {} | Min Settle: {} | Funding Interval: {}\n",
-            self.min_post, self.min_settle, self.funding_interval_blocks,
-        )?;
+
+        let mut params = Table::from_iter(vec![vec![
+            format!("Min Post: {}", self.min_post),
+            format!("Min Settle: {}", self.min_settle),
+            format!("Recycle Fee: {}", self.recycle_fee),
+            format!("Funding Interval: {}", self.funding_interval_blocks),
+        ]]);
+        params.with(Style::modern());
+        writeln!(f, "{params}")?;
+
+        // One row per registered schedule, the tier rates stacked taker over
+        // maker. Pre-v1.1.7.4 contracts have no schedule registry - fees live on
+        // the perpetual contract itself, and are rendered with it.
+        if self.features.keyed_fee_schedules() {
+            let mut fees = Table::from_iter(chain!(
+                iter::once(
+                    chain!(
+                        iter::once("Fees (tkr/mkr)".to_string()),
+                        (0..FEE_TIERS).map(|tier| format!("Tier {tier}")),
+                    )
+                    .collect::<Vec<_>>(),
+                ),
+                self.fee_schedules.schedules().map(|schedule| chain!(
+                    iter::once(schedule.key().to_string()),
+                    (0..FEE_TIERS as types::FeeTier).map(move |tier| format!(
+                        "{}\n{}",
+                        schedule.taker_fee(tier),
+                        schedule.maker_fee(tier),
+                    )),
+                )
+                .collect::<Vec<_>>()),
+            ));
+            fees.with(Style::modern());
+            writeln!(f, "{fees}")?;
+        }
+        writeln!(f)?;
 
         // Render perpetuals and accounts in alternate mode
         if f.alternate() && !self.perpetuals().is_empty() {
