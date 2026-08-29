@@ -685,22 +685,28 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
-            ExchangeEvents::ContractPaused(e) => self
-                .perpetual(e.perpId)
-                .map(|perp| {
-                    perp.update_paused(instant, e.paused);
-                    StateEvents::perpetual(perp, PerpetualEventType::Paused(perp.is_paused()))
-                })
-                .into_iter()
-                .collect(),
-            ExchangeEvents::ContractRemoved(e) => self
-                .perpetual(e.perpId)
-                .map(|perp| {
-                    perp.update_paused(instant, true);
-                    StateEvents::perpetual(perp, PerpetualEventType::Paused(perp.is_paused()))
-                })
-                .into_iter()
-                .collect(),
+            ExchangeEvents::ContractPaused(e) => {
+                // Bound before the `&mut self` borrow below; a first unpause
+                // anchors the contract's funding schedule to this grid.
+                let funding_interval = self.funding_interval_blocks as u64;
+                self.perpetual(e.perpId)
+                    .map(|perp| {
+                        perp.update_paused(instant, e.paused, funding_interval);
+                        StateEvents::perpetual(perp, PerpetualEventType::Paused(perp.is_paused()))
+                    })
+                    .into_iter()
+                    .collect()
+            },
+            ExchangeEvents::ContractRemoved(e) => {
+                let funding_interval = self.funding_interval_blocks as u64;
+                self.perpetual(e.perpId)
+                    .map(|perp| {
+                        perp.update_paused(instant, true, funding_interval);
+                        StateEvents::perpetual(perp, PerpetualEventType::Paused(perp.is_paused()))
+                    })
+                    .into_iter()
+                    .collect()
+            },
             ExchangeEvents::ContractVersionSet(e) => {
                 let version = ContractVersion::new(e.major.to(), e.minor.to(), e.patch.to());
                 self.features.observe_version(version);
