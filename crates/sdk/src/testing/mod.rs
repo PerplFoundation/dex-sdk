@@ -59,7 +59,7 @@ const USD_DECIMALS: u8 = 6;
 /// `ExchangeEvents` still decodes its events - the V1 event signatures are
 /// retained in the ABI for exactly this reason.
 const PREVIOUS_IMPLEMENTATION: &str =
-    include_str!("../../../../abi/dex/legacy/Exchange.v1.1.7.3.bin");
+    include_str!("../../abi/dex/legacy/Exchange.v1.1.7.3.bin");
 
 #[derive(Debug)]
 pub struct TestExchange {
