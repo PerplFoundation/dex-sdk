@@ -113,7 +113,9 @@ receives merges from `dev`.
   in-memory cache of exchange state, plus order-posting helpers.
 * [`crates/cli`](crates/cli/README.md) — CLI for reading and tracing exchange state and
   events.
-* `abi/` — contract ABIs consumed by the SDK.
+* `crates/sdk/abi/` — contract ABIs consumed by the SDK. They live inside the crate
+  so that `cargo package` includes them; `sol!` and `build.rs` cannot read files
+  outside the published package.
 
 Generate and browse the API docs with:
 

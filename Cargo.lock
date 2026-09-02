@@ -2495,9 +2495,9 @@ dependencies = [
 
 [[package]]
 name = "keccak"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ecc2af9a1119c51f12a14607e783cb977bde58bc069ff0c3da1095e635d70654"
+checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
 dependencies = [
  "cpufeatures",
 ]
@@ -2799,7 +2799,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "perpl-cli"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "alloy",
  "anyhow",
@@ -2816,7 +2816,7 @@ dependencies = [
 
 [[package]]
 name = "perpl-sdk"
-version = "0.2.1"
+version = "0.2.3"
 dependencies = [
  "alloy",
  "alloy-sol-types",
