@@ -2,7 +2,7 @@
 
 Command line tool to read Perpl exchange state and events.
 
-Read-only: it never signs or sends transactions, and needs no keys or
+Read-only: it currently doesn't sign or send transactions, and needs no keys or
 configuration. By default it talks to Monad mainnet over a public RPC endpoint.
 
 ## Install
