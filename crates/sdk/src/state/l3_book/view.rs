@@ -11,6 +11,19 @@ use tabled::{
 };
 
 use super::{BookLevel, OrderBook};
+use crate::state::Order;
+
+/// Repaints individual orders as a book is rendered, so callers can attribute
+/// resting orders to the accounts they track.
+///
+/// Applies to the compact (`{:#}`) rendering only, where every order is drawn
+/// as a self-contained chip. The plain table form renders orders through
+/// [`tabled::Tabled`] and is left alone.
+pub trait OrderHighlight {
+    /// Repaints `rendered` - the unstyled chip drawn for `order` - or returns
+    /// `None` to leave the book's own styling in place.
+    fn highlight(&self, order: &Order, rendered: &str) -> Option<String>;
+}
 
 /// View of an order book.
 /// Can be rendered as plain table or compact L3 representation limited by depth
@@ -20,6 +33,7 @@ pub struct OrderBookView<'a> {
     depth: Option<usize>,
     orders_per_level: Option<usize>,
     show_expired: bool,
+    highlight: Option<&'a dyn OrderHighlight>,
 }
 
 impl<'a> OrderBookView<'a> {
@@ -29,7 +43,13 @@ impl<'a> OrderBookView<'a> {
         orders_per_level: Option<usize>,
         show_expired: bool,
     ) -> Self {
-        Self { book, depth, orders_per_level, show_expired }
+        Self { book, depth, orders_per_level, show_expired, highlight: None }
+    }
+
+    /// Repaints the orders `highlight` picks out, see [`OrderHighlight`].
+    pub fn highlighted_by(mut self, highlight: &'a dyn OrderHighlight) -> Self {
+        self.highlight = Some(highlight);
+        self
     }
 }
 
@@ -68,16 +88,18 @@ impl<'a> std::fmt::Display for OrderBookView<'a> {
                     if i > 0 && i % 4 == 0 {
                         level_orders.push('\n');
                     }
-                    if !order.is_expired() {
-                        level_orders.push_str(format!("{:#} ", *(*order)).as_str());
-                    } else {
-                        level_orders.push_str(
-                            format!("{:#} ", *(*order))
-                                .bright_red()
-                                .to_string()
-                                .as_str(),
-                        );
+                    // The chip is rendered unstyled first so a highlight can
+                    // paint it whole, rather than nesting inside a style whose
+                    // reset would cut the highlight short
+                    let chip = format!("{:#}", *(*order));
+                    match self.highlight.and_then(|h| h.highlight(order, &chip)) {
+                        Some(highlighted) => level_orders.push_str(&highlighted),
+                        None if order.is_expired() => {
+                            level_orders.push_str(chip.bright_red().to_string().as_str())
+                        },
+                        None => level_orders.push_str(&chip),
                     }
+                    level_orders.push(' ');
                 }
 
                 level_orders

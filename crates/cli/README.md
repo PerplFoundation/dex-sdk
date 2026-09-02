@@ -36,6 +36,9 @@ perpl-cli show trades
         - `--orders-per-level <N>`: Maximum orders to show per level, 0 for all
           [default: 10]
         - `--show-expired`: Also show expired orders
+    - `mms <ACCOUNT[:LABEL]>...`: Show how the given market makers are
+      distributed across a perpetual order book. Takes the same `--depth`,
+      `--orders-per-level` and `--show-expired` options as `book`.
     - `trades`: Show recent trades
 - `snapshot`: Take a snapshot of exchange state at a particular block height
 - `trace`: Take an initial snapshot, then trace all events, then print the final state
@@ -59,4 +62,46 @@ These apply to every command.
 - `--account <ADDRESS or ACCOUNT_ID>`: Account addresses or ID to snapshot/trace/show
   [default: all accounts for `snapshot`/`trace`, required for `show account`]
 - `--perp <PERPETUAL_ID>`: Perpetual ID to show state/trace for [default: all
-  perpetuals for `snapshot`/`trace`/`show trades`, required for `show book`]
+  perpetuals for `snapshot`/`trace`/`show trades`, required for `show book` and
+  `show mms`]
+- `--highlight <ADDRESS or ACCOUNT_ID>`: Paint everything one account is behind
+  on a contrasting background [default: no highlighting]
+
+## Following one account
+
+`--highlight` picks an account out of the output wherever it appears: the raw
+and state events of `trace`, `block` and `tx`, the resting orders of `show book`
+and `show mms`, and both sides of every fill in `show trades`.
+
+```bash
+# Watch one market maker work the BTC book
+perpl-cli --perp 1 --highlight 4638 show book
+
+# ... and see exactly which events in a block were theirs
+perpl-cli --highlight 0x1234...abcd block 101375850
+```
+
+## Market maker analysis
+
+`show mms` takes the accounts to track as `ACCOUNT[:LABEL]` pairs - an address
+or an account ID, optionally labelled - repeated or comma-separated:
+
+```bash
+perpl-cli --perp 1 show mms 4638:Alpha 0x1234...abcd:Beta,5022
+```
+
+Each maker gets its own background colour, keyed by a legend, and its orders are
+painted in it throughout the book below. Above the book sit two tables:
+
+- **Resting quotes**, from the book as it stands: orders and price levels per
+  side, size and its share of that side of the book, notional, the maker's own
+  best bid and ask, the spread between them in basis points, how far from the
+  mid its furthest quote rests, the size it keeps within 10 and 50 bps of the
+  mid with its share of all the book's depth in that band, and the imbalance
+  between its two sides. Closed by an `Others` row for
+  the untracked remainder and a `Book` row for the whole book, so every share
+  can be read against its total.
+- **Activity** on that perpetual, accumulated from the event stream since the
+  command started: maker and taker fills, each with their size, notional and
+  fees, and the quotes placed, amended and cancelled - fills excluded, so the
+  counts measure quote churn rather than trading.

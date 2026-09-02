@@ -27,7 +27,7 @@ use itertools::{FoldWhile, Itertools};
 pub use level::BookLevel;
 pub use order::BookOrder;
 #[cfg(feature = "display")]
-pub use view::OrderBookView;
+pub use view::{OrderBookView, OrderHighlight};
 
 use crate::{state::Order, types};
 

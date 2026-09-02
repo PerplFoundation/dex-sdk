@@ -6,10 +6,13 @@ use futures::StreamExt;
 use perpl_sdk::{Chain, abi::dex::Exchange::ExchangeEvents, state::Exchange, stream};
 use tokio_util::sync::CancellationToken;
 
+use crate::highlight::Highlights;
+
 pub(crate) async fn render<P: Provider + Clone>(
     chain: Chain,
     provider: P,
     mut exchange: Exchange,
+    highlights: &Highlights,
     num_blocks: Option<u64>,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
@@ -52,34 +55,29 @@ pub(crate) async fn render<P: Provider + Clone>(
                 order_request = false;
             }
             prev_tx = Some(block_event.tx_index());
-            match block_event.event() {
+            let line = match block_event.event() {
                 ExchangeEvents::OrderRequest { .. } => {
-                    println!(
-                        "{}",
-                        format!("  {}: {:?}", block_event.log_index(), block_event.event()).cyan()
-                    );
                     order_request = true;
+                    format!("  {}: {:?}", block_event.log_index(), block_event.event())
+                        .cyan()
+                        .to_string()
                 },
                 ExchangeEvents::OrderBatchCompleted { .. } => {
-                    println!(
-                        "{}",
-                        format!("  {}: {:?}", block_event.log_index(), block_event.event()).cyan()
-                    );
                     order_request = false;
+                    format!("  {}: {:?}", block_event.log_index(), block_event.event())
+                        .cyan()
+                        .to_string()
                 },
-                _ => {
-                    println!(
-                        "{}",
-                        format!(
-                            "  {}{}: {:?}",
-                            if order_request { "   ↳ " } else { "" },
-                            block_event.log_index(),
-                            block_event.event()
-                        )
-                        .bright_cyan()
-                    );
-                },
-            }
+                _ => format!(
+                    "  {}{}: {:?}",
+                    if order_request { "   ↳ " } else { "" },
+                    block_event.log_index(),
+                    block_event.event()
+                )
+                .bright_cyan()
+                .to_string(),
+            };
+            println!("{}", highlights.raw_event(block_event.event(), line));
 
             // State events produced from exchange events
             while let Some(state_events) = state_event_iter.peek()
@@ -87,11 +85,11 @@ pub(crate) async fn render<P: Provider + Clone>(
                 && state_events.log_index() == block_event.log_index()
             {
                 for event in state_events.event() {
-                    println!(
-                        "{}",
+                    let line =
                         format!("      {} {:?}", if order_request { "  ↳" } else { "↳" }, event)
                             .bright_green()
-                    );
+                            .to_string();
+                    println!("{}", highlights.state_event(event, line));
                 }
                 state_event_iter.next();
             }
@@ -100,7 +98,8 @@ pub(crate) async fn render<P: Provider + Clone>(
         // Remaining state events
         for state_events in state_event_iter.by_ref() {
             for event in state_events.event() {
-                println!("{}", format!("  > {:?}", event).bright_green());
+                let line = format!("  > {:?}", event).bright_green().to_string();
+                println!("{}", highlights.state_event(event, line));
             }
         }
 
