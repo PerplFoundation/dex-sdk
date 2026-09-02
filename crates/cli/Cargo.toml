@@ -3,9 +3,17 @@ name = "perpl-cli"
 description = "Perpl DEX CLI"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-perpl_sdk = { package = "perpl-sdk", path = "../sdk", features = ["display"] }
+# `version` is required alongside `path` so the crate is publishable; cargo
+# rewrites the dep to the registry version on upload. `default-features = false`
+# drops the SDK's `testing` feature, which would otherwise pull anvil bindings
+# and a local signer into this read-only binary.
+perpl_sdk = { package = "perpl-sdk", path = "../sdk", version = "0.2.2", default-features = false, features = [
+  "display",
+] }
 
 alloy.workspace = true
 anyhow.workspace = true

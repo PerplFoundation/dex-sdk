@@ -58,8 +58,7 @@ const USD_DECIMALS: u8 = 6;
 /// unchanged signature, so the current bindings drive it, and the current
 /// `ExchangeEvents` still decodes its events - the V1 event signatures are
 /// retained in the ABI for exactly this reason.
-const PREVIOUS_IMPLEMENTATION: &str =
-    include_str!("../../../../abi/dex/legacy/Exchange.v1.1.7.3.bin");
+const PREVIOUS_IMPLEMENTATION: &str = include_str!("../../abi/dex/legacy/Exchange.v1.1.7.3.bin");
 
 #[derive(Debug)]
 pub struct TestExchange {

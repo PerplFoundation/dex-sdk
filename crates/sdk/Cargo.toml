@@ -1,8 +1,11 @@
 [package]
 name = "perpl-sdk"
+description = "Rust SDK for the Perpl decentralized perpetuals exchange"
 build = "build.rs"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 alloy.workspace = true
