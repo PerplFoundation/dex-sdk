@@ -12,14 +12,14 @@ use futures::StreamExt;
 use perpl_sdk::{Chain, state::Exchange, stream};
 use tokio_util::sync::CancellationToken;
 
-#[allow(clippy::too_many_arguments)]
+use crate::{args::BookArgs, highlight::Highlights};
+
 pub(crate) async fn render<P: Provider + Clone>(
     chain: Chain,
     provider: P,
     mut exchange: Exchange,
-    depth: usize,
-    orders_per_level: usize,
-    show_expired: bool,
+    book_args: &BookArgs,
+    highlights: &Highlights,
     num_blocks: Option<u64>,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
@@ -52,11 +52,10 @@ pub(crate) async fn render<P: Provider + Clone>(
         stdout.queue(Print(format!("{}", perpetual)))?;
 
         // Book
-        let book_view = perpetual.l3_book().view(
-            if depth > 0 { Some(depth) } else { None },
-            if orders_per_level > 0 { Some(orders_per_level) } else { None },
-            show_expired,
-        );
+        let book_view = perpetual
+            .l3_book()
+            .view(book_args.depth(), book_args.orders_per_level(), book_args.show_expired)
+            .highlighted_by(highlights);
         stdout.queue(Print(format!("{:#}", book_view)))?;
 
         stdout.flush()?;

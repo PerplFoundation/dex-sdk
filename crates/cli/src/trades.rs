@@ -10,6 +10,8 @@ use perpl_sdk::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::highlight::Highlights;
+
 /// Renders the builder attribution of a fill, empty without a builder.
 fn builder_suffix(builder: Option<BuilderAttribution>, builder_fee: UD64) -> String {
     builder
@@ -20,6 +22,7 @@ fn builder_suffix(builder: Option<BuilderAttribution>, builder_fee: UD64) -> Str
 pub(crate) async fn render<P: Provider + Clone>(
     chain: Chain,
     provider: P,
+    highlights: &Highlights,
     num_blocks: Option<u64>,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
@@ -46,8 +49,8 @@ pub(crate) async fn render<P: Provider + Clone>(
             );
             for event in trades.events() {
                 let trade = event.event();
-                println!(
-                    "\n  Taker {} {:?} {} @ {} on perp={} (fee: {}){}",
+                let taker = format!(
+                    "  Taker {} {:?} {} @ {} on perp={} (fee: {}){}",
                     trade.taker_account_id,
                     trade.taker_side,
                     trade.total_size(),
@@ -56,8 +59,9 @@ pub(crate) async fn render<P: Provider + Clone>(
                     trade.taker_fee,
                     builder_suffix(trade.taker_builder, trade.taker_builder_fee),
                 );
+                println!("\n{}", highlights.account(trade.taker_account_id, taker));
                 for fill in &trade.maker_fills {
-                    println!(
+                    let maker = format!(
                         "    <- Maker {} order {} filled {} @ {} (fee: {}){}",
                         fill.maker_account_id,
                         fill.maker_order_id,
@@ -66,6 +70,7 @@ pub(crate) async fn render<P: Provider + Clone>(
                         fill.fee,
                         builder_suffix(fill.builder, fill.builder_fee),
                     );
+                    println!("{}", highlights.account(fill.maker_account_id, maker));
                 }
             }
         }

@@ -7,10 +7,13 @@ use perpl_sdk::{
     stream::RawEvent,
 };
 
+use crate::highlight::Highlights;
+
 pub(crate) async fn render<P: Provider + Clone>(
     chain: &Chain,
     provider: P,
     block_number: u64,
+    highlights: &Highlights,
 ) -> anyhow::Result<()> {
     let exchange = chain.exchange();
     let receipts = provider
@@ -53,28 +56,29 @@ pub(crate) async fn render<P: Provider + Clone>(
         }
         prev_tx = Some(event.tx_index());
 
-        match event.event() {
+        let line = match event.event() {
             ExchangeEvents::OrderRequest { .. } => {
-                println!("{}", format!("  {}: {:?}", event.log_index(), event.event()).cyan());
                 order_request = true;
+                format!("  {}: {:?}", event.log_index(), event.event())
+                    .cyan()
+                    .to_string()
             },
             ExchangeEvents::OrderBatchCompleted { .. } => {
-                println!("{}", format!("  {}: {:?}", event.log_index(), event.event()).cyan());
                 order_request = false;
+                format!("  {}: {:?}", event.log_index(), event.event())
+                    .cyan()
+                    .to_string()
             },
-            _ => {
-                println!(
-                    "{}",
-                    format!(
-                        "  {}{}: {:?}",
-                        if order_request { "   ↳ " } else { "" },
-                        event.log_index(),
-                        event.event()
-                    )
-                    .bright_cyan()
-                );
-            },
-        }
+            _ => format!(
+                "  {}{}: {:?}",
+                if order_request { "   ↳ " } else { "" },
+                event.log_index(),
+                event.event()
+            )
+            .bright_cyan()
+            .to_string(),
+        };
+        println!("{}", highlights.raw_event(event.event(), line));
     }
 
     println!();
