@@ -2443,7 +2443,11 @@ impl std::fmt::Display for Exchange {
         // One row per registered schedule, the tier rates stacked taker over
         // maker. Pre-v1.1.7.4 contracts have no schedule registry - fees live on
         // the perpetual contract itself, and are rendered with it.
-        if self.features.keyed_fee_schedules() {
+        //
+        // Full renderings only: the whole tier grid is a dozen rarely-changing
+        // rates, too much of a header for a live view that redraws every block.
+        // Each perpetual still reports the base rates it resolves to.
+        if f.alternate() && self.features.keyed_fee_schedules() {
             let mut fees = Table::from_iter(chain!(
                 iter::once(
                     chain!(

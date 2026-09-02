@@ -1287,3 +1287,35 @@ fn impact_notional_ud128_range_want() {
     assert_eq!(filled_size, udec64!(60));
     assert_eq!(filled_notional, udec128!(6000));
 }
+
+// ============================================================================
+// RENDERING
+// ============================================================================
+
+/// Repaints the orders of one account, so the compact view can be checked for
+/// picking out exactly those.
+struct HighlightAccount(types::AccountId);
+
+impl OrderHighlight for HighlightAccount {
+    fn highlight(&self, order: &Order, rendered: &str) -> Option<String> {
+        (order.account_id() == self.0).then(|| format!("<{}>", rendered))
+    }
+}
+
+#[test]
+fn compact_view_repaints_only_the_highlighted_account() {
+    let mut book = OrderBook::new();
+    book.add_order(&ask!(100, 1.0, 1, 1, 7)).unwrap();
+    book.add_order(&ask!(100, 2.0, 1, 2, 9)).unwrap();
+    book.add_order(&bid!(90, 3.0, 1, 3, 7)).unwrap();
+
+    let plain = format!("{:#}", book.view(None, None, false));
+    assert!(!plain.contains('<'));
+
+    let highlighted = HighlightAccount(7);
+    let painted = format!("{:#}", book.view(None, None, false).highlighted_by(&highlighted));
+    // Both of account 7's orders, and neither of account 9's
+    assert_eq!(painted.matches("<[").count(), 2);
+    assert!(painted.contains("👤9"));
+    assert!(!painted.contains("<[2.00000 OS #2 👤9]"));
+}
