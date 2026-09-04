@@ -31,7 +31,7 @@ cargo doc -p perpl-sdk --no-deps --open
 ## Crates
 
 * [perpl-sdk](./crates/sdk/README.md): SDK types for building and maintaining in-memory cache of the exchange state, along with order posting helpers.
-* [perpl-cli](./crates/cli/README.md): CLI for reading and tracing exchange state and events.
+* [perpl-cli](./crates/cli/README.md): CLI for reading and tracing exchange state and events, and for placing orders.
 
 ## Usage
 

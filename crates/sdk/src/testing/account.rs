@@ -8,6 +8,10 @@ use crate::types;
 pub struct TestAccount<'e> {
     pub id: types::AccountId,
     pub address: Address,
+    /// Hex-encoded key the account's address is derived from, so a test can
+    /// drive a client that signs for itself rather than one that submits
+    /// through the harness's own wallet.
+    pub pk: String,
     pub exchange: &'e TestExchange,
 }
 

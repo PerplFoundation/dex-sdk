@@ -1,9 +1,10 @@
 # perpl-cli
 
-Command line tool to read Perpl exchange state and events.
+Command line tool to read Perpl exchange state and events, and to place orders.
 
-Read-only: it currently doesn't sign or send transactions, and needs no keys or
-configuration. By default it talks to Monad mainnet over a public RPC endpoint.
+Every command but `order` is read-only and needs no keys or configuration.
+`order create` signs and submits a transaction, so it needs a private key. By
+default the tool talks to Monad mainnet over a public RPC endpoint.
 
 ## Install
 
@@ -26,6 +27,8 @@ perpl-cli show trades
 ### Commands
 
 - `block <BLOCK_NUMBER>`: Trace raw events from a particular block
+- `order`: Place an order on a perpetual contract
+    - `create`: Post a single order to the perpetual given by `--perp`
 - `show`: Show live state of account, perpetual order book or recent trades
     - `account`: Show account state
         - `--num-trades <N>`: Number of most recent trades to show, 0 to omit
@@ -66,6 +69,93 @@ These apply to every command.
   `show mms`]
 - `--highlight <ADDRESS or ACCOUNT_ID>`: Paint everything one account is behind
   on a contrasting background [default: no highlighting]
+
+## Placing an order
+
+`order create` posts one order to the perpetual named by `--perp`. It is the
+only command that signs a transaction.
+
+```bash
+# Bid 0.001 BTC at 65432.1 on mainnet BTC, resting on the book
+perpl-cli --perp 1 order create --private-key-path ~/.perpl/key \
+  --side buy --size 0.001 --price 65432.1
+```
+
+Price, size and leverage are given in human units - `65432.1`, not the
+fixed-point integer the contract stores. Each perpetual carries its own price
+and lot precision, and the value is scaled by that. A value finer than the
+perpetual accepts is rejected rather than rounded, naming what it would have
+become:
+
+```
+Error: --price 65432.123456 carries more precision than perpetual's 1 decimal
+place(s) allows; it would become 65432.1
+```
+
+Before anything is signed the command prints the order it built, then simulates
+the call, then asks to confirm. `--dry-run` stops after the simulation and
+prints the calldata; `--yes` skips the prompt, which a non-interactive run must
+pass explicitly.
+
+### Options
+
+- `--side <buy|sell>`: Side of the book to post on. With `--reduce-only`, `sell`
+  becomes a close-long and `buy` a close-short
+- `--size <DECIMAL>` (alias `--amount`): Order size, in the perpetual's lot
+  precision
+- `--price <DECIMAL>`: Limit price, in the perpetual's price precision. Required
+  even with `--ioc`, where it bounds how far the fill may run
+- `--leverage <DECIMAL>`: Leverage to open at [default: the perpetual's maximum]
+- `--reduce-only`: Only reduce an existing position
+- `--post-only` / `--ioc` / `--fok`: Reject rather than take liquidity / cancel
+  what does not fill immediately / fill in full or not at all
+- `--expiry-block <BLOCK>`: Block the order expires at [default: never]
+- `--max-matches <N>`: Maximum resting orders to match against [default:
+  unlimited]
+- `--max-neg-pnl-collat-bps <BPS>`: Additional collateral, in basis points of
+  notional, the exchange may draw to cover the position's negative unrealized
+  PnL on a fill [default: 0]
+- `--request-id <ID>`: Client order ID to tag the order with [default: derived
+  from the current time]
+- `--builder-id <ID>` / `--builder-fee <DECIMAL>`: Attribute the order to a
+  builder at that fee rate. Both are required together, and the deployed
+  contract has to support builder attribution
+- `--private-key-path <PATH>`: File to read the signing key from, whitespace
+  trimmed. Takes precedence over the other two sources
+- `--private-key <KEY>`: Key to sign with, or `PERPL_PRIVATE_KEY`
+- `--gas-limit <GAS>`: Gas limit [default: estimated]
+- `--dry-run`: Build and simulate, print what would be sent, then stop
+- `-y`, `--yes`, `--auto-confirm`: Submit without the confirmation prompt
+
+### The signing key
+
+Three sources, in precedence order: `--private-key-path`, then `--private-key`,
+then `PERPL_PRIVATE_KEY`. The file wins outright rather than conflicting with
+the others, because `PERPL_PRIVATE_KEY` is the sort of thing a shell profile
+exports once - refusing to run whenever it happens to be set would make
+`--private-key-path` unusable in the setup that most wants it.
+
+```bash
+# Best: the key never appears in argv or the environment
+perpl-cli --perp 1 order create --private-key-path ~/.perpl/key \
+  --side buy --size 0.001 --price 65432.1
+```
+
+Prefer a file or the environment variable over `--private-key`: an argument is
+visible to every other process on the machine through `ps`, and lands in shell
+history.
+
+The key is never rendered. It is held in a wrapper whose `Debug` and `Display`
+both print `[redacted]`, so it cannot reach the terminal through a debug print
+of the parsed arguments, a panic, an error chain, or `--help` with
+`PERPL_PRIVATE_KEY` set. A key that fails to parse is reported without echoing
+what was read.
+
+`--yes` has no environment variable by design: one exported in a shell profile
+would silently arm every later order.
+
+The account must already exist: the exchange opens one on deposit, so deposit
+collateral before placing a first order.
 
 ## Following one account
 
