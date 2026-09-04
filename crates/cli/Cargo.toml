@@ -10,14 +10,18 @@ repository.workspace = true
 # `version` is required alongside `path` so the crate is publishable; cargo
 # rewrites the dep to the registry version on upload. `default-features = false`
 # drops the SDK's `testing` feature, which would otherwise pull anvil bindings
-# and a local signer into this read-only binary.
+# into the binary. `order create` signs with `alloy/signer-local` instead, which
+# is the only capability here that is not a read.
 perpl_sdk = { package = "perpl-sdk", path = "../sdk", version = "0.2.2", default-features = false, features = [
   "display",
 ] }
 
-alloy.workspace = true
+# `signer-local` and `network` are what `order create` needs to sign and submit
+# a transaction; every other command is served by the read-only feature set the
+# workspace declares.
+alloy = { workspace = true, features = ["network", "signer-local"] }
 anyhow.workspace = true
-clap = { workspace = true, features = ["derive"] }
+clap = { workspace = true, features = ["derive", "env"] }
 colored.workspace = true
 crossterm.workspace = true
 fastnum.workspace = true
@@ -25,3 +29,11 @@ futures.workspace = true
 tabled.workspace = true
 tokio = { workspace = true, features = ["signal", "time"] }
 tokio-util.workspace = true
+
+[dev-dependencies]
+# The end-to-end `order create` tests deploy an exchange on anvil and sign as a
+# test account, which is what the SDK's `testing` feature exists for. It stays
+# out of the binary's own dependency, which builds without it.
+perpl_sdk = { package = "perpl-sdk", path = "../sdk", version = "0.2.2", features = [
+  "testing",
+] }

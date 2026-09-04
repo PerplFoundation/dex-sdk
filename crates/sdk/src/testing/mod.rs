@@ -325,7 +325,12 @@ impl TestExchange {
             .unwrap();
         let log = receipt.decoded_log::<Exchange::AccountCreated>().unwrap();
         self.account_address.insert(log.id.to(), log.account);
-        TestAccount { id: log.id.to(), address: log.account, exchange: self }
+        TestAccount {
+            id: log.id.to(),
+            address: log.account,
+            pk: self.anvil.nth_key(idx + 3).unwrap().to_bytes().encode_hex(),
+            exchange: self,
+        }
     }
 
     /// Sets the exchange-wide default fee schedule, eight `(taker, maker)`

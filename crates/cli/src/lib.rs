@@ -4,6 +4,7 @@ mod block;
 mod book;
 mod highlight;
 mod mms;
+mod order;
 mod snapshot;
 mod trace;
 mod trades;
@@ -22,7 +23,7 @@ use perpl_sdk::{Chain, abi::dex, state::SnapshotBuilder, types};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    args::{Commands, MarketMaker, ShowCommands},
+    args::{Commands, MarketMaker, OrderCommands, ShowCommands},
     highlight::Highlights,
     mms::Maker,
 };
@@ -102,6 +103,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let builder = match &cli.command {
         Commands::Block { block_number: _ } => None,
         Commands::Snapshot | Commands::Trace => Some(builder),
+        Commands::Order { .. } => {
+            if cli.perp.len() != 1 {
+                return Err(anyhow::anyhow!("exactly one perp should be provided, see `--perp`"));
+            }
+            // Placing an order needs the perpetual's scalers and the
+            // contract's feature set, not the book-wide position set the
+            // default snapshot would pull
+            Some(builder.with_accounts(cli.account.clone()))
+        },
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades: _ } => {
                 if cli.account.len() != 1 {
@@ -162,6 +172,20 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             block::render(&chain, provider, *block_number, &highlights).await?
         },
         Commands::Snapshot => snapshot::render(exchange.unwrap()),
+        Commands::Order { command } => match command {
+            OrderCommands::Create(args) => {
+                order::create(
+                    &chain,
+                    provider,
+                    &rpc,
+                    &exchange.unwrap(),
+                    cli.perp[0],
+                    args,
+                    &highlights,
+                )
+                .await?
+            },
+        },
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades } => {
                 account::render(
