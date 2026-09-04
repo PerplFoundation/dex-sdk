@@ -132,6 +132,8 @@ impl<'e> TestPerp<'e> {
     pub async fn with_legacy_fees(self, taker_fee: UD64, maker_fee: UD64) -> Self {
         let legacy =
             LegacyExchange::new(*self.exchange.exchange.address(), self.exchange.provider.clone());
+        // Per100K: this reaches the PREVIOUS generation, which reads fee rates
+        // against 100,000. The current setters use ppm.
         let fee_converter = num::fee_converter();
         legacy
             .setTakerFee(U256::from(self.id), fee_converter.to_unsigned(taker_fee))
@@ -181,7 +183,9 @@ impl<'e> TestPerp<'e> {
         taker_fees: [UD64; state::FEE_TIERS],
         maker_fees: [UD64; state::FEE_TIERS],
     ) {
-        let fee_converter = num::fee_converter();
+        // ppm, like every other schedule setter here -- see
+        // `TestExchange::set_fee_schedule`.
+        let fee_converter = num::ppm_fee_converter();
         self.exchange
             .exchange
             .setFeeSchedValues(

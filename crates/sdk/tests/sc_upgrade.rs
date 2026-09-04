@@ -1,20 +1,25 @@
-//! Validates that a running indexer survives the v1.1.7.4 contract upgrade:
-//! a snapshot taken against the previous generation, kept up to date across the
-//! upgrade transaction itself, and then across trading on the upgraded
+//! Validates that a running indexer survives the contract upgrades: a snapshot
+//! taken against the generation before v1.1.7.4, kept up to date across the
+//! upgrade transactions themselves, and then across trading on the upgraded
 //! contract.
 //!
 //! This is the sequence a production indexer sees exactly once, and it is the
-//! one the SDK cannot rehearse against either generation alone:
+//! one the SDK cannot rehearse against any single generation:
 //!
 //! - before the upgrade the deployed contract has no version getter, so the
 //!   feature set is probed, fees are a flat per-contract pair, and orders and
 //!   fills arrive as V1 events;
-//! - the upgrade transaction rewrites the fee schedules and repoints every
+//! - the v1.1.7.4 transaction rewrites the fee schedules and repoints every
 //!   contract at the default one, and stamps the version **last** - so the fee
 //!   events are consumed while the SDK still believes it is talking to the old
 //!   generation;
-//! - afterwards the same stream carries `OrderRequestV2` and the V2 fills, and
-//!   builder attribution starts working.
+//! - the v1.1.7.5 transaction stamps the version **first** and then rewrites
+//!   every schedule in the new unit - the opposite order, and deliberately so:
+//!   the rates that follow can only be read correctly once the cutover is
+//!   known, and this is the one place that ordering is exercised end to end;
+//! - afterwards the same stream carries `OrderRequestV2` and the V2 fills,
+//!   builder attribution works, and fills are charged at the redenominated (and
+//!   halved) rates.
 
 use std::time::Duration;
 
@@ -55,7 +60,8 @@ impl RawEventCounts {
     }
 }
 
-/// Eight taker rates seeded by the upgrade, descending from the base rate.
+/// Eight taker rates seeded by the v1.1.7.4 upgrade, descending from the base
+/// rate.
 const TAKER_FEES: [UD64; state::FEE_TIERS] = [
     udec64!(0.00069),
     udec64!(0.0006),
@@ -67,7 +73,8 @@ const TAKER_FEES: [UD64; state::FEE_TIERS] = [
     udec64!(0),
 ];
 
-/// Eight maker rates seeded by the upgrade, descending from the base rate.
+/// Eight maker rates seeded by the v1.1.7.4 upgrade, descending from the base
+/// rate.
 const MAKER_FEES: [UD64; state::FEE_TIERS] = [
     udec64!(0.00009),
     udec64!(0.00008),
@@ -76,6 +83,32 @@ const MAKER_FEES: [UD64; state::FEE_TIERS] = [
     udec64!(0.00005),
     udec64!(0.00004),
     udec64!(0.00003),
+    udec64!(0),
+];
+
+/// The same ladders after the v1.1.7.5 migration, which applies `x10 / 2` to
+/// every stored rate: the `x10` redenominates the unit (getFee's divisor moves
+/// with it, so on its own it would change nothing) and the `/2` is the rate cut
+/// that release ships. So every rate here is HALF its counterpart above.
+const TAKER_FEES_PPM: [UD64; state::FEE_TIERS] = [
+    udec64!(0.000345),
+    udec64!(0.0003),
+    udec64!(0.00025),
+    udec64!(0.0002),
+    udec64!(0.00015),
+    udec64!(0.0001),
+    udec64!(0.00005),
+    udec64!(0),
+];
+
+const MAKER_FEES_PPM: [UD64; state::FEE_TIERS] = [
+    udec64!(0.000045),
+    udec64!(0.00004),
+    udec64!(0.000035),
+    udec64!(0.00003),
+    udec64!(0.000025),
+    udec64!(0.00002),
+    udec64!(0.000015),
     udec64!(0),
 ];
 
@@ -172,8 +205,14 @@ async fn test_contract_upgrade_mid_stream() {
         .with_legacy_fees(udec64!(0.0005), udec64!(0.0002))
         .await;
 
-    // ── the upgrade ─────────────────────────────────────────────────────────
+    // ── the upgrades ────────────────────────────────────────────────────────
+    //
+    // Two transactions, as mainnet took them. Nothing trades in between: the
+    // implementation is already v1.1.7.5 after the first, so until the migration
+    // runs its `getFee` divides Per100K rates by a millionth and charges a tenth
+    // of everything.
     exchange.upgrade(TAKER_FEES, MAKER_FEES).await;
+    exchange.upgrade_fee_unit(TAKER_FEES, MAKER_FEES).await;
 
     // Trade again, now with attribution the upgraded contract does carry
     _ = btc_perp
@@ -216,7 +255,9 @@ async fn test_contract_upgrade_mid_stream() {
     // ── what the stream carried across the boundary ─────────────────────────
     let mut v1_fill_seen = false;
     let mut version_seen = false;
+    let mut versions_seen: Vec<state::ContractVersion> = vec![];
     let mut default_schedule_seen = false;
+    let mut migrated_schedule_seen = false;
     let mut rwa_schedule_seen = false;
     let mut repointed = vec![];
     let mut v2_fill_seen = false;
@@ -241,19 +282,30 @@ async fn test_contract_upgrade_mid_stream() {
                     v1_fill_seen = true;
                 },
 
+                // One per upgrade transaction, in order.
                 state::StateEvents::Exchange(state::ExchangeEvent::ContractVersionUpdated(
                     version,
                 )) => {
-                    assert_eq!(*version, state::ContractVersion::BUILDER_CODES);
+                    versions_seen.push(*version);
                     version_seen = true;
                 },
                 state::StateEvents::Exchange(state::ExchangeEvent::FeeScheduleUpdated(
                     schedule,
                 )) => match schedule.key() {
+                    // Written twice: seeded in Per100K by v1.1.7.4, then rewritten
+                    // in the new unit by the v1.1.7.5 migration. Which ladder the
+                    // SDK reports is the whole question -- reading the migrated
+                    // rates against the old unit would report them at ten times
+                    // their value, so pin both and require the second.
                     state::FeeScheduleKey::Default => {
-                        assert_eq!(schedule.taker_fees(), &TAKER_FEES);
-                        assert_eq!(schedule.maker_fees(), &MAKER_FEES);
-                        default_schedule_seen = true;
+                        if schedule.taker_fees() == &TAKER_FEES_PPM {
+                            assert_eq!(schedule.maker_fees(), &MAKER_FEES_PPM);
+                            migrated_schedule_seen = true;
+                        } else {
+                            assert_eq!(schedule.taker_fees(), &TAKER_FEES);
+                            assert_eq!(schedule.maker_fees(), &MAKER_FEES);
+                            default_schedule_seen = true;
+                        }
                     },
                     state::FeeScheduleKey::RwaDefault => {
                         // Left blank by the upgrade configuration
@@ -269,7 +321,15 @@ async fn test_contract_upgrade_mid_stream() {
                     r#type: state::PerpetualEventType::FeeScheduleUpdated(schedule),
                 }) => {
                     assert_eq!(schedule.key(), state::FeeScheduleKey::Default);
-                    assert_eq!(schedule.taker_fees(), &TAKER_FEES);
+                    // Fires once per perpetual for the repoint itself, then again
+                    // for each when the migration rewrites the schedule they now
+                    // share -- the second carrying the migrated ladder.
+                    assert!(
+                        schedule.taker_fees() == &TAKER_FEES
+                            || schedule.taker_fees() == &TAKER_FEES_PPM,
+                        "perp {perpetual_id} on an unexpected ladder: {:?}",
+                        schedule.taker_fees(),
+                    );
                     repointed.push(*perpetual_id);
                 },
 
@@ -298,13 +358,13 @@ async fn test_contract_upgrade_mid_stream() {
                     r#type: state::OrderEventType::Filled { fee, is_maker, .. },
                     ..
                 }) if !*is_maker && *perpetual_id == sol_perp.id => {
-                    // 0.5 * 200 * 0.00069
-                    assert_eq!(*fee, udec64!(0.069));
+                    // 0.5 * 200 * 0.000345
+                    assert_eq!(*fee, udec64!(0.0345));
                     new_perp_fill_seen = true;
                 },
                 state::StateEvents::Trade(trade) if trade.taker_request_id == 21 => {
-                    // ...and the maker side of the same fill: 0.5 * 200 * 0.00009
-                    assert_eq!(trade.maker_fills.first().expect("maker fill").fee, udec64!(0.009));
+                    // ...and the maker side of the same fill: 0.5 * 200 * 0.000045
+                    assert_eq!(trade.maker_fills.first().expect("maker fill").fee, udec64!(0.0045));
                 },
 
                 // Post-upgrade fill: attribution recovered from the V2 request,
@@ -315,17 +375,19 @@ async fn test_contract_upgrade_mid_stream() {
                     r#type: state::OrderEventType::Filled { fee, is_maker, .. },
                     ..
                 }) if !*is_maker => {
-                    // Taker is at the base tier: 0.1 * 100000 * 0.00069
-                    assert_eq!(*fee, udec64!(6.9));
+                    // Taker is at the base tier: 0.1 * 100000 * 0.000345
+                    assert_eq!(*fee, udec64!(3.45));
                     v2_fill_seen = true;
                 },
                 state::StateEvents::Trade(trade) if trade.taker_request_id == 11 => {
                     let fill = trade.maker_fills.first().expect("maker fill");
                     assert_eq!(fill.builder.map(|b| b.builder_id()), Some(BUILDER));
-                    // 0.1 * 100000 * 0.001
+                    // The builder rate is untouched by the redenomination -- it
+                    // stays Per100K on the wire and the contract scales it at the
+                    // point of use: 0.1 * 100000 * 0.001
                     assert_eq!(fill.builder_fee, udec64!(10));
-                    // ...on top of the maker's base rate: 0.1 * 100000 * 0.00009
-                    assert_eq!(fill.fee, udec64!(10.9));
+                    // ...on top of the maker's base rate: 0.1 * 100000 * 0.000045
+                    assert_eq!(fill.fee, udec64!(10.45));
                 },
 
                 _ => (),
@@ -362,14 +424,20 @@ async fn test_contract_upgrade_mid_stream() {
     assert!(raw.order_request_v1 > 0, "no V1 order request in the stream: {raw:?}");
     assert!(raw.maker_filled_v1 > 0, "no V1 maker fill in the stream: {raw:?}");
     assert_eq!(raw.contract_added_v1, 1, "one listing on the old generation: {raw:?}");
-    assert_eq!(raw.version_set, 1, "the upgrade stamps the version exactly once: {raw:?}");
+    assert_eq!(raw.version_set, 2, "each upgrade stamps the version exactly once: {raw:?}");
     assert!(raw.order_request_v2 > 0, "no V2 order request in the stream: {raw:?}");
     assert!(raw.maker_filled_v2 > 0, "no V2 maker fill in the stream: {raw:?}");
     assert_eq!(raw.contract_added_v2, 1, "one listing after the upgrade: {raw:?}");
 
     assert!(v1_fill_seen, "pre-upgrade V1 fill not seen");
     assert!(version_seen, "ContractVersionSet not seen");
+    assert_eq!(
+        versions_seen,
+        vec![state::ContractVersion::BUILDER_CODES, state::ContractVersion::PPM_FEE_UNIT],
+        "both upgrades reported, in order",
+    );
     assert!(default_schedule_seen, "default fee schedule seed not seen");
+    assert!(migrated_schedule_seen, "redenominated fee schedule not seen");
     assert!(rwa_schedule_seen, "RWA fee schedule seed not seen");
     assert!(v2_fill_seen, "post-upgrade V2 fill not seen");
     assert!(new_perp_fill_seen, "fill on the contract listed after the upgrade not seen");
@@ -401,25 +469,26 @@ async fn test_contract_upgrade_mid_stream() {
 
         // The version event is authoritative, so the features it implies are now
         // available to a caller that has been streaming since before the upgrade
-        assert_eq!(snapshot.contract_version(), Some(state::ContractVersion::BUILDER_CODES));
+        assert_eq!(snapshot.contract_version(), Some(state::ContractVersion::PPM_FEE_UNIT));
         assert!(snapshot.features().keyed_fee_schedules());
         assert!(snapshot.features().builder_attribution());
         assert!(snapshot.features().perpetual_discovery());
+        assert!(snapshot.features().ppm_fee_unit());
 
         // Tiered fees, on both the exchange and every contract - the two learned
         // from the initial snapshot, the one listed on the old generation, and the
         // one listed after the upgrade, whose schedule was resolved from the key
         // its listing event carried and nothing else
-        assert_eq!(snapshot.default_fee_schedule().taker_fees(), &TAKER_FEES);
+        assert_eq!(snapshot.default_fee_schedule().taker_fees(), &TAKER_FEES_PPM);
         assert_eq!(snapshot.rwa_fee_schedule().base_taker_fee(), udec64!(0));
         let mut tracked: Vec<_> = snapshot.perpetuals().keys().copied().collect();
         tracked.sort();
         assert_eq!(tracked, vec![btc_perp.id, eth_perp.id, sol_perp.id, trx_perp.id]);
         for perp in snapshot.perpetuals().values() {
             assert_eq!(perp.fee_schedule().key(), state::FeeScheduleKey::Default);
-            assert_eq!(perp.fee_schedule().taker_fees(), &TAKER_FEES, "perp {}", perp.id());
-            assert_eq!(perp.fee_schedule().maker_fees(), &MAKER_FEES, "perp {}", perp.id());
-            assert_eq!(perp.taker_fee_for_tier(2), TAKER_FEES[2]);
+            assert_eq!(perp.fee_schedule().taker_fees(), &TAKER_FEES_PPM, "perp {}", perp.id());
+            assert_eq!(perp.fee_schedule().maker_fees(), &MAKER_FEES_PPM, "perp {}", perp.id());
+            assert_eq!(perp.taker_fee_for_tier(2), TAKER_FEES_PPM[2]);
         }
 
         // ...and with real tiers on record, the exchange rendering reports them

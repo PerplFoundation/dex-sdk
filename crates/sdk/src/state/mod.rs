@@ -265,7 +265,10 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                 HashMap::new(),
             ));
         }
-        let fee_converter = num::fee_converter();
+        // Resolved from the deployed version: v1.1.7.5 redenominated the stored
+        // rates from hundred-thousandths to millionths, so the same integer means
+        // a tenth of what it used to.
+        let fee_converter = features.fee_rate_converter();
         let (default_call, rwa_call) = (
             self.instance
                 .getDefaultPerpFeeSchedule()
@@ -327,7 +330,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         perp_id: U256,
         features: ContractFeatures,
     ) -> Result<FeeSchedule, alloy::contract::Error> {
-        let fee_converter = num::fee_converter();
+        let fee_converter = features.fee_rate_converter();
         if features.keyed_fee_schedules() {
             self.instance
                 .getPerpFeeSchedule(perp_id)
