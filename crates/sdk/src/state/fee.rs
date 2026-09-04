@@ -86,8 +86,11 @@ impl std::fmt::Display for FeeScheduleKey {
 /// Fee schedule: a `(taker, maker)` fee pair per fee tier, with the key
 /// identifying which schedule it is.
 ///
-/// Fees are fractions of the traded amount, converted from the on-chain
-/// hundred-thousandths (`Per100K`) representation.
+/// Fees are fractions of the traded amount, converted from the on-chain integer
+/// representation: hundred-thousandths (`Per100K`) before contract v1.1.7.5 and
+/// millionths (ppm) from it, resolved by
+/// [`crate::state::ContractFeatures::fee_rate_converter`]. The decimal
+/// fractions here are unit-free, so a consumer never has to know which applied.
 #[derive(Clone, Copy)]
 pub struct FeeSchedule {
     key: FeeScheduleKey,
@@ -97,18 +100,24 @@ pub struct FeeSchedule {
 }
 
 impl FeeSchedule {
-    /// Builds a schedule from the on-chain `Per100K` rates.
+    /// Builds a schedule from the raw on-chain rates.
+    ///
+    /// `fee_converter` carries the unit those integers are in, which the
+    /// deployed contract version decides -- see
+    /// [`crate::state::ContractFeatures::fee_rate_converter`]. Passing the
+    /// wrong one misreports every rate by a factor of ten, so it is
+    /// threaded in rather than assumed here.
     pub(crate) fn new(
         key: FeeScheduleKey,
-        taker_fees_per_100k: [U256; FEE_TIERS],
-        maker_fees_per_100k: [U256; FEE_TIERS],
+        taker_fees: [U256; FEE_TIERS],
+        maker_fees: [U256; FEE_TIERS],
         fee_converter: num::Converter,
     ) -> Self {
         Self {
             key,
             tiered: true,
-            taker_fees: taker_fees_per_100k.map(|fee| fee_converter.from_unsigned(fee)),
-            maker_fees: maker_fees_per_100k.map(|fee| fee_converter.from_unsigned(fee)),
+            taker_fees: taker_fees.map(|fee| fee_converter.from_unsigned(fee)),
+            maker_fees: maker_fees.map(|fee| fee_converter.from_unsigned(fee)),
         }
     }
 

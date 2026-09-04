@@ -250,14 +250,24 @@ pub enum OrderEventType {
         fill_price: UD64,
         #[debug("{fill_size}")]
         fill_size: UD64,
+        /// Total fee the fill charged, builder share included.
+        ///
+        /// From contract v1.1.7.5 EVERY fill that changes a position's size is
+        /// charged, in either direction: a close or decrease pays on the
+        /// removed notional at the exit price, netted from the exit
+        /// proceeds rather than debited, and an inverting order pays on
+        /// its full lot. Earlier releases charged additions only, so a
+        /// close fill reports zero there. Liquidation, ADL,
+        /// force-close, unwind, frozen-account close and
+        /// buy-to-liquidate stay uncharged at any version.
         #[debug("{fee}")]
         fee: UD64, // Precision of SC calculations is limited to 5 decimals.
         /// Portion of `fee` earned by the builder the order is attributed to,
         /// routed entirely to the protocol balance and paid out off-chain.
         ///
-        /// Included in `fee`, so consumers must not add it on top. Always zero
-        /// on close/decrease and liquidation fills, and on contracts without
-        /// builder attribution - a non-zero
+        /// Included in `fee`, so consumers must not add it on top. Zero on
+        /// liquidation fills and on contracts without builder attribution, and
+        /// on close/decrease fills before v1.1.7.5 - a non-zero
         /// [`OrderEvent::builder`] does not imply a non-zero fee here.
         #[debug("{builder_fee}")]
         builder_fee: UD64,
