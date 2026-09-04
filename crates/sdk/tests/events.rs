@@ -69,8 +69,8 @@ async fn test_snapshot_and_events() {
         // Base (tier 0) rates of the exchange-wide default schedule, seeded at
         // deployment by `Exchange::_seedDefaultFeeSchedule` - a listing does not
         // set its own fees
-        assert_eq!(perp.maker_fee(), udec64!(0.00009));
-        assert_eq!(perp.taker_fee(), udec64!(0.00069));
+        assert_eq!(perp.maker_fee(), udec64!(0.000045));
+        assert_eq!(perp.taker_fee(), udec64!(0.000345));
         assert_eq!(perp.initial_margin(), udec64!(10));
         assert_eq!(perp.maintenance_margin(), udec64!(20));
         assert_eq!(perp.last_price(), udec64!(100000));
@@ -123,17 +123,17 @@ async fn test_snapshot_and_events() {
                     account_id: 1,
                     request_id: Some(10),
                     r#type: AccountEventType::BalanceUpdated(balance),
-                }) => assert_eq!(*balance, udec128!(998999)),
+                }) => assert_eq!(*balance, udec128!(998999.45)),
                 state::StateEvents::Account(AccountEvent {
                     account_id: 1,
                     request_id: Some(11),
                     r#type: AccountEventType::BalanceUpdated(balance),
-                }) => assert_eq!(*balance, udec128!(997997.0991)),
+                }) => assert_eq!(*balance, udec128!(997997.99955)),
                 state::StateEvents::Account(AccountEvent {
                     account_id: 2,
                     request_id: Some(11),
                     r#type: AccountEventType::BalanceUpdated(balance),
-                }) => assert_eq!(*balance, udec128!(97975.1931)),
+                }) => assert_eq!(*balance, udec128!(97982.09655)),
 
                 state::StateEvents::Order(OrderEvent {
                     perpetual_id: 16,
@@ -160,8 +160,8 @@ async fn test_snapshot_and_events() {
                 }) if *order_id == oid(1) => {
                     assert_eq!(*fill_price, udec64!(100100));
                     assert_eq!(*fill_size, udec64!(0.1));
-                    // Maker rate on the filled notional: 0.1 * 100100 * 0.00009
-                    assert_eq!(*fee, udec64!(0.9009));
+                    // Maker rate on the filled notional: 0.1 * 100100 * 0.000045
+                    assert_eq!(*fee, udec64!(0.45045));
                     assert_eq!(*builder_fee, udec64!(0));
                     assert!(*is_maker);
                 },
