@@ -19,17 +19,8 @@ dev-version:
 		echo "dev has already been versioned; nothing to do."; \
 		exit 0; \
 	fi; \
-	NEW_VERSION=$$(echo "$$CURRENT_VERSION" \
-		| awk -F. '{printf "%d.%d.%d", $$1, $$2, $$3+1}'); \
-	echo "Bumping $$CURRENT_VERSION -> $$NEW_VERSION"; \
-	sed -i.bak \
-		's/^version *= *".*"/version = "'"$$NEW_VERSION"'"/' \
-		$(TOML_FILE); \
-	rm -f $(TOML_FILE).bak; \
-	cargo check; \
-	git add $(TOML_FILE) Cargo.lock; \
-	git commit -m "Bump version to v$$NEW_VERSION"; \
-	git push origin HEAD:$(DEV_BRANCH)
+	echo "Pr must have different version than main"; \
+	exit 1
 
 
 release:
