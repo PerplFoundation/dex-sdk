@@ -125,8 +125,37 @@ let receipt = sent.wait().await?;          // errors on a reverted status
 
 `Call::submit` is those last three steps in one, for a client that needs
 nothing in between. A batch goes through `exec::orders_call`, and every
-operation the exchange takes on an order - posting, cancelling, changing,
-topping up collateral - is an `OrderRequest` through the same path.
+operation the exchange takes on an order goes through the same path.
+
+### Cancelling and changing orders
+
+`OrderRequest::cancel` and `OrderRequest::change` name an order that is already
+on the book, so they read what they need off the snapshot rather than making
+the caller restate it:
+
+```rust
+// Nothing but the ID: the price and size the contract wants come from the
+// snapshot's own book entry for the order
+OrderRequest::cancel(perp_id, order_id).build(&exchange)?;
+
+// Move an order to another level. Its size, expiry, leverage and builder
+// attribution are the resting order's, untouched
+OrderRequest::change(perp_id, order_id).price(new_price).build(&exchange)?;
+
+// Or resize it in place, leaving the level alone. Sizing down keeps the
+// order's queue priority; sizing up sends it to the back
+OrderRequest::change(perp_id, order_id).size(new_size).build(&exchange)?;
+```
+
+A change is one operation where a cancel and a re-post is two, at roughly half
+the gas. `build` rejects what the exchange would: an order that is not on the
+book (`DexError::OrderNotFound`), a change of a close order, a change of an
+expired order that does not set a new expiry, and a change that amends nothing
+at all. A cancel is deliberately *not* blocked by a halted exchange or a paused
+perpetual - getting out is not the same as getting in.
+
+Both need a snapshot that tracks the perpetual's book, which
+`SnapshotBuilder` does by default.
 
 For lower-level control, `prepare_v2` still returns the order descriptor and
 its extension envelope for a hand-built
@@ -170,7 +199,7 @@ More usage examples live in
 ## Related crates
 
 - [perpl-cli](https://crates.io/crates/perpl-cli): CLI for reading and tracing
-  exchange state and events, and for placing orders.
+  exchange state and events, and for placing, cancelling and changing orders.
 
 ## License
 

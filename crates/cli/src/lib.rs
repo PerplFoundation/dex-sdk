@@ -27,7 +27,7 @@ use perpl_sdk::{
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    args::{Commands, MarketMaker, OrderCommands, ShowCommands},
+    args::{Commands, MarketMaker, ShowCommands},
     highlight::Highlights,
     mms::Maker,
 };
@@ -176,11 +176,9 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             block::render(&chain, provider, *block_number, &highlights).await?
         },
         Commands::Snapshot => snapshot::render(exchange.unwrap()),
-        Commands::Order { command } => match command {
-            OrderCommands::Create(args) => {
-                order::create(&chain, provider, &exchange.unwrap(), cli.perp[0], args, &highlights)
-                    .await?
-            },
+        Commands::Order { command } => {
+            order::run(&chain, provider, &exchange.unwrap(), cli.perp[0], command, &highlights)
+                .await?
         },
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades } => {

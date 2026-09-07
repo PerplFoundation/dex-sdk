@@ -141,3 +141,110 @@ async fn rejects_a_price_finer_than_the_perpetual_quotes() {
     assert!(err.contains("price"), "{}", err);
     assert!(err.contains("101000.1"), "{}", err);
 }
+
+/// Posts one resting ask and returns the exchange-assigned ID of it, along
+/// with a snapshot taken after it landed.
+async fn resting_ask(
+    exchange: &testing::TestExchange,
+    trader: &testing::TestAccount<'_>,
+    btc: types::PerpetualId,
+    request_id: types::RequestId,
+) -> (types::OrderId, state::Exchange) {
+    let snapshot = snapshot_of(exchange, trader.id).await;
+    OrderRequest::builder(btc, RequestType::OpenShort, udec64!(101000), udec64!(0.5))
+        .request_id(request_id)
+        .build(&snapshot)
+        .expect("a valid order")
+        .call(&snapshot, signing_provider(exchange, &trader.pk), trader.address)
+        .expect("a transaction")
+        .submit()
+        .await
+        .expect("the order should be accepted");
+
+    let snapshot = snapshot_of(exchange, trader.id).await;
+    let order_id = snapshot
+        .perpetuals()
+        .get(&btc)
+        .expect("btc perpetual")
+        .l3_book()
+        .ask_orders()
+        .next()
+        .expect("the order should be resting")
+        .order_id();
+    (order_id, snapshot)
+}
+
+#[tokio::test]
+async fn cancels_a_resting_order() {
+    let exchange = testing::TestExchange::new().await;
+    let trader = exchange.account(0, 1_000_000).await;
+    let btc = exchange.btc_perp().await;
+    // The exchange takes the request ID as an idempotency key and wants it
+    // strictly increasing, so the two requests are numbered rather than left
+    // to the clock
+    let (order_id, snapshot) = resting_ask(&exchange, &trader, btc.id, 1).await;
+
+    // Nothing but the ID: the price and size the contract wants come from the
+    // snapshot's own book entry
+    OrderRequest::cancel(btc.id, order_id)
+        .request_id(2)
+        .build(&snapshot)
+        .expect("a valid cancel")
+        .call(&snapshot, signing_provider(&exchange, &trader.pk), trader.address)
+        .expect("a transaction")
+        .submit()
+        .await
+        .expect("the cancel should be accepted");
+
+    let book = snapshot_of(&exchange, trader.id).await;
+    let book = book
+        .perpetuals()
+        .get(&btc.id)
+        .expect("btc perpetual")
+        .l3_book();
+    assert_eq!(book.total_orders(), 0);
+    assert_eq!(book.best_ask(), None);
+}
+
+#[tokio::test]
+async fn changes_a_resting_order_and_leaves_the_rest_of_it_alone() {
+    let exchange = testing::TestExchange::new().await;
+    let trader = exchange.account(0, 1_000_000).await;
+    let btc = exchange.btc_perp().await;
+    let (order_id, snapshot) = resting_ask(&exchange, &trader, btc.id, 1).await;
+    let before = snapshot
+        .perpetuals()
+        .get(&btc.id)
+        .expect("btc perpetual")
+        .l3_book()
+        .get_order(order_id)
+        .expect("the resting order")
+        .leverage();
+
+    // Only the price is named, so only the price moves
+    OrderRequest::change(btc.id, order_id)
+        .price(udec64!(102000))
+        .request_id(2)
+        .build(&snapshot)
+        .expect("a valid change")
+        .call(&snapshot, signing_provider(&exchange, &trader.pk), trader.address)
+        .expect("a transaction")
+        .submit()
+        .await
+        .expect("the change should be accepted");
+
+    let after = snapshot_of(&exchange, trader.id).await;
+    let book = after
+        .perpetuals()
+        .get(&btc.id)
+        .expect("btc perpetual")
+        .l3_book();
+    // One order still, at the new level, at the size and leverage it had -
+    // which is the whole point of reading them off the book rather than making
+    // the caller restate them
+    assert_eq!(book.total_orders(), 1);
+    assert_eq!(book.best_ask(), Some((udec64!(102000), udec64!(0.5))));
+    let changed = book.get_order(order_id).expect("the same order");
+    assert_eq!(changed.size(), udec64!(0.5));
+    assert_eq!(changed.leverage(), before);
+}

@@ -775,6 +775,17 @@ impl Perpetual {
         self
     }
 
+    /// One resting order of `r#type`, for testing what a cancel or a change
+    /// does with an order that is already on the book.
+    pub fn with_order(mut self, r#type: types::OrderType, price: UD64, size: UD64) -> Self {
+        use std::num::NonZeroU16;
+        let order_id =
+            NonZeroU16::new((self.l3_book.total_orders() + 1) as u16).expect("order id overflow");
+        let order = Order::for_l3_testing(r#type, price, size, 0, order_id, 0);
+        self.l3_book.add_order(&order).expect("failed to add order");
+        self
+    }
+
     pub fn with_bid(mut self, price: UD64, size: UD64) -> Self {
         use std::num::NonZeroU16;
         let order_id =

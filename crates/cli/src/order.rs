@@ -1,13 +1,16 @@
-//! Places an order on a perpetual contract.
+//! Places, cancels and changes orders on a perpetual contract.
 //!
-//! This is the one command that signs and submits a transaction, so it is
-//! deliberately louder than the read commands: it resolves the signer's
-//! exchange account, simulates the call, and asks before sending.
+//! These are the only commands that sign and submit a transaction, so they are
+//! deliberately louder than the read commands: each resolves the signer's
+//! exchange account, prints what it is about to do, simulates the call, and
+//! asks before sending.
 //!
-//! The order itself is built, quantized, validated and submitted by the SDK -
-//! see [`perpl_sdk::types::OrderRequestBuilder`] and [`perpl_sdk::exec`]. What
-//! is left here is the terminal side of it: which flag a fault names, what the
-//! operator is shown, and whether they agreed to it.
+//! The requests themselves are built, quantized, validated and submitted by
+//! the SDK - see [`perpl_sdk::types::OrderRequestBuilder`] and
+//! [`perpl_sdk::exec`]. What is left here is the terminal side of it: which
+//! flag a fault names, what the operator is shown, and whether they agreed to
+//! it. All three commands share one submission path, because to the exchange
+//! they are the same operation with a different request type.
 
 use std::io::{IsTerminal, Write};
 
@@ -20,23 +23,53 @@ use alloy::{
 };
 use anyhow::{Context as _, bail};
 use colored::Colorize;
+use fastnum::UD64;
 use perpl_sdk::{
     Chain,
     error::DexError,
-    state::{self, Exchange, Perpetual},
+    state::{self, Exchange, Order, Perpetual},
     types::{self, OrderRequest, OrderRequestError, RequestType},
 };
 
-use crate::{args::CreateOrderArgs, highlight::Highlights, tx};
+use crate::{
+    args::{OrderCommands, OrderTxArgs},
+    highlight::Highlights,
+    tx,
+};
 
-/// Builds one order from the command line, simulates it, and - unless this is
-/// a dry run - signs and submits it, then traces the resulting transaction.
-pub(crate) async fn create<P: Provider + Clone>(
+/// Builds the request the command describes, then submits it.
+pub(crate) async fn run<P: Provider + Clone>(
     chain: &Chain,
     provider: P,
     exchange: &Exchange,
     perp_id: types::PerpetualId,
-    args: &CreateOrderArgs,
+    command: &OrderCommands,
+    highlights: &Highlights,
+) -> anyhow::Result<()> {
+    let (builder, tx_args) = match command {
+        OrderCommands::Create(args) => (args.to_builder(perp_id), &args.tx),
+        OrderCommands::Cancel(args) => (args.to_builder(perp_id), &args.tx),
+        OrderCommands::Change(args) => (args.to_builder(perp_id), &args.tx),
+    };
+    // Everything checkable without the network first - precision, leverage,
+    // contradictory flags, whether the order is even on the book - so a
+    // mistyped price is reported before an account lookup that would fail for
+    // its own reasons
+    let request = builder
+        .build(exchange)
+        .map_err(|err| describe(err, exchange))?;
+
+    submit(chain, provider, exchange, &request, tx_args, highlights).await
+}
+
+/// Signs and submits one request, simulating it and - unless this is a dry run
+/// - asking first, then tracing the resulting transaction.
+async fn submit<P: Provider + Clone>(
+    chain: &Chain,
+    provider: P,
+    exchange: &Exchange,
+    request: &OrderRequest,
+    args: &OrderTxArgs,
     highlights: &Highlights,
 ) -> anyhow::Result<()> {
     // The error deliberately carries no detail from the key itself - a parse
@@ -47,14 +80,6 @@ pub(crate) async fn create<P: Provider + Clone>(
         .parse()
         .map_err(|_| anyhow::anyhow!("the signing key is not a valid private key"))?;
     let from = signer.address();
-
-    // Everything checkable without the network first - precision, leverage,
-    // contradictory flags, a halted exchange - so a mistyped price is reported
-    // before an account lookup that would fail for its own reasons
-    let request = args
-        .to_builder(perp_id)
-        .build(exchange)
-        .map_err(|err| describe(err, exchange))?;
 
     let account_id = state::account_id_by_address(chain, provider.clone(), from, BlockId::latest())
         .await
@@ -70,9 +95,9 @@ pub(crate) async fn create<P: Provider + Clone>(
 
     let perp = exchange
         .perpetuals()
-        .get(&perp_id)
+        .get(&request.perp_id())
         .expect("the request was built against this perpetual");
-    print_summary(perp, &request, from, account_id);
+    print_summary(perp, request, from, account_id);
 
     // The signing path is the shared provider with a wallet stacked on top of
     // it, so it keeps the throttling, retry and poll-interval settings the read
@@ -91,7 +116,7 @@ pub(crate) async fn create<P: Provider + Clone>(
 
     call.simulate()
         .await
-        .context("simulating the order - it would revert on chain")?;
+        .context("simulating the request - it would revert on chain")?;
     println!("{}", "Simulated without reverting.".green());
 
     if args.dry_run {
@@ -107,32 +132,30 @@ pub(crate) async fn create<P: Provider + Clone>(
         return Ok(());
     }
 
-    if !args.yes && !confirm()? {
+    if !args.yes && !confirm(request.request_type())? {
         println!("{}", "Aborted.".yellow());
         return Ok(());
     }
 
-    let sent = call
-        .send()
-        .await
-        .context("submitting the order transaction")?;
+    let sent = call.send().await.context("submitting the transaction")?;
     let tx_hash = sent.tx_hash();
     println!("Submitted {}, waiting for the receipt...", tx_hash.to_string().bright_blue());
     sent.wait()
         .await
-        .context("waiting for the order transaction receipt")?;
+        .context("waiting for the transaction receipt")?;
 
-    // The events say what the exchange actually did with the order - accepted,
-    // partially filled, rejected - which the receipt status alone does not
+    // The events say what the exchange actually did with the request -
+    // accepted, partially filled, rejected - which the receipt status alone
+    // does not
     tx::render(chain, provider, tx_hash, highlights).await
 }
 
-/// Renders a rejected order in the terms the caller typed it in: their own
+/// Renders a rejected request in the terms the caller typed it in: their own
 /// flags, and the perpetual's symbol rather than only its ID.
 ///
-/// Anything that is not an order fault - an untracked perpetual, a contract
-/// without builder attribution, an RPC failure - already reads well enough as
-/// the SDK reports it.
+/// Anything that is not a request fault - an untracked perpetual, an order
+/// that is not on the book, a contract without builder attribution, an RPC
+/// failure - already reads well enough as the SDK reports it.
 fn describe(err: DexError, exchange: &Exchange) -> anyhow::Error {
     let DexError::OrderRequest(fault) = &err else {
         return err.into();
@@ -154,6 +177,13 @@ fn describe(err: DexError, exchange: &Exchange) -> anyhow::Error {
         OrderRequestError::ContradictoryFlags("post-only", "fill-or-kill") => anyhow::anyhow!(
             "--post-only and --fok contradict each other: a post-only order never fills on entry",
         ),
+        OrderRequestError::NothingToChange(order_id) => anyhow::anyhow!(
+            "nothing to change about order {}: pass `--price`, `--size` or `--expiry-block`",
+            order_id,
+        ),
+        OrderRequestError::ChangeExpiredOrderNeedsNewExpiry(_) => {
+            anyhow::anyhow!("{}, pass `--expiry-block`", fault)
+        },
         _ => err.into(),
     }
 }
@@ -175,6 +205,54 @@ fn print_summary(
     from: Address,
     account_id: types::AccountId,
 ) {
+    // A cancel or a change names an order the snapshot already holds, and what
+    // it holds is what the request is about to move away from
+    let resting = request
+        .order_id()
+        .and_then(|order_id| perp.l3_book().get_order(order_id))
+        .map(|order| &**order);
+
+    let what = match (request.request_type(), request.order_id()) {
+        (RequestType::Cancel, Some(order_id)) => format!("Cancel order #{}", order_id),
+        (RequestType::Change, Some(order_id)) => format!("Change order #{}", order_id),
+        _ => "Order".to_string(),
+    };
+    println!("\n{}", format!("**** {} on {} ({})", what, perp.symbol(), perp.id()).bright_blue());
+    println!("  Account         {} (#{})", from, account_id);
+
+    match request.request_type() {
+        RequestType::Cancel => {
+            println!("  Resting         {} @ {}", request.size(), request.price());
+        },
+        RequestType::Change => {
+            println!("  Price           {}", amendment(resting.map(Order::price), request.price()));
+            println!("  Size            {}", amendment(resting.map(Order::size), request.size()));
+            if let Some(expiry) = request.expiry_block() {
+                println!(
+                    "  Expires at      {}",
+                    amendment_of(resting.map(Order::expiry_block), expiry),
+                );
+            }
+            if let Some(block) = request.last_exec_block() {
+                println!("  Only if unfilled since block {}", block);
+            }
+        },
+        _ => print_order(perp, request),
+    }
+
+    // The request is the authority on the client order ID, which it defaulted
+    // from the clock where none was given
+    println!("  Client order ID {}", request.request_id());
+    if !matches!(request.request_type(), RequestType::Cancel) && perp.is_mark_price_obsolete() {
+        println!(
+            "  {}",
+            "Warning: the mark price is stale, a settling order may be rejected".yellow(),
+        );
+    }
+}
+
+/// The order-placing half of the summary.
+fn print_order(perp: &Perpetual, request: &OrderRequest) {
     let flags = [
         request.post_only().then_some("post-only"),
         request
@@ -188,8 +266,6 @@ fn print_summary(
     .flatten()
     .collect::<Vec<_>>();
 
-    println!("\n{}", format!("**** Order on {} ({})", perp.symbol(), perp.id()).bright_blue());
-    println!("  Account         {} (#{})", from, account_id);
     println!("  Type            {:?}", request.request_type());
     println!("  Size            {}", request.size());
     println!("  Price           {}", request.price());
@@ -207,24 +283,39 @@ fn print_summary(
     if let Some(builder) = request.builder_attribution() {
         println!("  Builder         {} at {}", builder.builder_id(), builder.fee());
     }
-    // ... and on the client order ID, which it defaulted from the clock where
-    // none was given
-    println!("  Client order ID {}", request.request_id());
-    if perp.is_mark_price_obsolete() {
-        println!(
-            "  {}",
-            "Warning: the mark price is stale, a settling order may be rejected".yellow(),
-        );
+}
+
+/// Renders a change as what it moves away from, so an amendment that in fact
+/// amends nothing reads as such.
+fn amendment(from: Option<UD64>, to: UD64) -> String {
+    match from {
+        Some(from) if from != to => format!("{} -> {}", from, to),
+        Some(from) => format!("{} (unchanged)", from),
+        None => to.to_string(),
+    }
+}
+
+/// Same, for the expiry block, where zero is the contract's "never".
+fn amendment_of(from: Option<u64>, to: u64) -> String {
+    match from {
+        Some(0) | None => format!("block {}", to),
+        Some(from) if from != to => format!("block {} -> {}", from, to),
+        Some(from) => format!("block {} (unchanged)", from),
     }
 }
 
 /// Asks the operator to confirm, treating a non-interactive stdin as a refusal
 /// rather than an assent - a piped run should pass `--yes` deliberately.
-fn confirm() -> anyhow::Result<bool> {
+fn confirm(r#type: RequestType) -> anyhow::Result<bool> {
     if !std::io::stdin().is_terminal() {
         bail!("stdin is not a terminal; pass `--yes` to submit without confirmation");
     }
-    print!("{}", "Submit this order? [y/N] ".bold());
+    let what = match r#type {
+        RequestType::Cancel => "Submit this cancellation? [y/N] ",
+        RequestType::Change => "Submit this change? [y/N] ",
+        _ => "Submit this order? [y/N] ",
+    };
+    print!("{}", what.bold());
     std::io::stdout().flush()?;
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
