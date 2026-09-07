@@ -176,7 +176,7 @@ pub struct CreateOrderArgs {
 
     /// Additional collateral, in basis points of notional, the exchange may
     /// draw to cover the position's negative unrealized PnL on a fill
-    #[arg(long, default_value_t = 0, value_name = "BPS")]
+    #[arg(long, default_value_t = 1000, value_name = "BPS")]
     pub max_neg_pnl_collat_bps: u16,
 
     /// Client order ID to tag the order with [default: derived from the
