@@ -315,6 +315,12 @@ pub enum OrderField {
 /// price the caller typed is the one failure worth being noisy about.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum OrderRequestError {
+    #[error("order {0} is a close order, which the exchange does not let a change amend")]
+    CannotChangeCloseOrder(OrderId),
+
+    #[error("order {0} has expired, so a change of it has to set a new expiry block")]
+    ChangeExpiredOrderNeedsNewExpiry(OrderId),
+
     #[error("{0} and {1} contradict each other")]
     ContradictoryFlags(&'static str, &'static str),
 
@@ -323,6 +329,12 @@ pub enum OrderRequestError {
 
     #[error("leverage {requested} exceeds the maximum of {max} on perpetual {perp}")]
     LeverageTooHigh { perp: PerpetualId, requested: UD64, max: UD64 },
+
+    #[error("a {0:?} request requires {1}")]
+    MissingField(RequestType, &'static str),
+
+    #[error("a change of order {0} that amends nothing would spend gas to no effect")]
+    NothingToChange(OrderId),
 
     #[error("perpetual {0} is paused")]
     PerpetualPaused(PerpetualId),
@@ -346,24 +358,31 @@ impl OrderRequest {
         price: UD64,
         size: UD64,
     ) -> OrderRequestBuilder {
-        OrderRequestBuilder {
-            perp_id,
-            r#type,
-            price,
-            size,
-            order_id: None,
-            request_id: None,
-            leverage: None,
-            expiry_block: None,
-            post_only: false,
-            fill_or_kill: false,
-            immediate_or_cancel: false,
-            max_matches: None,
-            last_exec_block: None,
-            amount: None,
-            max_neg_pnl_collat_bps: DEFAULT_MAX_NEG_PNL_COLLAT_BPS,
-            builder: None,
-        }
+        OrderRequestBuilder::new(perp_id, r#type)
+            .price(price)
+            .size(size)
+    }
+
+    /// Cancels a resting order, taking it off the book.
+    ///
+    /// The price and size the contract wants come from the snapshot's own book
+    /// entry for the order, so a caller needs nothing but its ID - see
+    /// [`OrderRequestBuilder::build`].
+    pub fn cancel(perp_id: PerpetualId, order_id: OrderId) -> OrderRequestBuilder {
+        OrderRequestBuilder::new(perp_id, RequestType::Cancel).order_id(order_id)
+    }
+
+    /// Amends a resting order: its price level, its size, or its expiry block.
+    ///
+    /// Cheaper than cancelling and re-posting, which is two operations and
+    /// twice the gas. Whatever is left unset keeps the resting order's current
+    /// value, so `change(perp, id).price(p)` moves an order and leaves its
+    /// size alone. The price is the level the order moves *to*.
+    ///
+    /// Amending size *down* keeps the order's queue priority; amending it up
+    /// sends the order to the back of its level.
+    pub fn change(perp_id: PerpetualId, order_id: OrderId) -> OrderRequestBuilder {
+        OrderRequestBuilder::new(perp_id, RequestType::Change).order_id(order_id)
     }
 
     pub fn perp_id(&self) -> PerpetualId { self.perp_id }
@@ -383,6 +402,16 @@ impl OrderRequest {
     /// [`OrderRequestBuilder`] carries the perpetual's maximum where the
     /// caller named none.
     pub fn leverage(&self) -> UD64 { self.leverage }
+
+    /// Exchange ID of the order the request refers to: the order a
+    /// [`RequestType::Cancel`] takes off the book or a [`RequestType::Change`]
+    /// amends, and `None` for a new order, which the exchange has yet to
+    /// assign one.
+    pub fn order_id(&self) -> Option<OrderId> { self.order_id }
+
+    /// Block a [`RequestType::Change`] is conditioned on the order not having
+    /// executed since.
+    pub fn last_exec_block(&self) -> Option<u64> { self.last_exec_block }
 
     pub fn expiry_block(&self) -> Option<u64> { self.expiry_block }
 
@@ -445,8 +474,10 @@ impl OrderRequest {
 pub struct OrderRequestBuilder {
     perp_id: PerpetualId,
     r#type: RequestType,
-    price: UD64,
-    size: UD64,
+    // `None` where the resting order the request names is the authority: a
+    // cancel needs neither, and a change needs only what it amends
+    price: Option<UD64>,
+    size: Option<UD64>,
     order_id: Option<OrderId>,
     request_id: Option<RequestId>,
     leverage: Option<UD64>,
@@ -462,6 +493,45 @@ pub struct OrderRequestBuilder {
 }
 
 impl OrderRequestBuilder {
+    /// An empty builder for `r#type` on `perp_id`. Reach for
+    /// [`OrderRequest::builder`], [`OrderRequest::cancel`] or
+    /// [`OrderRequest::change`] instead - each fills in what its request type
+    /// needs.
+    fn new(perp_id: PerpetualId, r#type: RequestType) -> Self {
+        Self {
+            perp_id,
+            r#type,
+            price: None,
+            size: None,
+            order_id: None,
+            request_id: None,
+            leverage: None,
+            expiry_block: None,
+            post_only: false,
+            fill_or_kill: false,
+            immediate_or_cancel: false,
+            max_matches: None,
+            last_exec_block: None,
+            amount: None,
+            max_neg_pnl_collat_bps: DEFAULT_MAX_NEG_PNL_COLLAT_BPS,
+            builder: None,
+        }
+    }
+
+    /// Limit price, in human units. On a [`RequestType::Change`] this is the
+    /// level the order moves to [default: where it already rests].
+    pub fn price(mut self, price: impl Into<Option<UD64>>) -> Self {
+        self.price = price.into();
+        self
+    }
+
+    /// Order size, in human units. On a [`RequestType::Change`] this is the
+    /// resting quantity to amend to [default: the size it already has].
+    pub fn size(mut self, size: impl Into<Option<UD64>>) -> Self {
+        self.size = size.into();
+        self
+    }
+
     /// Leverage to open the position at [default: the perpetual's maximum].
     pub fn leverage(mut self, leverage: impl Into<Option<UD64>>) -> Self {
         self.leverage = leverage.into();
@@ -546,20 +616,33 @@ impl OrderRequestBuilder {
     }
 
     /// Quantizes the request against the perpetual's own converters and
-    /// validates it against `exchange`.
+    /// validates it against `exchange`, filling in what the resting order it
+    /// names already carries.
+    ///
+    /// A [`RequestType::Cancel`] or [`RequestType::Change`] is resolved
+    /// against the snapshot's book: the order has to be in it, and whatever
+    /// the caller left unset - a cancel's price and size, the half of a change
+    /// it is not amending - is taken from the order as it rests. That is why
+    /// these need a snapshot that tracks the perpetual's book rather than just
+    /// its scalers.
     pub fn build(self, exchange: &state::Exchange) -> Result<OrderRequest, DexError> {
         let perp = exchange
             .perpetuals()
             .get(&self.perp_id)
             .ok_or(DexError::PerpetualNotTracked(self.perp_id))?;
 
-        // Fail on the states the contract would reject anyway, where the
-        // revert reason is far less legible than this
-        if exchange.is_halted() {
-            return Err(OrderRequestError::ExchangeHalted.into());
-        }
-        if perp.is_paused() {
-            return Err(OrderRequestError::PerpetualPaused(self.perp_id).into());
+        // Cancelling is how a client gets *out*, so it is not blocked on the
+        // states that stop an order going on: whether a halted exchange still
+        // accepts one is the contract's call, not ours to pre-empt
+        if !matches!(self.r#type, RequestType::Cancel) {
+            // Fail on the states the contract would reject anyway, where the
+            // revert reason is far less legible than this
+            if exchange.is_halted() {
+                return Err(OrderRequestError::ExchangeHalted.into());
+            }
+            if perp.is_paused() {
+                return Err(OrderRequestError::PerpetualPaused(self.perp_id).into());
+            }
         }
         if self.post_only && self.fill_or_kill {
             // A post-only order never fills on entry, so there is nothing for
@@ -573,15 +656,62 @@ impl OrderRequestBuilder {
             ));
         }
 
-        let price = quantize(self.price, perp.price_converter(), OrderField::Price)?;
-        let size = quantize(self.size, perp.size_converter(), OrderField::Size)?;
-        // Zero is the exchange's "use the maximum" sentinel, so an omitted
-        // leverage is spelled out rather than left to resolve silently
+        // The order a cancel or a change names, which supplies whatever the
+        // caller did not
+        let resting = match self.r#type {
+            RequestType::Cancel | RequestType::Change => {
+                let order_id = self
+                    .order_id
+                    .ok_or(OrderRequestError::MissingField(self.r#type, "an order ID"))?;
+                let order = perp
+                    .l3_book()
+                    .get_order(order_id)
+                    .ok_or(DexError::OrderNotFound(self.perp_id, order_id))?;
+                if matches!(self.r#type, RequestType::Change) {
+                    if matches!(order.r#type(), OrderType::CloseLong | OrderType::CloseShort) {
+                        return Err(OrderRequestError::CannotChangeCloseOrder(order_id).into());
+                    }
+                    if self.price.is_none() && self.size.is_none() && self.expiry_block.is_none() {
+                        return Err(OrderRequestError::NothingToChange(order_id).into());
+                    }
+                    // An expired order is past the block it was good to, so
+                    // the exchange wants to be told the new one explicitly
+                    if order.is_expired() && self.expiry_block.is_none() {
+                        return Err(
+                            OrderRequestError::ChangeExpiredOrderNeedsNewExpiry(order_id).into()
+                        );
+                    }
+                }
+                Some(order)
+            },
+            _ => None,
+        };
+
+        // Unreachable through the constructors, each of which supplies what
+        // its request type needs - but a missing price is not something to
+        // resolve to zero and let the contract puzzle over
+        let price = self
+            .price
+            .or_else(|| resting.map(|order| order.price()))
+            .ok_or(OrderRequestError::MissingField(self.r#type, "a price"))?;
+        let size = self
+            .size
+            .or_else(|| resting.map(|order| order.size()))
+            .ok_or(OrderRequestError::MissingField(self.r#type, "a size"))?;
+        let price = quantize(price, perp.price_converter(), OrderField::Price)?;
+        let size = quantize(size, perp.size_converter(), OrderField::Size)?;
         let leverage = match self.leverage {
             Some(leverage) => quantize(leverage, perp.leverage_converter(), OrderField::Leverage)?,
-            None => perp.initial_margin(),
+            // A cancel or a change describes an order that already carries
+            // one. Anything else takes the perpetual's maximum, since zero is
+            // the exchange's "use the maximum" sentinel and worth spelling out
+            None => resting
+                .map(|order| order.leverage())
+                .unwrap_or_else(|| perp.initial_margin()),
         };
-        if leverage > perp.initial_margin() {
+        // A cancel only takes an order off the book, so the perpetual's current
+        // cap is not its business - it was met when the order went on
+        if leverage > perp.initial_margin() && !matches!(self.r#type, RequestType::Cancel) {
             return Err(OrderRequestError::LeverageTooHigh {
                 perp: self.perp_id,
                 requested: leverage,
@@ -597,7 +727,13 @@ impl OrderRequestBuilder {
             order_id: self.order_id,
             price,
             size,
-            expiry_block: self.expiry_block,
+            expiry_block: self.expiry_block.or_else(|| {
+                // A change that does not touch the expiry keeps the one the
+                // order already has; zero is the contract's "never"
+                resting
+                    .map(|order| order.expiry_block())
+                    .filter(|block| *block > 0)
+            }),
             post_only: self.post_only,
             fill_or_kill: self.fill_or_kill,
             immediate_or_cancel: self.immediate_or_cancel,
@@ -606,7 +742,13 @@ impl OrderRequestBuilder {
             last_exec_block: self.last_exec_block,
             amount: self.amount,
             max_neg_pnl_collat_bps: self.max_neg_pnl_collat_bps,
-            builder: self.builder,
+            // A change rewrites the parameters of an order that already
+            // carries its own attribution, and dropping it is the one outcome
+            // a builder cannot recover from, so it is carried forward unless
+            // the caller named another
+            builder: self
+                .builder
+                .or_else(|| resting.and_then(|order| order.builder())),
         })
     }
 }
@@ -865,6 +1007,140 @@ mod tests {
         assert_eq!(
             v1.input.input().expect("calldata")[..4],
             dex::Exchange::execOrdersCall::SELECTOR,
+        );
+    }
+
+    /// The BTC perpetual with one resting ask of `size` at `price`, which is
+    /// order #1 - what a cancel or a change names.
+    fn with_resting_ask(price: &str, size: &str) -> Exchange {
+        exchange_with(btc().with_ask(dec(price), dec(size)), ContractFeatures::current(), false)
+    }
+
+    fn oid(id: u16) -> OrderId { OrderId::new(id).expect("non-zero order id") }
+
+    #[test]
+    fn a_cancel_takes_price_and_size_from_the_resting_order() {
+        // The caller names nothing but the ID: the book is what knows where
+        // the order rests and how much of it is left
+        let request = OrderRequest::cancel(PERP_ID, oid(1))
+            .build(&with_resting_ask("101000", "0.5"))
+            .expect("a valid cancel");
+        assert!(matches!(request.request_type(), RequestType::Cancel));
+        assert_eq!(request.price(), dec("101000"));
+        assert_eq!(request.size(), dec("0.5"));
+        assert!(request.request_id() > 0);
+    }
+
+    #[test]
+    fn a_cancel_is_not_blocked_by_a_halt_or_a_pause() {
+        // Cancelling is how a client gets out, so the states that stop an
+        // order going on must not stop one coming off
+        let halted = exchange_with(
+            btc().with_ask(dec("101000"), dec("0.5")),
+            ContractFeatures::current(),
+            true,
+        );
+        assert!(OrderRequest::cancel(PERP_ID, oid(1)).build(&halted).is_ok());
+
+        let paused = exchange_with(
+            btc().with_ask(dec("101000"), dec("0.5")).with_paused(true),
+            ContractFeatures::current(),
+            false,
+        );
+        assert!(OrderRequest::cancel(PERP_ID, oid(1)).build(&paused).is_ok());
+        // ... while placing one still is
+        assert!(matches!(
+            builder().build(&paused),
+            Err(DexError::OrderRequest(OrderRequestError::PerpetualPaused(PERP_ID)))
+        ));
+    }
+
+    #[test]
+    fn a_cancel_or_change_of_an_order_that_is_not_on_the_book_is_rejected() {
+        let exchange = with_resting_ask("101000", "0.5");
+        assert!(matches!(
+            OrderRequest::cancel(PERP_ID, oid(9)).build(&exchange),
+            Err(DexError::OrderNotFound(PERP_ID, id)) if id == oid(9)
+        ));
+        assert!(matches!(
+            OrderRequest::change(PERP_ID, oid(9)).price(dec("102000")).build(&exchange),
+            Err(DexError::OrderNotFound(PERP_ID, id)) if id == oid(9)
+        ));
+    }
+
+    #[test]
+    fn a_change_amends_only_what_it_names() {
+        let exchange = with_resting_ask("101000", "0.5");
+
+        // Moving the order leaves its size where it was ...
+        let moved = OrderRequest::change(PERP_ID, oid(1))
+            .price(dec("102000"))
+            .build(&exchange)
+            .expect("a valid change");
+        assert!(matches!(moved.request_type(), RequestType::Change));
+        assert_eq!(moved.price(), dec("102000"));
+        assert_eq!(moved.size(), dec("0.5"));
+
+        // ... and resizing it leaves the level alone
+        let resized = OrderRequest::change(PERP_ID, oid(1))
+            .size(dec("0.25"))
+            .build(&exchange)
+            .expect("a valid change");
+        assert_eq!(resized.price(), dec("101000"));
+        assert_eq!(resized.size(), dec("0.25"));
+    }
+
+    #[test]
+    fn a_change_that_amends_nothing_is_rejected() {
+        // It would cost gas and change nothing, which is never what was meant
+        assert!(matches!(
+            OrderRequest::change(PERP_ID, oid(1)).build(&with_resting_ask("101000", "0.5")),
+            Err(DexError::OrderRequest(OrderRequestError::NothingToChange(id))) if id == oid(1)
+        ));
+    }
+
+    #[test]
+    fn a_change_still_quantizes_what_it_amends() {
+        let err = OrderRequest::change(PERP_ID, oid(1))
+            .price(dec("102000.123456"))
+            .build(&with_resting_ask("101000", "0.5"))
+            .expect_err("over-precise price")
+            .to_string();
+        assert!(err.contains("102000.1"), "{}", err);
+    }
+
+    #[test]
+    fn a_cancel_or_change_needs_an_order_id() {
+        // Reachable only by going around the constructors, which is exactly
+        // when a caller needs telling rather than a contract revert
+        let err = OrderRequest::builder(PERP_ID, RequestType::Cancel, dec("1"), dec("1"))
+            .build(&exchange())
+            .expect_err("a cancel without an order");
+        assert!(matches!(
+            err,
+            DexError::OrderRequest(OrderRequestError::MissingField(RequestType::Cancel, _))
+        ));
+    }
+
+    #[test]
+    fn a_close_order_cannot_be_changed() {
+        // The exchange refuses to amend a reduce-only order - it is bound to a
+        // position, so its size is not the client's to move
+        let exchange = exchange_with(
+            btc().with_order(OrderType::CloseLong, dec("101000"), dec("0.5")),
+            ContractFeatures::current(),
+            false,
+        );
+        assert!(matches!(
+            OrderRequest::change(PERP_ID, oid(1)).price(dec("102000")).build(&exchange),
+            Err(DexError::OrderRequest(OrderRequestError::CannotChangeCloseOrder(id)))
+                if id == oid(1)
+        ));
+        // ... but it can still be cancelled
+        assert!(
+            OrderRequest::cancel(PERP_ID, oid(1))
+                .build(&exchange)
+                .is_ok()
         );
     }
 }

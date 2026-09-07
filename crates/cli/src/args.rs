@@ -68,8 +68,9 @@ pub enum Commands {
         /// Block number to trace
         block_number: u64,
     },
-    /// Place an order on a perpetual contract. The only command that signs and
-    /// submits a transaction; every other one reads state
+    /// Place, cancel or change an order on a perpetual contract. The only
+    /// commands that sign and submit a transaction; every other one reads
+    /// state
     Order {
         #[command(subcommand)]
         command: OrderCommands,
@@ -95,6 +96,13 @@ pub enum Commands {
 pub enum OrderCommands {
     /// Post a single order to the perpetual given by `--perp`
     Create(Box<CreateOrderArgs>),
+    /// Take a resting order off the book. Aliased `delete`
+    #[command(visible_alias = "delete")]
+    Cancel(Box<CancelOrderArgs>),
+    /// Amend a resting order's price, size or expiry in place, which is
+    /// cheaper than cancelling and re-posting. Aliased `update`
+    #[command(visible_alias = "update")]
+    Change(Box<ChangeOrderArgs>),
 }
 
 /// Side of the book an order rests on, which together with `--reduce-only`
@@ -186,11 +194,6 @@ pub struct CreateOrderArgs {
     )]
     pub max_neg_pnl_collat_bps: u16,
 
-    /// Client order ID to tag the order with [default: derived from the
-    /// current time]
-    #[arg(long)]
-    pub request_id: Option<u64>,
-
     /// Builder code to attribute the order to. Needs a contract that supports
     /// builder attribution
     #[arg(long, requires = "builder_fee")]
@@ -201,30 +204,8 @@ pub struct CreateOrderArgs {
     #[arg(long, requires = "builder_id", value_name = "DECIMAL", value_parser = decimal)]
     pub builder_fee: Option<UD64>,
 
-    /// Private key of the account to sign with. An argument is visible to
-    /// every other process on the machine, so prefer `--private-key-path` or
-    /// the environment variable
-    #[arg(long, env = "PERPL_PRIVATE_KEY", hide_env_values = true)]
-    pub private_key: Option<Secret>,
-
-    /// File to read the signing key from, whitespace trimmed. Takes precedence
-    /// over `--private-key` and `PERPL_PRIVATE_KEY`
-    #[arg(long, value_name = "PATH")]
-    pub private_key_path: Option<PathBuf>,
-
-    /// Gas limit for the transaction [default: estimated]
-    #[arg(long)]
-    pub gas_limit: Option<u64>,
-
-    /// Build and simulate the order, print what would be sent, then stop
-    #[arg(long, default_value_t = false)]
-    pub dry_run: bool,
-
-    /// Submit without asking for confirmation. Deliberately has no environment
-    /// variable: one exported in a shell profile would arm every later order
-    /// silently, which is the opposite of what a confirmation is for
-    #[arg(long, short = 'y', visible_alias = "auto-confirm", default_value_t = false)]
-    pub yes: bool,
+    #[command(flatten)]
+    pub tx: OrderTxArgs,
 }
 
 impl CreateOrderArgs {
@@ -242,13 +223,132 @@ impl CreateOrderArgs {
             .expiry_block(self.expiry_block)
             .max_matches(self.max_matches)
             .max_neg_pnl_collat_bps(self.max_neg_pnl_collat_bps)
-            .request_id(self.request_id)
+            .request_id(self.tx.request_id)
             .post_only(self.post_only)
             .immediate_or_cancel(self.ioc)
             .fill_or_kill(self.fok)
             .with_builder(self.builder())
     }
 
+    /// Builder attribution of the order, `None` when unattributed. Both parts
+    /// arrive together or not at all, which clap enforces.
+    pub fn builder(&self) -> Option<types::BuilderAttribution> {
+        self.builder_id
+            .zip(self.builder_fee)
+            .map(|(id, fee)| types::BuilderAttribution::new(id, fee))
+    }
+}
+
+/// Takes a resting order off the book.
+///
+/// Needs nothing but the order's ID: the price and size the contract wants
+/// come from the snapshot's own book entry for it.
+#[derive(clap::Args, Debug)]
+pub struct CancelOrderArgs {
+    /// Exchange ID of the order to cancel, as `show book` reports it
+    #[arg(long, value_name = "ID")]
+    pub order_id: types::OrderId,
+
+    #[command(flatten)]
+    pub tx: OrderTxArgs,
+}
+
+impl CancelOrderArgs {
+    /// The SDK builder for this cancellation, on the perpetual given by
+    /// `--perp`.
+    pub fn to_builder(&self, perp_id: types::PerpetualId) -> types::OrderRequestBuilder {
+        types::OrderRequest::cancel(perp_id, self.order_id).request_id(self.tx.request_id)
+    }
+}
+
+/// Amends a resting order in place, which is cheaper than cancelling and
+/// re-posting.
+///
+/// Whatever is not given keeps the value the order already has, so
+/// `--price` alone moves an order and leaves its size where it was.
+#[derive(clap::Args, Debug)]
+pub struct ChangeOrderArgs {
+    /// Exchange ID of the order to change, as `show book` reports it
+    #[arg(long, value_name = "ID")]
+    pub order_id: types::OrderId,
+
+    /// Price level to move the order to [default: where it rests]
+    #[arg(long, value_name = "DECIMAL", value_parser = decimal)]
+    pub price: Option<UD64>,
+
+    /// Resting size to amend the order to [default: the size it has]. Sizing
+    /// down keeps the order's queue priority; sizing up sends it to the back
+    #[arg(long, visible_alias = "amount", value_name = "DECIMAL", value_parser = decimal)]
+    pub size: Option<UD64>,
+
+    /// Expiry block to set [default: the order's own]. Required when the order
+    /// has already expired
+    #[arg(long)]
+    pub expiry_block: Option<u64>,
+
+    /// Only apply the change if the order has not executed since this block
+    #[arg(long, value_name = "BLOCK")]
+    pub last_exec_block: Option<u64>,
+
+    #[command(flatten)]
+    pub tx: OrderTxArgs,
+}
+
+impl ChangeOrderArgs {
+    /// The SDK builder for this amendment, on the perpetual given by
+    /// `--perp`.
+    ///
+    /// Only what was named is passed on; the rest is the resting order's, and
+    /// [`types::OrderRequestBuilder::build`] reads it off the book. An
+    /// amendment of nothing at all is rejected there rather than here, so the
+    /// message is the same however the SDK is driven.
+    pub fn to_builder(&self, perp_id: types::PerpetualId) -> types::OrderRequestBuilder {
+        types::OrderRequest::change(perp_id, self.order_id)
+            .price(self.price)
+            .size(self.size)
+            .expiry_block(self.expiry_block)
+            .last_exec_block(self.last_exec_block)
+            .request_id(self.tx.request_id)
+    }
+}
+
+/// What every order command needs to get a transaction signed and sent, and
+/// to say what should happen before it is.
+#[derive(clap::Args, Debug)]
+pub struct OrderTxArgs {
+    /// Client order ID to tag the request with. The exchange takes it as an
+    /// idempotency key and wants it strictly increasing per account [default:
+    /// derived from the current time]
+    #[arg(long)]
+    pub request_id: Option<u64>,
+
+    /// Private key of the account to sign with. An argument is visible to
+    /// every other process on the machine, so prefer `--private-key-path` or
+    /// the environment variable
+    #[arg(long, env = "PERPL_PRIVATE_KEY", hide_env_values = true)]
+    pub private_key: Option<Secret>,
+
+    /// File to read the signing key from, whitespace trimmed. Takes precedence
+    /// over `--private-key` and `PERPL_PRIVATE_KEY`
+    #[arg(long, value_name = "PATH")]
+    pub private_key_path: Option<PathBuf>,
+
+    /// Gas limit for the transaction [default: estimated]
+    #[arg(long)]
+    pub gas_limit: Option<u64>,
+
+    /// Build and simulate the request, print what would be sent, then stop
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+
+    /// Submit without asking for confirmation. Deliberately has no environment
+    /// variable: one exported in a shell profile would arm every later order
+    /// silently, which is the opposite of what a confirmation is for
+    #[arg(long, short = 'y', visible_alias = "auto-confirm", default_value_t = false)]
+    pub yes: bool,
+}
+
+impl OrderTxArgs {
     /// Signing key, from the file if one was named and otherwise from the
     /// argument or the environment.
     ///
@@ -272,14 +372,6 @@ impl CreateOrderArgs {
                  PERPL_PRIVATE_KEY",
             )
         })
-    }
-
-    /// Builder attribution of the order, `None` when unattributed. Both parts
-    /// arrive together or not at all, which clap enforces.
-    pub fn builder(&self) -> Option<types::BuilderAttribution> {
-        self.builder_id
-            .zip(self.builder_fee)
-            .map(|(id, fee)| types::BuilderAttribution::new(id, fee))
     }
 }
 
@@ -568,11 +660,11 @@ mod tests {
         std::fs::write(&path, format!("{}\n", KEY)).expect("write key");
 
         let args = create_order(&["--private-key-path", path.to_str().unwrap()]);
-        assert_eq!(args.signing_key().unwrap().expose(), KEY);
+        assert_eq!(args.tx.signing_key().unwrap().expose(), KEY);
 
         // The file wins over the inline argument the helper always passes
         std::fs::write(&path, "").expect("truncate key");
-        let err = args.signing_key().expect_err("empty file").to_string();
+        let err = args.tx.signing_key().expect_err("empty file").to_string();
         assert!(err.contains("is empty"), "{}", err);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -581,7 +673,7 @@ mod tests {
     #[test]
     fn a_missing_key_file_reports_its_path_and_not_a_key() {
         let args = create_order(&["--private-key-path", "/nonexistent/perpl/key"]);
-        let err = format!("{:#}", args.signing_key().expect_err("missing file"));
+        let err = format!("{:#}", args.tx.signing_key().expect_err("missing file"));
         assert!(err.contains("/nonexistent/perpl/key"), "{}", err);
         assert!(!err.contains(KEY), "{}", err);
     }
@@ -610,17 +702,17 @@ mod tests {
                 panic!("expected `order create`");
             };
             if std::env::var("PERPL_PRIVATE_KEY").is_err() {
-                assert!(args.signing_key().is_err());
+                assert!(args.tx.signing_key().is_err());
             }
         }
     }
 
     #[test]
     fn auto_confirm_is_an_alias_of_yes() {
-        assert!(!create_order(&[]).yes);
-        assert!(create_order(&["--yes"]).yes);
-        assert!(create_order(&["-y"]).yes);
-        assert!(create_order(&["--auto-confirm"]).yes);
+        assert!(!create_order(&[]).tx.yes);
+        assert!(create_order(&["--yes"]).tx.yes);
+        assert!(create_order(&["-y"]).tx.yes);
+        assert!(create_order(&["--auto-confirm"]).tx.yes);
     }
 
     #[test]
@@ -654,5 +746,80 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    fn order_command(argv: &[&str]) -> OrderCommands {
+        let mut full = vec!["perpl-cli", "--perp", "1", "order"];
+        full.extend_from_slice(argv);
+        let cli = Cli::try_parse_from(full).expect("valid arguments");
+        let Commands::Order { command } = cli.command else {
+            panic!("expected an `order` command");
+        };
+        command
+    }
+
+    #[test]
+    fn delete_and_update_are_aliases_of_cancel_and_change() {
+        // The exchange calls them cancel and change; `delete` and `update` are
+        // what a user reaches for first
+        for argv in [["cancel", "--order-id", "3"], ["delete", "--order-id", "3"]] {
+            let OrderCommands::Cancel(args) = order_command(&argv) else {
+                panic!("expected `order cancel`");
+            };
+            assert_eq!(args.order_id.get(), 3);
+        }
+        for argv in [["change", "--order-id", "3"], ["update", "--order-id", "3"]] {
+            let OrderCommands::Change(args) = order_command(&argv) else {
+                panic!("expected `order change`");
+            };
+            assert_eq!(args.order_id.get(), 3);
+        }
+    }
+
+    #[test]
+    fn a_change_takes_any_subset_of_what_it_can_amend() {
+        let OrderCommands::Change(args) =
+            order_command(&["update", "--order-id", "3", "--price", "102000"])
+        else {
+            panic!("expected `order change`");
+        };
+        // Only the price was named, so only the price is passed on - the rest
+        // is the resting order's, which the SDK reads off the book
+        assert_eq!(args.price, Some(UD64::from_str("102000", Context::default()).unwrap()));
+        assert_eq!(args.size, None);
+        assert_eq!(args.expiry_block, None);
+
+        let OrderCommands::Change(args) =
+            order_command(&["update", "--order-id", "3", "--amount", "0.25"])
+        else {
+            panic!("expected `order change`");
+        };
+        assert_eq!(args.size, Some(UD64::from_str("0.25", Context::default()).unwrap()));
+        assert_eq!(args.price, None);
+    }
+
+    #[test]
+    fn cancelling_and_changing_need_an_order_id() {
+        // Without one there is nothing to act on, and the exchange's own ID is
+        // the only handle a snapshot can offer: a client order ID is not
+        // recoverable from one
+        assert!(Cli::try_parse_from(["perpl-cli", "--perp", "1", "order", "delete"]).is_err());
+        assert!(Cli::try_parse_from(["perpl-cli", "--perp", "1", "order", "update"]).is_err());
+    }
+
+    #[test]
+    fn every_order_command_signs_the_same_way() {
+        // The signing key, gas limit, dry run and confirmation are one flattened
+        // group, so they are spelled the same whichever request is being sent
+        let OrderCommands::Cancel(args) =
+            order_command(&["delete", "--order-id", "3", "--private-key", KEY, "--dry-run", "-y"])
+        else {
+            panic!("expected `order cancel`");
+        };
+        assert_eq!(args.tx.signing_key().unwrap().expose(), KEY);
+        assert!(args.tx.dry_run);
+        assert!(args.tx.yes);
+        // ... and the key is no more printable here than anywhere else
+        assert!(!format!("{:?}", args).contains(KEY));
     }
 }

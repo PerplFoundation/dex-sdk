@@ -13,6 +13,10 @@
 //! rejects what the exchange would - then [`exec::Call`] to simulate, send and
 //! wait for it. Signing stays with the caller's own wallet-carrying provider.
 //!
+//! [`types::OrderRequest::cancel`] and [`types::OrderRequest::change`] go the
+//! same way, and read what the contract wants about a resting order off the
+//! snapshot's own book rather than asking the caller to restate it.
+//!
 //! The deployed contract may lag behind the revision the SDK targets, so the
 //! snapshot detects the contract's [`state::ContractFeatures`] and degrades
 //! gracefully rather than failing on a missing selector.
