@@ -8,40 +8,31 @@ This repository uses a two-branch model:
 
 | Branch | Purpose |
 | ------ | ------- |
-| `dev`  | Integration branch. **All contributions land here first.** |
 | `main` | Release branch. Every merge publishes to crates.io and cuts a GitHub release. |
 
-### Pull requests must target `dev`, never `main`
+### Pull requests must target `main`
 
-> **All pull requests must be opened against `dev`.**
-> Pull requests opened directly against `main` will not be accepted.
+> **All pull requests must be opened against `main`.**
+> New prs must increment the version number.
 
-The only pull request that may target `main` is the `dev` -> `main` release PR, which is
-opened by a maintainer when a release is cut.
+
 
 This is enforced in CI, not just by convention. The `Check PR branch` step in
 [`.github/workflows/pull_request.yaml`](.github/workflows/pull_request.yaml) fails the
-build for any pull request whose base is `main` and whose head is not `dev`:
-
-```
-Pull requests to main must come from dev branch.
-```
-
-If you opened a PR against `main` by mistake, edit the PR and change its base branch to
-`dev` — there is no need to close it and open a new one.
+build for any pull request whose version is the same as main:
 
 ### Workflow
 
 1. Fork the repository (external contributors) or create a branch (maintainers).
-2. Branch **from `dev`**, not from `main`:
+2. Branch from `main`:
    ```bash
    git fetch origin
-   git switch -c feat/my-change origin/dev
+   git switch -c feat/my-change origin/main
    ```
 3. Make your change, keeping commits focused.
 4. Run the local checks (see below) until they pass.
-5. Push and open a pull request **into `dev`**.
-6. Once approved and CI is green, a maintainer merges it into `dev`.
+5. Push and open a pull request **into `main`**
+6. Once approved and CI is green, a maintainer merges it into `main`, triggering an automated release to crates.io.
 
 Branch names follow a `<type>/<short-description>` convention, e.g.
 `feat/adding-order-from-cli-functionality`, `fix/premium-pnl-settlement`,
@@ -94,18 +85,10 @@ Do not hand-write `Bump version to vX.Y.Z` commits — versioning is automated (
 
 ## Versioning and releases
 
-Both of these are automated; contributors should not touch the workspace `version` in
-[`Cargo.toml`](Cargo.toml).
-
-* **On push to `dev`** — [`dev.yaml`](.github/workflows/dev.yaml) runs `make dev-version`,
-  which bumps the patch version if `dev` is still on the same version as `main` and pushes
-  a `Bump version to vX.Y.Z` commit. It is a no-op if `dev` has already been versioned
-  since the last release.
 * **On push to `main`** — [`main.yaml`](.github/workflows/main.yaml) runs `cargo publish`
   and then `make release`, which tags `vX.Y.Z` and creates the GitHub release.
 
-Because a merge into `main` publishes a crate version immediately, `main` only ever
-receives merges from `dev`.
+Because a merge into `main` publishes a crate version immediately, `main` is protected.
 
 ## Project layout
 
