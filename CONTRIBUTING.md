@@ -4,7 +4,7 @@ Thanks for your interest in contributing to the [Perpl](https://perpl.xyz) DEX S
 
 ## Branching model
 
-This repository uses a two-branch model:
+This repository uses an automated release flow, triggered by a merge into main.
 
 | Branch | Purpose |
 | ------ | ------- |
@@ -81,10 +81,11 @@ chore: relist sol
 Use `feat`, `fix`, `chore`, `docs`, `refactor`, or `test`, with an optional scope — either
 a crate (`sdk`, `cli`, `num`, `types::Trade`) or a ticket ID (`A-1957`).
 
-Do not hand-write `Bump version to vX.Y.Z` commits — versioning is automated (below).
+Do not hand roll releases!
 
 ## Versioning and releases
 
+* **Verify Expected Version Number** Ci enforces a difference in version number for any pr.
 * **On push to `main`** — [`main.yaml`](.github/workflows/main.yaml) runs `cargo publish`
   and then `make release`, which tags `vX.Y.Z` and creates the GitHub release.
 
