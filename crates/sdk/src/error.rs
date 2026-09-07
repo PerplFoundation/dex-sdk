@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use alloy::{
     contract,
-    primitives::Bytes,
+    primitives::{Bytes, TxHash},
     providers::{MulticallError, PendingTransactionError},
     sol_types::{self, SolInterface},
     transports,
@@ -76,6 +76,9 @@ pub enum DexError {
     #[error("perp {0} order parse error: {1}")]
     OrderParse(types::PerpetualId, OrderParseError),
 
+    #[error("invalid order request: {0}")]
+    OrderRequest(#[from] types::OrderRequestError),
+
     #[error("perpetual {0} is not tracked")]
     PerpetualNotTracked(types::PerpetualId),
 
@@ -84,6 +87,9 @@ pub enum DexError {
 
     #[error("provider error: {0}")]
     Provider(#[from] ProviderError<ExchangeErrors>),
+
+    #[error("transaction {0} reverted on chain")]
+    TransactionReverted(TxHash),
 
     #[error("deployed exchange contract ({1}) does not support {0}")]
     UnsupportedByContract(&'static str, ContractFeatures),

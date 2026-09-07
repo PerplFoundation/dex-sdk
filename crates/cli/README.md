@@ -75,6 +75,12 @@ These apply to every command.
 `order create` posts one order to the perpetual named by `--perp`. It is the
 only command that signs a transaction.
 
+Everything below the terminal - building the order, scaling it to the
+perpetual's precision, rejecting what the exchange would, simulating and
+submitting it - is the SDK's `types::OrderRequest::builder` and `exec::Call`,
+so the same order can be placed from a program without going through this
+command.
+
 ```bash
 # Bid 0.001 BTC at 65432.1 on mainnet BTC, resting on the book
 perpl-cli --perp 1 order create --private-key-path ~/.perpl/key \
@@ -114,7 +120,7 @@ pass explicitly.
   unlimited]
 - `--max-neg-pnl-collat-bps <BPS>`: Additional collateral, in basis points of
   notional, the exchange may draw to cover the position's negative unrealized
-  PnL on a fill [default: 0]
+  PnL on a fill [default: 1000]
 - `--request-id <ID>`: Client order ID to tag the order with [default: derived
   from the current time]
 - `--builder-id <ID>` / `--builder-fee <DECIMAL>`: Attribute the order to a

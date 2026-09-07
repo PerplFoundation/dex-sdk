@@ -19,7 +19,11 @@ use alloy::{
 };
 use anyhow::Context;
 use args::Cli;
-use perpl_sdk::{Chain, abi::dex, state::SnapshotBuilder, types};
+use perpl_sdk::{
+    Chain,
+    state::{self, SnapshotBuilder},
+    types,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -278,17 +282,8 @@ async fn resolve_account_id<P: Provider + Clone>(
     block_id: BlockId,
     account: types::AccountAddressOrID,
 ) -> anyhow::Result<types::AccountId> {
-    match account {
-        types::AccountAddressOrID::ID(id) => Ok(id),
-        types::AccountAddressOrID::Address(address) => {
-            Ok(dex::Exchange::new(chain.exchange(), provider)
-                .getAccountByAddr(address)
-                .block(block_id)
-                .call()
-                .await
-                .with_context(|| format!("resolving account address {}", address))?
-                .accountId
-                .to())
-        },
-    }
+    state::account_id(chain, provider, account, block_id)
+        .await
+        .with_context(|| format!("resolving account {:?}", account))?
+        .ok_or_else(|| anyhow::anyhow!("the exchange has no account for {:?}", account))
 }

@@ -30,7 +30,7 @@ use std::collections::{HashMap, hash_map};
 pub use account::*;
 use alloy::{
     eips::BlockId,
-    primitives::U256,
+    primitives::{Address, U256},
     providers::{CallItem, Provider},
 };
 pub use event::*;
@@ -46,14 +46,17 @@ pub use version::*;
 
 use crate::{
     Chain,
-    abi::dex::{
-        self,
-        Exchange::{
-            Order as OrderV0, OrderV2, PerpetualInfo, PerpetualInfoV2, PositionInfo,
-            PositionInfoV2, getExchangeInfoReturn,
+    abi::{
+        dex::{
+            self,
+            Exchange::{
+                Order as OrderV0, OrderV2, PerpetualInfo, PerpetualInfoV2, PositionInfo,
+                PositionInfoV2, getExchangeInfoReturn,
+            },
         },
+        errors::Exchange::ExchangeErrors,
     },
-    error::{DexError, ProviderError},
+    error::{DexError, ProviderError, RevertReason},
     num, types,
 };
 
@@ -867,6 +870,59 @@ pub async fn listed_perpetuals<P: Provider + Clone>(
     let instance = dex::Exchange::new(chain.exchange(), provider.clone());
     let features = ContractFeatures::probe(&instance, block_id, None).await;
     discover_perpetuals(&instance, &provider, block_id, features, chain.excluded_perpetuals()).await
+}
+
+/// Returns the exchange account of `address` at `block_id`, `None` if the
+/// exchange has never opened one for it.
+///
+/// The exchange opens an account on the first deposit, not on the first order,
+/// so an address that has never deposited resolves to `None` rather than to an
+/// empty account.
+pub async fn account_id_by_address<P: Provider>(
+    chain: &Chain,
+    provider: P,
+    address: Address,
+    block_id: BlockId,
+) -> Result<Option<types::AccountId>, DexError> {
+    match dex::Exchange::new(chain.exchange(), provider)
+        .getAccountByAddr(address)
+        .block(block_id)
+        .call()
+        .await
+    {
+        Ok(account) => Ok(Some(account.accountId.to())),
+        // The exchange reverts rather than returning zero for an address it
+        // has no account for, so that revert is the answer, not a failure
+        Err(err) => match DexError::Provider(err.into()) {
+            DexError::Provider(ProviderError::Reverted(reason))
+                if matches!(
+                    *reason,
+                    RevertReason::Known(ExchangeErrors::AccountDoesNotExist(_))
+                ) =>
+            {
+                Ok(None)
+            },
+            err => Err(err),
+        },
+    }
+}
+
+/// Returns the ID of an account given either as an ID or as an address,
+/// resolving an address through [`account_id_by_address`].
+///
+/// An account given by ID is taken as given and costs no call.
+pub async fn account_id<P: Provider>(
+    chain: &Chain,
+    provider: P,
+    account: types::AccountAddressOrID,
+    block_id: BlockId,
+) -> Result<Option<types::AccountId>, DexError> {
+    match account {
+        types::AccountAddressOrID::ID(id) => Ok(Some(id)),
+        types::AccountAddressOrID::Address(address) => {
+            account_id_by_address(chain, provider, address, block_id).await
+        },
+    }
 }
 
 /// Returns the IDs of every perpetual listed on the exchange, less the ones

@@ -108,16 +108,19 @@ pub enum Side {
 }
 
 impl Side {
+    /// This side in the SDK's terms.
+    pub fn order_side(self) -> types::OrderSide {
+        match self {
+            Side::Buy => types::OrderSide::Bid,
+            Side::Sell => types::OrderSide::Ask,
+        }
+    }
+
     /// Request type this side maps to. The exchange has no side flag - the
     /// request type carries both the direction and whether the order may only
-    /// reduce an existing position.
+    /// reduce an existing position, and the mapping is the SDK's.
     pub fn request_type(self, reduce_only: bool) -> types::RequestType {
-        match (self, reduce_only) {
-            (Side::Buy, false) => types::RequestType::OpenLong,
-            (Side::Sell, false) => types::RequestType::OpenShort,
-            (Side::Sell, true) => types::RequestType::CloseLong,
-            (Side::Buy, true) => types::RequestType::CloseShort,
-        }
+        types::RequestType::from_side(self.order_side(), reduce_only)
     }
 }
 
@@ -176,7 +179,11 @@ pub struct CreateOrderArgs {
 
     /// Additional collateral, in basis points of notional, the exchange may
     /// draw to cover the position's negative unrealized PnL on a fill
-    #[arg(long, default_value_t = 1000, value_name = "BPS")]
+    #[arg(
+        long,
+        default_value_t = types::DEFAULT_MAX_NEG_PNL_COLLAT_BPS,
+        value_name = "BPS",
+    )]
     pub max_neg_pnl_collat_bps: u16,
 
     /// Client order ID to tag the order with [default: derived from the
@@ -223,6 +230,24 @@ pub struct CreateOrderArgs {
 impl CreateOrderArgs {
     /// Request type the exchange expects for this order.
     pub fn request_type(&self) -> types::RequestType { self.side.request_type(self.reduce_only) }
+
+    /// The SDK builder for this order, on the perpetual given by `--perp`.
+    ///
+    /// Nothing is scaled, defaulted or checked here: what was typed is handed
+    /// over as it was typed, and [`types::OrderRequestBuilder::build`] is what
+    /// quantizes it against the perpetual and rejects what the exchange would.
+    pub fn to_builder(&self, perp_id: types::PerpetualId) -> types::OrderRequestBuilder {
+        types::OrderRequest::builder(perp_id, self.request_type(), self.price, self.size)
+            .leverage(self.leverage)
+            .expiry_block(self.expiry_block)
+            .max_matches(self.max_matches)
+            .max_neg_pnl_collat_bps(self.max_neg_pnl_collat_bps)
+            .request_id(self.request_id)
+            .post_only(self.post_only)
+            .immediate_or_cancel(self.ioc)
+            .fill_or_kill(self.fok)
+            .with_builder(self.builder())
+    }
 
     /// Signing key, from the file if one was named and otherwise from the
     /// argument or the environment.

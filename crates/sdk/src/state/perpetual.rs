@@ -744,6 +744,27 @@ impl Perpetual {
 impl Perpetual {
     pub fn for_test(id: types::PerpetualId) -> Self { Self::testing(id) }
 
+    /// Precision the perpetual quotes prices, sizes and leverage to, in
+    /// decimal places - what [`crate::types::OrderRequestBuilder`] quantizes
+    /// an order against.
+    pub fn with_precision(mut self, price: u8, size: u8, leverage: u8) -> Self {
+        self.price_converter = num::Converter::new(price);
+        self.size_converter = num::Converter::new(size);
+        self.leverage_converter = num::Converter::new(leverage);
+        self
+    }
+
+    /// Maximum leverage a position on the perpetual may open at.
+    pub fn with_initial_margin(mut self, initial_margin: UD64) -> Self {
+        self.initial_margin = initial_margin;
+        self
+    }
+
+    pub fn with_paused(mut self, is_paused: bool) -> Self {
+        self.is_paused = is_paused;
+        self
+    }
+
     pub fn with_last_price(mut self, price: UD64) -> Self {
         self.last_price = price;
         self

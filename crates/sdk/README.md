@@ -5,8 +5,8 @@ Rust SDK for the [Perpl](https://perpl.xyz) decentralized perpetuals exchange on
 
 It maintains an in-memory cache of on-chain exchange state — perpetual
 contracts, L3 order books, accounts and positions — kept up to date from the
-contract's event stream, and provides helpers for building order requests to
-send to the exchange.
+contract's event stream, and builds, simulates and submits orders to the
+exchange.
 
 ## Install
 
@@ -89,16 +89,49 @@ let trades = stream::trade(&chain, provider, raw).await?;
 
 ### Posting orders
 
-Build a `types::OrderRequest`, then `prepare_v2` it against the snapshot to get
-an order descriptor and its extension envelope for
-`abi::dex::Exchange::ExchangeInstance::execOrdersV2`. The snapshot supplies the
-per-perpetual decimal conversions, so requests are expressed in decimal prices,
-sizes and leverage rather than raw fixed-point values. `prepare` targets the V1
-entrypoints, which cannot carry builder attribution.
+`types::OrderRequest::builder` builds an order from decimals in human units -
+`65432.1`, not the fixed-point integer the contract stores. Its `build` step
+quantizes them against the perpetual's own price, lot and leverage precision,
+and rejects what the exchange would: a halted exchange, a paused perpetual,
+leverage above the cap, contradictory flags, builder attribution a deployed
+contract cannot carry, and a value finer than the perpetual accepts - which the
+contract itself would silently truncate.
 
-Note that the SDK currently doesn't sign or send transactions itself — it
-prepares the call data and leaves signing to your [alloy](https://alloy.rs)
-provider.
+`exec::Call` then takes it to the chain in four steps, so a client can print,
+confirm or abandon the order between any two of them:
+
+```rust
+use alloy::{network::EthereumWallet, providers::ProviderBuilder};
+use perpl_sdk::types::{OrderRequest, RequestType};
+
+// Bid 0.001 BTC at 65432.1, resting on the book, at the perpetual's maximum
+// leverage
+let request = OrderRequest::builder(perp_id, RequestType::OpenLong, price, size)
+    .post_only(true)
+    .build(&exchange)?;
+
+// Signing is the caller's: stack a wallet on the provider already in hand,
+// which keeps its throttling, retry and poll settings
+let signer = ProviderBuilder::new()
+    .wallet(EthereumWallet::from(wallet))
+    .connect_provider(provider);
+
+let call = request.call(&exchange, signer, from)?;
+call.simulate().await?;                    // would it revert?
+let sent = call.send().await?;             // signed and on the wire
+println!("submitted {}", sent.tx_hash());
+let receipt = sent.wait().await?;          // errors on a reverted status
+```
+
+`Call::submit` is those last three steps in one, for a client that needs
+nothing in between. A batch goes through `exec::orders_call`, and every
+operation the exchange takes on an order - posting, cancelling, changing,
+topping up collateral - is an `OrderRequest` through the same path.
+
+For lower-level control, `prepare_v2` still returns the order descriptor and
+its extension envelope for a hand-built
+`abi::dex::Exchange::ExchangeInstance::execOrdersV2` call, and `prepare`
+targets the V1 entrypoints, which cannot carry builder attribution.
 
 ## Features
 
@@ -137,7 +170,7 @@ More usage examples live in
 ## Related crates
 
 - [perpl-cli](https://crates.io/crates/perpl-cli): CLI for reading and tracing
-  exchange state and events.
+  exchange state and events, and for placing orders.
 
 ## License
 
