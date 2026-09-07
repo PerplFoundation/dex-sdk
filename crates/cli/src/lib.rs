@@ -174,16 +174,8 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
         Commands::Snapshot => snapshot::render(exchange.unwrap()),
         Commands::Order { command } => match command {
             OrderCommands::Create(args) => {
-                order::create(
-                    &chain,
-                    provider,
-                    &rpc,
-                    &exchange.unwrap(),
-                    cli.perp[0],
-                    args,
-                    &highlights,
-                )
-                .await?
+                order::create(&chain, provider, &exchange.unwrap(), cli.perp[0], args, &highlights)
+                    .await?
             },
         },
         Commands::Show { command } => match command {

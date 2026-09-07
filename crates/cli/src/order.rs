@@ -14,9 +14,7 @@ use alloy::{
     network::{EthereumWallet, TransactionBuilder},
     primitives::{Address, Bytes, utils::format_units},
     providers::{Provider, ProviderBuilder},
-    rpc::client::RpcClient,
     signers::local::PrivateKeySigner,
-    transports::layers::RetryBackoffLayer,
 };
 use anyhow::{Context as _, bail};
 use colored::Colorize;
@@ -40,7 +38,6 @@ use crate::{args::CreateOrderArgs, highlight::Highlights, tx};
 pub(crate) async fn create<P: Provider + Clone>(
     chain: &Chain,
     provider: P,
-    rpc: &str,
     exchange: &Exchange,
     perp_id: types::PerpetualId,
     args: &CreateOrderArgs,
@@ -77,17 +74,15 @@ pub(crate) async fn create<P: Provider + Clone>(
 
     print_summary(perp, args, &request, &desc, from, account_id);
 
-    // A wallet-bearing provider is built only for this command; every read
-    // above went through the shared read-only one
+    // The signing path is the shared provider with a wallet stacked on top of
+    // it, so it keeps the throttling, retry and poll-interval settings the read
+    // commands were given rather than dialling a second connection. The fillers
+    // sit above the wallet - they fill nonce, gas and chain ID before it signs -
+    // and the inner provider only ever sees the signed envelope, so its own
+    // fillers stay out of the way
     let wallet_provider = ProviderBuilder::new()
         .wallet(EthereumWallet::from(signer))
-        .connect_client(
-            RpcClient::builder()
-                .layer(RetryBackoffLayer::new(10, 100, 200))
-                .connect(rpc)
-                .await
-                .context("connecting to RPC to submit the order")?,
-        );
+        .connect_provider(provider.clone());
     let instance = dex::Exchange::new(chain.exchange(), &wallet_provider);
 
     // `execOrdersV2` carries the builder envelope; the V1 entrypoint has
