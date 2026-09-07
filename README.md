@@ -9,7 +9,7 @@
 ## Contributing
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full guide. Note that **all pull requests
-must target the `dev` branch — PRs directly into `main` are not accepted** (CI enforces this).
+must target the `main` and bump the version to be released. ** (CI enforces this).
 
 To contribute, the following make commands are provided.
 
