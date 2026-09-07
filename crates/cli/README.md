@@ -113,7 +113,7 @@ pass explicitly.
 
 - `--side <buy|sell>`: Side of the book to post on. With `--reduce-only`, `sell`
   becomes a close-long and `buy` a close-short
-- `--size <DECIMAL>` (alias `--amount`): Order size, in the perpetual's lot
+- `--size <DECIMAL>`: Order size, in the perpetual's lot
   precision
 - `--price <DECIMAL>`: Limit price, in the perpetual's price precision. Required
   even with `--ioc`, where it bounds how far the fill may run
@@ -166,7 +166,7 @@ perpl-cli --perp 1 order update --private-key-path ~/.perpl/key \
 
 - `--order-id <ID>`: Exchange ID of the order to change
 - `--price <DECIMAL>`: Price level to move it to [default: where it rests]
-- `--size <DECIMAL>` (alias `--amount`): Resting size to amend it to [default:
+- `--size <DECIMAL>` : Resting size to amend it to [default:
   the size it has]
 - `--expiry-block <BLOCK>`: Expiry block to set [default: the order's own].
   Required when the order has already expired
