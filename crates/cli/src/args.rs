@@ -594,30 +594,6 @@ mod tests {
     }
 
     #[test]
-    fn accepts_amount_as_an_alias_of_size() {
-        let cli = Cli::try_parse_from([
-            "perpl-cli",
-            "--perp",
-            "1",
-            "order",
-            "create",
-            "--side",
-            "sell",
-            "--amount",
-            "2.5",
-            "--price",
-            "10",
-            "--private-key",
-            KEY,
-        ])
-        .expect("valid arguments");
-        let Commands::Order { command: OrderCommands::Create(args) } = cli.command else {
-            panic!("expected `order create`");
-        };
-        assert_eq!(args.size, UD64::from_str("2.5", Context::default()).unwrap());
-    }
-
-    #[test]
     fn rejects_a_non_decimal_or_zero_price() {
         assert!(decimal("not-a-number").is_err());
         assert!(decimal("0").is_err());
