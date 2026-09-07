@@ -616,6 +616,8 @@ impl Exchange {
             // history only, where the listing carried resolved base fees rather
             // than a fee schedule key
             ExchangeEvents::ContractAdded(e) => {
+                // Per100K unconditionally: this event was retired in v1.1.7.4, so it
+                // can only be replayed from history that predates the redenomination.
                 let fee_converter = num::fee_converter();
                 vec![self.add_perpetual(
                     instant,
@@ -719,13 +721,17 @@ impl Exchange {
                 .collect(),
             ExchangeEvents::DcpBorrowThreshUpdated(_) => vec![],
             ExchangeEvents::DecreaseCollateralBeyondMarkPrice(_) => vec![],
+            // The unit these rates arrive in follows the deployed version, and the
+            // contract publishes `ContractVersionSet` BEFORE any schedule event in the
+            // upgrade transaction itself -- so reading `self.features` as the event is
+            // handled already reflects the cutover.
             ExchangeEvents::DefaultPerpFeeScheduleSet(e) => self.update_fee_schedule(
                 instant,
                 FeeSchedule::new(
                     FeeScheduleKey::Default,
                     e.takerFeesPer100K,
                     e.makerFeesPer100K,
-                    num::fee_converter(),
+                    self.features.fee_rate_converter(),
                 ),
             ),
             ExchangeEvents::DefaultRwaFeeScheduleSet(e) => self.update_fee_schedule(
@@ -734,7 +740,7 @@ impl Exchange {
                     FeeScheduleKey::RwaDefault,
                     e.takerFeesPer100K,
                     e.makerFeesPer100K,
-                    num::fee_converter(),
+                    self.features.fee_rate_converter(),
                 ),
             ),
             ExchangeEvents::DeleveragePositionListEmpty(_) => vec![],
@@ -761,10 +767,17 @@ impl Exchange {
                         FeeScheduleKey::from_raw(e.feeSchedId),
                         e.takerFeesPer100K,
                         e.makerFeesPer100K,
-                        num::fee_converter(),
+                        self.features.fee_rate_converter(),
                     ),
                 )
             },
+            // Witnesses of the v1.1.7.5 fee-unit redenomination, carried for
+            // completeness rather than state: `initializeV4` emits the id-appropriate
+            // `*FeeScheduleSet` alongside every `FeeScheduleMigrated`, and those arms
+            // are what move the registry -- already in the new unit, because
+            // `ContractVersionSet` came first in the same transaction.
+            ExchangeEvents::FeeScheduleMigrated(_) => vec![],
+            ExchangeEvents::FeeUnitRedenominated(_) => vec![],
             ExchangeEvents::FundingClampPctUpdated(_) => vec![],
             ExchangeEvents::FundingEventCompleted(e) => {
                 if let Some(perp) = self.perpetual(e.perpId) {

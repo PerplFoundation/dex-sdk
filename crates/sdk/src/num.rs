@@ -4,13 +4,29 @@ use fastnum::{
     decimal::{Context, Decimal, RoundingMode, UnsignedDecimal},
 };
 
-/// Scale of on-chain fee rates: the exchange expresses every fee rate in
-/// hundred-thousandths of the traded amount (`Per100K`, 1 = 0.1bps), exchange
-/// wide and independent of the perpetual contract.
+/// Scale of on-chain fee rates before v1.1.7.5: hundred-thousandths of the
+/// traded amount (`Per100K`, 1 = 0.1 bps), exchange wide and independent of the
+/// perpetual contract.
+///
+/// Still the unit of the per-order BUILDER fee at any contract version: the
+/// builder-code wire format is deliberately unchanged by the redenomination -
+/// the envelope, order storage, the views and every event carry `Per100K`, and
+/// the contract scales it internally at the point the fee is computed.
 pub const FEE_SCALE: u8 = 5;
 
-/// Converter for fee rates, see [`FEE_SCALE`].
+/// Scale of on-chain fee-SCHEDULE rates from v1.1.7.5: millionths of the traded
+/// amount (ppm, 1 = 0.01 bps).
+///
+/// Which of the two applies to a given deployment is
+/// [`crate::state::ContractFeatures::fee_rate_converter`], not a compile-time
+/// choice - the SDK indexes contracts on both sides of the upgrade.
+pub const FEE_SCALE_PPM: u8 = 6;
+
+/// Converter for `Per100K` rates, see [`FEE_SCALE`].
 pub fn fee_converter() -> Converter { Converter::new(FEE_SCALE) }
+
+/// Converter for ppm rates, see [`FEE_SCALE_PPM`].
+pub fn ppm_fee_converter() -> Converter { Converter::new(FEE_SCALE_PPM) }
 
 /// Fixed-point to decimal converter.
 #[derive(Clone, Copy, Debug, Default)]

@@ -14,7 +14,7 @@
 
 use alloy::{eips::BlockId, primitives::U256, providers::Provider};
 
-use crate::{abi::dex, types};
+use crate::{abi::dex, num, types};
 
 /// Version of the deployed exchange smart contract.
 ///
@@ -39,6 +39,14 @@ impl ContractVersion {
     /// builder attribution, the perpetual-existence bitmap - and
     /// `getContractVersion` itself.
     pub const BUILDER_CODES: Self = Self { major: 1, minor: 7, patch: 4 };
+
+    /// First version whose stored fee-schedule rates are in millionths (ppm)
+    /// rather than hundred-thousandths, and whose fills charge the schedule fee
+    /// on EVERY position size change rather than on additions only.
+    ///
+    /// The two arrived in the same release and neither has a signal of its own,
+    /// so they share the threshold.
+    pub const PPM_FEE_UNIT: Self = Self { major: 1, minor: 7, patch: 5 };
 
     pub const fn new(major: u64, minor: u64, patch: u64) -> Self { Self { major, minor, patch } }
 
@@ -67,6 +75,7 @@ pub struct ContractFeatures {
     keyed_fee_schedules: bool,
     builder_attribution: bool,
     perpetual_discovery: bool,
+    ppm_fee_unit: bool,
 }
 
 impl ContractFeatures {
@@ -79,6 +88,7 @@ impl ContractFeatures {
             keyed_fee_schedules: true,
             builder_attribution: true,
             perpetual_discovery: true,
+            ppm_fee_unit: true,
         }
     }
 
@@ -91,6 +101,7 @@ impl ContractFeatures {
             keyed_fee_schedules: builder_codes,
             builder_attribution: builder_codes,
             perpetual_discovery: builder_codes,
+            ppm_fee_unit: version >= ContractVersion::PPM_FEE_UNIT,
         }
     }
 
@@ -118,6 +129,24 @@ impl ContractFeatures {
     /// (`getPerpetualExistsBitmap`), so the set of listed perpetuals can be
     /// discovered on-chain instead of being configured.
     pub fn perpetual_discovery(&self) -> bool { self.perpetual_discovery }
+
+    /// Stored fee-schedule rates are in millionths (ppm) rather than
+    /// hundred-thousandths, and every position size change is charged the
+    /// schedule fee - a close or decrease on the removed notional, netted from
+    /// the exit proceeds, where earlier releases charged additions only.
+    ///
+    /// The per-order builder fee is NOT affected: it stays `Per100K` on the
+    /// wire, in order storage and in every event at any version.
+    pub fn ppm_fee_unit(&self) -> bool { self.ppm_fee_unit }
+
+    /// Converter for the fee-SCHEDULE rates this deployment reports, resolving
+    /// the v1.1.7.5 redenomination.
+    ///
+    /// An unknown version reads as the pre-upgrade unit, which is right for
+    /// every contract old enough not to report one.
+    pub fn fee_rate_converter(&self) -> num::Converter {
+        if self.ppm_fee_unit { num::ppm_fee_converter() } else { num::fee_converter() }
+    }
 
     /// Detects the feature set of the deployed contract at `block_id`.
     ///
@@ -151,6 +180,7 @@ impl ContractFeatures {
             keyed_fee_schedules: false,
             builder_attribution: false,
             perpetual_discovery: false,
+            ppm_fee_unit: false,
         };
         if let Some(perp_id) = probe_perpetual {
             features

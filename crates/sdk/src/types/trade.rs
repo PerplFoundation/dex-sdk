@@ -43,8 +43,9 @@ pub struct MakerFill {
     /// token).
     ///
     /// Included in [`Self::fee`], so consumers must not add it on top. Zero on
-    /// close/decrease fills and on contracts without builder attribution, even
-    /// when [`Self::builder`] is set.
+    /// contracts without builder attribution, and on close/decrease fills
+    /// before contract v1.1.7.5 (which charges every size-changing fill,
+    /// exits included) - even when [`Self::builder`] is set.
     #[debug("{builder_fee}")]
     pub builder_fee: UD64,
 }

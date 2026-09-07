@@ -21,8 +21,18 @@ pub const ORDER_EXTENSION_VERSION: u16 = 1;
 pub const MAX_ORDER_EXTENSION_BYTES: usize = 256;
 
 /// Highest per-order builder fee rate the contract accepts, in `Per100K`
-/// (`C._MAX_FEE`, i.e. 10%).
-pub const MAX_BUILDER_FEE_PER_100K: u32 = 10_000;
+/// (`C._MAX_FEE / C._FEE_UNIT_SCALE`, i.e. 1%).
+///
+/// The envelope's unit is `Per100K` at every contract version - the
+/// builder-code wire format is deliberately untouched by the v1.1.7.5 fee
+/// redenomination - but the ceiling moved with it: `C._MAX_FEE` kept its stored
+/// value while the denominator behind it went from 1e5 to 1e6, so the same
+/// number went from meaning 10% to meaning 1%.
+///
+/// Applied unconditionally, not per version: an envelope is encoded to be
+/// submitted against the head of the chain, and a rate above 1% is rejected
+/// there.
+pub const MAX_BUILDER_FEE_PER_100K: u32 = 1_000;
 
 /// Builder attribution of a single order: which builder submitted it and the
 /// additive fee rate that builder charges on it.
@@ -32,7 +42,8 @@ pub const MAX_BUILDER_FEE_PER_100K: u32 = 10_000;
 /// [`crate::state::OrderEventType::Filled`].
 ///
 /// A non-zero [`Self::builder_id`] does not imply a fee: attribution with a
-/// zero fee is valid and expected on close/decrease orders.
+/// zero fee is valid, and is what a client that wants attribution without a
+/// charge submits.
 #[derive(Clone, Copy, PartialEq, Eq, derive_more::Debug)]
 pub struct BuilderAttribution {
     builder_id: super::BuilderId,
