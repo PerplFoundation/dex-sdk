@@ -145,7 +145,7 @@ pub struct CreateOrderArgs {
     pub side: Side,
 
     /// Order size, a decimal in the perpetual's lot precision, eg. `0.001`
-    #[arg(long, visible_alias = "amount", value_name = "DECIMAL", value_parser = decimal)]
+    #[arg(long, value_name = "DECIMAL", value_parser = decimal)]
     pub size: UD64,
 
     /// Limit price, a decimal in the perpetual's price precision, eg.
