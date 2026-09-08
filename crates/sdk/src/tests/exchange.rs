@@ -6,8 +6,8 @@ use fastnum::{UD64, udec128};
 use crate::{
     Chain,
     abi::dex::Exchange::{
-        AccountCreated, ExchangeEvents, MaintenanceMarginFractionUpdated, MakerOrderFilled,
-        OrderPlaced, PositionClosed, PositionOpened, RecycleFeeToAccount,
+        AccountCreated, ContractAddedV2, ExchangeEvents, MaintenanceMarginFractionUpdated,
+        MakerOrderFilled, OrderPlaced, PositionClosed, PositionOpened, RecycleFeeToAccount,
     },
     num::Converter,
     state::{
@@ -23,9 +23,14 @@ use crate::{
 };
 
 const TEST_PERP_ID: u32 = 123456789;
+/// A contract the test chain is configured never to track.
+const EXCLUDED_PERP_ID: u32 = 30;
+/// A contract listed while the test runs, which nothing excludes.
+const LISTED_PERP_ID: u32 = 31;
 
-fn create_test_exchange() -> Exchange {
-    let chain = Chain::testnet();
+fn create_test_exchange() -> Exchange { create_test_exchange_on(Chain::testnet()) }
+
+fn create_test_exchange_on(chain: Chain) -> Exchange {
     let instant = StateInstant::new(0, 0);
     let collateral_converter = Converter::new(4);
 
@@ -196,6 +201,107 @@ fn smart_contract_position_closed_inner(request_id: RequestId) -> (Exchange, Opt
     let perp = perps.get(&TEST_PERP_ID).expect("UT");
     assert!(perp.get_order(OrderId::new(1).expect("UT")).is_some());
     (exchange, order_context)
+}
+
+/// A listing of `perp_id` on the exchange-wide default fee schedule. Only the
+/// identity and the decimals matter here; the rest of the parameters are left
+/// at zero.
+fn event_contract_added(perp_id: u32) -> ExchangeEvents {
+    ExchangeEvents::ContractAddedV2(ContractAddedV2 {
+        perpId: U256::from(perp_id),
+        name: format!("PERP{perp_id}"),
+        symbol: format!("P{perp_id}"),
+        status: 0,
+        basePricePNS: U256::ZERO,
+        priceDecimals: U256::from(2),
+        lotDecimals: U256::from(2),
+        initMarginFracHdths: U256::ZERO,
+        maintMarginFracHdths: U256::ZERO,
+        maxOpenInterestLNS: U256::ZERO,
+        unityDescentThreshHdths: U256::ZERO,
+        overColDescentThreshHdths: U256::ZERO,
+        dcpBorrowThreshHdths: U256::ZERO,
+        priceTolPer100K: U256::ZERO,
+        marginTol: U256::ZERO,
+        marginTolDecimals: U256::ZERO,
+        refPriceMaxAgeSec: U256::ZERO,
+        absFundingClampPctPer100K: U256::ZERO,
+        permCancelMinOrders: U256::ZERO,
+        permCancelSegment: U256::ZERO,
+        insAmtPer100K: U256::ZERO,
+        liqInsAmtPer100K: U256::ZERO,
+        liqUserAmtPer100K: U256::ZERO,
+        btlRestrictBuyers: false,
+        btlPriceThreshPer100K: U256::ZERO,
+        btlInsAmtPer100K: U256::ZERO,
+        btlUserAmtPer100K: U256::ZERO,
+        btlBuyerAmtPer100K: U256::ZERO,
+        numPerpetuals: U256::ZERO,
+        perpFeeSchedId: FeeScheduleKey::Default.to_raw(),
+    })
+}
+
+fn event_maker_order_filled_on(perp_id: u32, account_id: u64, balance_cns: u64) -> ExchangeEvents {
+    ExchangeEvents::MakerOrderFilled(MakerOrderFilled {
+        perpId: U256::from(perp_id),
+        accountId: U256::from(account_id),
+        orderId: U256::from(1),
+        pricePNS: U256::ZERO,
+        lotLNS: U256::ZERO,
+        feeCNS: U256::ZERO,
+        lockedBalanceCNS: U256::ZERO,
+        amountCNS: I256::ZERO,
+        balanceCNS: U256::from(balance_cns),
+    })
+}
+
+/// An excluded contract stays untracked when the block that LISTS it is
+/// indexed, which is the only way it could re-enter the tracked set after
+/// discovery left it out.
+#[test]
+fn test_excluded_perpetual_is_not_tracked_when_listed() {
+    let chain = Chain::testnet().with_excluded_perpetuals(vec![EXCLUDED_PERP_ID]);
+    let mut exchange = create_test_exchange_on(chain);
+    let mut order_context = None;
+
+    apply_event(&mut exchange, event_contract_added(EXCLUDED_PERP_ID), &mut order_context, 0);
+    apply_event(&mut exchange, event_contract_added(LISTED_PERP_ID), &mut order_context, 1);
+
+    assert!(
+        !exchange.perpetuals().contains_key(&EXCLUDED_PERP_ID),
+        "an excluded contract must not be tracked even once its listing is indexed"
+    );
+    assert!(
+        exchange.perpetuals().contains_key(&LISTED_PERP_ID),
+        "a listing that nothing excludes must still be tracked"
+    );
+}
+
+/// Excluding a contract drops its own state, not the account state that its
+/// events happen to carry: a fill reports the account's exchange-wide balance,
+/// and an exclusion that swallowed it would freeze the balance of every account
+/// trading that contract.
+#[test]
+fn test_excluded_perpetual_still_applies_account_balance() {
+    let chain = Chain::testnet().with_excluded_perpetuals(vec![EXCLUDED_PERP_ID]);
+    let mut exchange = create_test_exchange_on(chain);
+    let mut order_context = None;
+
+    apply_event(&mut exchange, event_account_created(1), &mut order_context, 0);
+    apply_event(&mut exchange, event_contract_added(EXCLUDED_PERP_ID), &mut order_context, 1);
+    apply_event(
+        &mut exchange,
+        event_maker_order_filled_on(EXCLUDED_PERP_ID, 1, 50_000),
+        &mut order_context,
+        2,
+    );
+
+    // Converter::new(4): 50_000 collateral units is 5.0.
+    assert_eq!(
+        exchange.accounts().get(&1).expect("UT").balance(),
+        udec128!(5.0),
+        "a fill on an excluded contract must still apply the account balance it reports"
+    );
 }
 
 #[test]

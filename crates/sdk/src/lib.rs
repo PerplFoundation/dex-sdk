@@ -135,19 +135,31 @@ impl Chain {
         self
     }
 
-    /// Perpetual contracts to leave out of on-chain discovery.
+    /// Perpetual contracts never to track.
     ///
-    /// Applies to discovery *only*: an explicitly configured
-    /// [`Chain::perpetuals`] list is taken as given, exclusions and all, since
-    /// naming a contract is a clearer statement of intent than the default set
-    /// it would otherwise be filtered out of.
+    /// Applies both to on-chain discovery and to indexing: a listing the
+    /// snapshot leaves out is also left out when a `ContractAdded` event
+    /// announces it, whether that arrives live or from replayed history. The
+    /// contract otherwise re-entered the tracked set the moment it was
+    /// indexed, which made an exclusion hold only for as long as the process
+    /// did not see the block that listed it.
+    ///
+    /// An excluded contract has no [`state::Perpetual`], so it has no book, no
+    /// positions and no mark price. Its *accounts* are unaffected: a fill or a
+    /// liquidation on an excluded contract still carries the account's
+    /// exchange-wide balance, and that is still applied.
+    ///
+    /// An explicitly configured [`Chain::perpetuals`] list is still taken as
+    /// given at snapshot time, exclusions and all, since naming a contract is a
+    /// clearer statement of intent than the default set it would otherwise be
+    /// filtered out of.
     pub fn excluded_perpetuals(&self) -> &[types::PerpetualId] { &self.excluded_perpetuals }
 
-    /// Same chain, skipping the given perpetual contracts when discovering the
-    /// set to track - see [`Chain::excluded_perpetuals`].
+    /// Same chain, never tracking the given perpetual contracts - see
+    /// [`Chain::excluded_perpetuals`].
     ///
     /// Replaces the chain's default exclusions rather than adding to them, so
-    /// passing an empty list discovers everything the exchange lists.
+    /// passing an empty list tracks everything the exchange lists.
     pub fn with_excluded_perpetuals(mut self, perpetuals: Vec<types::PerpetualId>) -> Self {
         self.excluded_perpetuals = perpetuals;
         self
