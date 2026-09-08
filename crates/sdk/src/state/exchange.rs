@@ -615,6 +615,7 @@ impl Exchange {
             // Superseded by `ContractAddedV2` in v1.1.7.4, replayed from earlier
             // history only, where the listing carried resolved base fees rather
             // than a fee schedule key
+            ExchangeEvents::ContractAdded(e) if self.is_excluded(e.perpId) => vec![],
             ExchangeEvents::ContractAdded(e) => {
                 // Per100K unconditionally: this event was retired in v1.1.7.4, so it
                 // can only be replayed from history that predates the redenomination.
@@ -639,6 +640,10 @@ impl Exchange {
                     ),
                 )]
             },
+            // Checked before the fee-schedule resolution below, so an excluded
+            // contract cannot fail the block over a schedule that is only
+            // needed to track it.
+            ExchangeEvents::ContractAddedV2(e) if self.is_excluded(e.perpId) => vec![],
             ExchangeEvents::ContractAddedV2(e) => {
                 // The listing reports the contract's fee schedule KEY, the rates
                 // being resolvable from it - a new contract is placed on the
@@ -2385,6 +2390,25 @@ impl Exchange {
 
     fn perpetual(&mut self, id: U256) -> Option<&mut Perpetual> {
         self.perpetuals.get_mut(&id.to::<types::PerpetualId>())
+    }
+
+    /// Whether [`Chain::excluded_perpetuals`] leaves this contract untracked.
+    ///
+    /// Only the `ContractAdded*` arms consult this. Every other event that
+    /// names a perpetual reaches its state through [`Self::perpetual`],
+    /// [`Self::order`] or [`Self::account_perpetual`], all of which already
+    /// yield nothing for a contract that was never inserted — the same path an
+    /// event takes when [`Chain::perpetuals`] names a deliberate subset. That
+    /// is also why exclusion must NOT be applied by dropping whole events:
+    /// perpetual-scoped events such as `MakerOrderFilled` and
+    /// `PositionLiquidated` also carry the account's exchange-wide
+    /// `balanceCNS`, and those updates are applied outside the per-perpetual
+    /// lookup precisely so that an untracked contract does not silently freeze
+    /// the balance of every account that trades it.
+    fn is_excluded(&self, perp_id: U256) -> bool {
+        self.chain
+            .excluded_perpetuals()
+            .contains(&perp_id.to::<types::PerpetualId>())
     }
 
     fn account_perpetual(
