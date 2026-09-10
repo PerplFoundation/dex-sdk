@@ -21,7 +21,11 @@ tabled = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [dev-dependencies]
-alloy = { workspace = true, features = ["node-bindings"] }
+alloy = { workspace = true, features = [
+  "network",
+  "node-bindings",
+  "signer-local",
+] }
 tabled = { workspace = true }
 tokio = { workspace = true }
 

@@ -4,6 +4,7 @@ mod block;
 mod book;
 mod highlight;
 mod mms;
+mod order;
 mod snapshot;
 mod trace;
 mod trades;
@@ -18,7 +19,11 @@ use alloy::{
 };
 use anyhow::Context;
 use args::Cli;
-use perpl_sdk::{Chain, abi::dex, state::SnapshotBuilder, types};
+use perpl_sdk::{
+    Chain,
+    state::{self, SnapshotBuilder},
+    types,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -102,6 +107,15 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let builder = match &cli.command {
         Commands::Block { block_number: _ } => None,
         Commands::Snapshot | Commands::Trace => Some(builder),
+        Commands::Order { .. } => {
+            if cli.perp.len() != 1 {
+                return Err(anyhow::anyhow!("exactly one perp should be provided, see `--perp`"));
+            }
+            // Placing an order needs the perpetual's scalers and the
+            // contract's feature set, not the book-wide position set the
+            // default snapshot would pull
+            Some(builder.with_accounts(cli.account.clone()))
+        },
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades: _ } => {
                 if cli.account.len() != 1 {
@@ -162,6 +176,10 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
             block::render(&chain, provider, *block_number, &highlights).await?
         },
         Commands::Snapshot => snapshot::render(exchange.unwrap()),
+        Commands::Order { command } => {
+            order::run(&chain, provider, &exchange.unwrap(), cli.perp[0], command, &highlights)
+                .await?
+        },
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades } => {
                 account::render(
@@ -262,17 +280,8 @@ async fn resolve_account_id<P: Provider + Clone>(
     block_id: BlockId,
     account: types::AccountAddressOrID,
 ) -> anyhow::Result<types::AccountId> {
-    match account {
-        types::AccountAddressOrID::ID(id) => Ok(id),
-        types::AccountAddressOrID::Address(address) => {
-            Ok(dex::Exchange::new(chain.exchange(), provider)
-                .getAccountByAddr(address)
-                .block(block_id)
-                .call()
-                .await
-                .with_context(|| format!("resolving account address {}", address))?
-                .accountId
-                .to())
-        },
-    }
+    state::account_id(chain, provider, account, block_id)
+        .await
+        .with_context(|| format!("resolving account {:?}", account))?
+        .ok_or_else(|| anyhow::anyhow!("the exchange has no account for {:?}", account))
 }

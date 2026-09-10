@@ -8,8 +8,14 @@
 //! [`stream::raw`] to catch up with the recent state and keep snapshot
 //! up to date.
 //!
-//! Use [`types::OrderRequest`] to prepare order requests to send them with
-//! [`crate::abi::dex::Exchange::ExchangeInstance::execOrdersV2`].
+//! Use [`types::OrderRequest::builder`] to build an order from decimals in
+//! human units - it quantizes them against the perpetual's own precision and
+//! rejects what the exchange would - then [`exec::Call`] to simulate, send and
+//! wait for it. Signing stays with the caller's own wallet-carrying provider.
+//!
+//! [`types::OrderRequest::cancel`] and [`types::OrderRequest::change`] go the
+//! same way, and read what the contract wants about a resting order off the
+//! snapshot's own book rather than asking the caller to restate it.
 //!
 //! The deployed contract may lag behind the revision the SDK targets, so the
 //! snapshot detects the contract's [`state::ContractFeatures`] and degrades
@@ -45,6 +51,7 @@
 
 pub mod abi;
 pub mod error;
+pub mod exec;
 pub mod num;
 pub mod state;
 pub mod stream;

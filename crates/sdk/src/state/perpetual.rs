@@ -744,6 +744,27 @@ impl Perpetual {
 impl Perpetual {
     pub fn for_test(id: types::PerpetualId) -> Self { Self::testing(id) }
 
+    /// Precision the perpetual quotes prices, sizes and leverage to, in
+    /// decimal places - what [`crate::types::OrderRequestBuilder`] quantizes
+    /// an order against.
+    pub fn with_precision(mut self, price: u8, size: u8, leverage: u8) -> Self {
+        self.price_converter = num::Converter::new(price);
+        self.size_converter = num::Converter::new(size);
+        self.leverage_converter = num::Converter::new(leverage);
+        self
+    }
+
+    /// Maximum leverage a position on the perpetual may open at.
+    pub fn with_initial_margin(mut self, initial_margin: UD64) -> Self {
+        self.initial_margin = initial_margin;
+        self
+    }
+
+    pub fn with_paused(mut self, is_paused: bool) -> Self {
+        self.is_paused = is_paused;
+        self
+    }
+
     pub fn with_last_price(mut self, price: UD64) -> Self {
         self.last_price = price;
         self
@@ -751,6 +772,17 @@ impl Perpetual {
 
     pub fn with_last_price_timestamp(mut self, timestamp: u64) -> Self {
         self.last_price_timestamp = timestamp;
+        self
+    }
+
+    /// One resting order of `r#type`, for testing what a cancel or a change
+    /// does with an order that is already on the book.
+    pub fn with_order(mut self, r#type: types::OrderType, price: UD64, size: UD64) -> Self {
+        use std::num::NonZeroU16;
+        let order_id =
+            NonZeroU16::new((self.l3_book.total_orders() + 1) as u16).expect("order id overflow");
+        let order = Order::for_l3_testing(r#type, price, size, 0, order_id, 0);
+        self.l3_book.add_order(&order).expect("failed to add order");
         self
     }
 
