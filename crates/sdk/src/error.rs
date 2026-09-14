@@ -76,9 +76,6 @@ pub enum DexError {
     #[error("perp {0} order parse error: {1}")]
     OrderParse(types::PerpetualId, OrderParseError),
 
-    #[error("invalid order request: {0}")]
-    OrderRequest(#[from] types::OrderRequestError),
-
     #[error("perpetual {0} is not tracked")]
     PerpetualNotTracked(types::PerpetualId),
 

@@ -26,9 +26,8 @@ use colored::Colorize;
 use fastnum::UD64;
 use perpl_sdk::{
     Chain,
-    error::DexError,
     state::{self, Exchange, Order, Perpetual},
-    types::{self, OrderRequest, OrderRequestError, RequestType},
+    types::{self, OrderRequest, OrderRequestBuilderError, RequestType},
 };
 
 use crate::{
@@ -155,38 +154,40 @@ async fn submit<P: Provider + Clone>(
 /// Renders a rejected request in the terms the caller typed it in: their own
 /// flags, and the perpetual's symbol rather than only its ID.
 ///
-/// Anything that is not a request fault - an untracked perpetual, an order
-/// that is not on the book, a contract without builder attribution, an RPC
-/// failure - already reads well enough as the SDK reports it.
-fn describe(err: DexError, exchange: &Exchange) -> anyhow::Error {
-    let DexError::OrderRequest(fault) = &err else {
-        return err.into();
-    };
-    match fault {
+/// Anything the caller cannot have typed wrong - an untracked perpetual, an
+/// order that is not on the book, a contract without builder attribution -
+/// already reads well enough as the SDK reports it, and falls through.
+fn describe(fault: OrderRequestBuilderError, exchange: &Exchange) -> anyhow::Error {
+    match &fault {
         // The SDK's message opens with the field it faulted on - `price`,
         // `size`, `leverage` - which is the flag the caller typed, less the
         // dashes
-        OrderRequestError::Precision { .. } => anyhow::anyhow!("--{}", fault),
-        OrderRequestError::ExchangeHalted => anyhow::anyhow!("{}, no order can be placed", fault),
-        OrderRequestError::PerpetualPaused(perp_id) => {
+        OrderRequestBuilderError::Precision { .. } => anyhow::anyhow!("--{}", fault),
+        OrderRequestBuilderError::ExchangeHalted => {
+            anyhow::anyhow!("{}, no order can be placed", fault)
+        },
+        OrderRequestBuilderError::PerpetualPaused(perp_id) => {
             anyhow::anyhow!("{} ({}), no order can be placed", fault, symbol(exchange, *perp_id))
         },
-        OrderRequestError::LeverageTooHigh { perp, .. } => {
+        OrderRequestBuilderError::LeverageTooHigh { perp, .. } => {
             anyhow::anyhow!("{} ({})", fault, symbol(exchange, *perp))
         },
         // The one contradictory pair the exchange has; the explanation is
         // specific to it, so a future pair falls through to the SDK's message
-        OrderRequestError::ContradictoryFlags("post-only", "fill-or-kill") => anyhow::anyhow!(
-            "--post-only and --fok contradict each other: a post-only order never fills on entry",
-        ),
-        OrderRequestError::NothingToChange(order_id) => anyhow::anyhow!(
+        OrderRequestBuilderError::ContradictoryFlags("post-only", "fill-or-kill") => {
+            anyhow::anyhow!(
+                "--post-only and --fok contradict each other: a post-only order never fills on \
+                 entry",
+            )
+        },
+        OrderRequestBuilderError::NothingToChange(order_id) => anyhow::anyhow!(
             "nothing to change about order {}: pass `--price`, `--size` or `--expiry-block`",
             order_id,
         ),
-        OrderRequestError::ChangeExpiredOrderNeedsNewExpiry(_) => {
+        OrderRequestBuilderError::ChangeExpiredOrderNeedsNewExpiry(_) => {
             anyhow::anyhow!("{}, pass `--expiry-block`", fault)
         },
-        _ => err.into(),
+        _ => fault.into(),
     }
 }
 

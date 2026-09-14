@@ -14,7 +14,7 @@
 
 use alloy::{contract::RawCallBuilder, providers::Provider, sol_types::SolCall};
 
-use crate::{abi::dex, error::DexError, state, types};
+use crate::{abi::dex, state, types};
 
 /// Call executing `requests` in order against `exchange`.
 ///
@@ -31,7 +31,7 @@ pub fn orders_call<P: Provider>(
     provider: P,
     requests: &[types::OrderRequest],
     revert_on_fail: bool,
-) -> Result<RawCallBuilder<P>, DexError> {
+) -> Result<RawCallBuilder<P>, types::OrderRequestBuilderError> {
     let attributed = requests
         .iter()
         .any(|request| request.builder_attribution().is_some());

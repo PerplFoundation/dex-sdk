@@ -191,7 +191,10 @@ async fn test_contract_upgrade_mid_stream() {
         .with_builder(builder)
         .prepare_v2(&state.snapshot().clone());
     assert!(
-        matches!(rejected, Err(perpl_sdk::error::DexError::UnsupportedByContract(..))),
+        matches!(
+            rejected,
+            Err(perpl_sdk::types::OrderRequestBuilderError::UnsupportedByContract(..))
+        ),
         "builder attribution must not be submitted to a contract that cannot carry it",
     );
 
