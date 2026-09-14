@@ -233,11 +233,14 @@ fn print_summary(
                     amendment_of(resting.map(Order::expiry_block), expiry),
                 );
             }
-            if let Some(block) = request.last_exec_block() {
-                println!("  Only if unfilled since block {}", block);
-            }
         },
         _ => print_order(perp, request),
+    }
+
+    // A deadline on the request rather than on the order, so it reads the same
+    // whichever of them is being signed
+    if let Some(block) = request.last_exec_block() {
+        println!("  Not after       block {}", block);
     }
 
     // The request is the authority on the client order ID, which it defaulted

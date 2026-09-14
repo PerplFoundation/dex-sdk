@@ -224,6 +224,7 @@ impl CreateOrderArgs {
             .expiry_block(self.expiry_block)
             .max_matches(self.max_matches)
             .max_neg_pnl_collat_bps(self.max_neg_pnl_collat_bps)
+            .last_exec_block(self.tx.last_exec_block)
             .request_id(self.tx.request_id)
             .post_only(self.post_only)
             .immediate_or_cancel(self.ioc)
@@ -258,7 +259,9 @@ impl CancelOrderArgs {
     /// The SDK builder for this cancellation, on the perpetual given by
     /// `--perp`.
     pub fn to_builder(&self, perp_id: types::PerpetualId) -> types::OrderRequestBuilder {
-        types::OrderRequest::cancel(perp_id, self.order_id).request_id(self.tx.request_id)
+        types::OrderRequest::cancel(perp_id, self.order_id)
+            .last_exec_block(self.tx.last_exec_block)
+            .request_id(self.tx.request_id)
     }
 }
 
@@ -287,10 +290,6 @@ pub struct ChangeOrderArgs {
     #[arg(long)]
     pub expiry_block: Option<u64>,
 
-    /// Only apply the change if the order has not executed since this block
-    #[arg(long, value_name = "BLOCK")]
-    pub last_exec_block: Option<u64>,
-
     #[command(flatten)]
     pub tx: OrderTxArgs,
 }
@@ -308,7 +307,7 @@ impl ChangeOrderArgs {
             .price(self.price)
             .size(self.size)
             .expiry_block(self.expiry_block)
-            .last_exec_block(self.last_exec_block)
+            .last_exec_block(self.tx.last_exec_block)
             .request_id(self.tx.request_id)
     }
 }
@@ -333,6 +332,13 @@ pub struct OrderTxArgs {
     /// over `--private-key` and `PERPL_PRIVATE_KEY`
     #[arg(long, value_name = "PATH")]
     pub private_key_path: Option<PathBuf>,
+
+    /// Last block the exchange may execute this request on, after which it is
+    /// rejected rather than applied [default: no deadline]. Guards against a
+    /// transaction sitting in the mempool and landing against a book that has
+    /// moved on
+    #[arg(long, value_name = "BLOCK")]
+    pub last_exec_block: Option<u64>,
 
     /// Gas limit for the transaction [default: estimated]
     #[arg(long)]

@@ -423,8 +423,8 @@ impl OrderRequest {
     /// assign one.
     pub fn order_id(&self) -> Option<OrderId> { self.order_id }
 
-    /// Block a [`RequestType::Change`] is conditioned on the order not having
-    /// executed since.
+    /// Last block the exchange may execute this request on, if the caller set
+    /// one.
     pub fn last_exec_block(&self) -> Option<u64> { self.last_exec_block }
 
     pub fn expiry_block(&self) -> Option<u64> { self.expiry_block }
@@ -586,8 +586,15 @@ impl OrderRequestBuilder {
         self
     }
 
-    /// Block a [`RequestType::Change`] is conditioned on the order having last
-    /// executed at.
+    /// Last block the exchange may execute this request on [default: no
+    /// deadline].
+    ///
+    /// A staleness guard on the *request*, not on the order it names, and it
+    /// applies to every request type: past this block the contract rejects the
+    /// operation rather than applying it, so a transaction that sat in the
+    /// mempool cannot land against a book that has moved on. Not to be
+    /// confused with [`Self::expiry_block`], which is how long the order rests
+    /// once it is on the book.
     pub fn last_exec_block(mut self, block: impl Into<Option<u64>>) -> Self {
         self.last_exec_block = block.into();
         self

@@ -170,8 +170,6 @@ perpl-cli --perp 1 order update --private-key-path ~/.perpl/key \
   the size it has]
 - `--expiry-block <BLOCK>`: Expiry block to set [default: the order's own].
   Required when the order has already expired
-- `--last-exec-block <BLOCK>`: Only apply the change if the order has not
-  executed since this block
 
 Sizing *down* keeps the order's queue priority; sizing up sends it to the back
 of its level. The summary printed before signing shows each value the change
@@ -190,6 +188,12 @@ signed.
 - `--private-key-path <PATH>`: File to read the signing key from, whitespace
   trimmed. Takes precedence over the other two sources
 - `--private-key <KEY>`: Key to sign with, or `PERPL_PRIVATE_KEY`
+- `--last-exec-block <BLOCK>`: Last block the exchange may execute the request
+  on, after which it is rejected rather than applied [default: no deadline].
+  A guard on the *request*, not on the order it names: it stops a transaction
+  that sat in the mempool from landing against a book that has moved on. Not to
+  be confused with `--expiry-block`, which is how long an order rests once it
+  is on the book
 - `--gas-limit <GAS>`: Gas limit [default: estimated]
 - `--dry-run`: Build and simulate, print what would be sent, then stop
 - `-y`, `--yes`, `--auto-confirm`: Submit without the confirmation prompt
