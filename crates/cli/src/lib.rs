@@ -13,6 +13,7 @@ mod tx;
 use std::time::Duration;
 
 use alloy::{
+    primitives::Address,
     providers::{Provider, ProviderBuilder},
     rpc::{client::RpcClient, types::BlockId},
     transports::layers::{RetryBackoffLayer, ThrottleLayer},
@@ -21,7 +22,9 @@ use anyhow::Context;
 use args::Cli;
 use perpl_sdk::{
     Chain,
-    state::{self, SnapshotBuilder},
+    abi::{dex, errors::Exchange::ExchangeErrors},
+    error::{DexError, ProviderError, RevertReason},
+    state::SnapshotBuilder,
     types,
 };
 use tokio_util::sync::CancellationToken;
@@ -278,14 +281,59 @@ async fn resolve_makers<P: Provider + Clone>(
 
 /// Resolves an account given as an address to its exchange ID, leaving an
 /// account already given by ID alone.
+///
+/// An account given by ID is taken as given and costs no call.
 async fn resolve_account_id<P: Provider + Clone>(
     chain: &Chain,
     provider: P,
     block_id: BlockId,
     account: types::AccountAddressOrID,
 ) -> anyhow::Result<types::AccountId> {
-    state::account_id(chain, provider, account, block_id)
+    let id = match account {
+        types::AccountAddressOrID::ID(id) => Some(id),
+        types::AccountAddressOrID::Address(address) => {
+            account_id_by_address(chain, provider, address, block_id)
+                .await
+                .with_context(|| format!("resolving account {:?}", account))?
+        },
+    };
+    id.ok_or_else(|| anyhow::anyhow!("the exchange has no account for {:?}", account))
+}
+
+/// Returns the exchange account of `address` at `block_id`, `None` if the
+/// exchange has never opened one for it.
+///
+/// The exchange opens an account on the first deposit, not on the first order,
+/// so an address that has never deposited resolves to `None` rather than to an
+/// empty account.
+///
+/// Lives here rather than in the SDK's `state` module: that module is a cache
+/// of exchange state, and this asks the contract a question.
+async fn account_id_by_address<P: Provider>(
+    chain: &Chain,
+    provider: P,
+    address: Address,
+    block_id: BlockId,
+) -> Result<Option<types::AccountId>, DexError> {
+    match dex::Exchange::new(chain.exchange(), provider)
+        .getAccountByAddr(address)
+        .block(block_id)
+        .call()
         .await
-        .with_context(|| format!("resolving account {:?}", account))?
-        .ok_or_else(|| anyhow::anyhow!("the exchange has no account for {:?}", account))
+    {
+        Ok(account) => Ok(Some(account.accountId.to())),
+        // The exchange reverts rather than returning zero for an address it
+        // has no account for, so that revert is the answer, not a failure
+        Err(err) => match DexError::Provider(err.into()) {
+            DexError::Provider(ProviderError::Reverted(reason))
+                if matches!(
+                    *reason,
+                    RevertReason::Known(ExchangeErrors::AccountDoesNotExist(_))
+                ) =>
+            {
+                Ok(None)
+            },
+            err => Err(err),
+        },
+    }
 }
