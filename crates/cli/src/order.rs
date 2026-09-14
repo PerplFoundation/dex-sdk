@@ -109,26 +109,22 @@ async fn submit<P: Provider + Clone>(
         .wallet(EthereumWallet::from(signer))
         .connect_provider(provider.clone());
 
-    let mut call = request.call(exchange, wallet_provider, from)?;
+    // The sender is set here rather than left to the wallet filler: the filler
+    // supplies it when the transaction is signed, but the simulation below is
+    // an `eth_call` that goes out before any of that, and the exchange decides
+    // what an order may do from `msg.sender`
+    let mut call = request.call(exchange, wallet_provider)?.from(from);
     if let Some(gas) = args.gas_limit {
-        call = call.with_gas_limit(gas);
+        call = call.gas(gas);
     }
 
-    call.simulate()
+    call.call()
         .await
         .context("simulating the request - it would revert on chain")?;
     println!("{}", "Simulated without reverting.".green());
 
     if args.dry_run {
-        println!(
-            "\n{}\n  {}",
-            "Dry run, nothing was sent. Calldata:".yellow(),
-            call.transaction()
-                .input
-                .input()
-                .cloned()
-                .unwrap_or_default(),
-        );
+        println!("\n{}\n  {}", "Dry run, nothing was sent. Calldata:".yellow(), call.calldata(),);
         return Ok(());
     }
 
@@ -137,12 +133,18 @@ async fn submit<P: Provider + Clone>(
         return Ok(());
     }
 
-    let sent = call.send().await.context("submitting the transaction")?;
-    let tx_hash = sent.tx_hash();
+    let pending = call.send().await.context("submitting the transaction")?;
+    let tx_hash = *pending.tx_hash();
     println!("Submitted {}, waiting for the receipt...", tx_hash.to_string().bright_blue());
-    sent.wait()
+    // A successful receipt only says the transaction executed; what the
+    // exchange did with the request is in the events `tx::render` reads below
+    let receipt = pending
+        .get_receipt()
         .await
         .context("waiting for the transaction receipt")?;
+    if !receipt.status() {
+        bail!("transaction {} reverted on chain", tx_hash);
+    }
 
     // The events say what the exchange actually did with the request -
     // accepted, partially filled, rejected - which the receipt status alone

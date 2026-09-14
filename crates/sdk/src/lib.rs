@@ -10,8 +10,10 @@
 //!
 //! Use [`types::OrderRequest::builder`] to build an order from decimals in
 //! human units - it quantizes them against the perpetual's own precision and
-//! rejects what the exchange would - then [`exec::Call`] to simulate, send and
-//! wait for it. Signing stays with the caller's own wallet-carrying provider.
+//! rejects what the exchange would - then [`types::OrderRequest::call`] for a
+//! builder to simulate, send and wait on. Signing stays with the caller: the
+//! SDK never holds a key, and leaves the sender for the provider's own fillers
+//! to supply.
 //!
 //! [`types::OrderRequest::cancel`] and [`types::OrderRequest::change`] go the
 //! same way, and read what the contract wants about a resting order off the

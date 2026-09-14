@@ -1,13 +1,18 @@
 //! End-to-end coverage of posting an order through the SDK alone.
 //!
 //! Builds the order the way a client does - decimals in human units, checked
-//! and scaled against the perpetual - then simulates, sends and waits through
-//! [`perpl_sdk::exec::Call`], against an exchange deployed on anvil. No CLI is
-//! involved: this is the path any client takes.
+//! and scaled against the perpetual - then simulates, sends and waits on the
+//! builder the SDK hands back, against an exchange deployed on anvil. No CLI
+//! is involved: this is the path any client takes.
+//!
+//! The signing is alloy's, not the SDK's: a local key is what a test can
+//! drive, and the SDK is indifferent to which of alloy's signers fills it.
 
 use alloy::{
+    contract::RawCallBuilder,
     network::EthereumWallet,
     providers::{Provider, ProviderBuilder},
+    rpc::types::TransactionReceipt,
     signers::local::PrivateKeySigner,
 };
 use fastnum::udec64;
@@ -38,6 +43,27 @@ fn signing_provider(exchange: &testing::TestExchange, pk: &str) -> impl Provider
         .connect_provider(exchange.provider.clone())
 }
 
+/// Simulates, sends and waits - the three steps a client takes with the
+/// builder now that the SDK no longer wraps them.
+trait Submit {
+    async fn submit(self) -> TransactionReceipt;
+}
+
+impl<P: Provider> Submit for RawCallBuilder<P> {
+    async fn submit(self) -> TransactionReceipt {
+        self.call().await.expect("the order should not revert");
+        let receipt = self
+            .send()
+            .await
+            .expect("the order should be accepted")
+            .get_receipt()
+            .await
+            .expect("a receipt");
+        assert!(receipt.status(), "the transaction reverted on chain");
+        receipt
+    }
+}
+
 #[tokio::test]
 async fn posts_an_order_that_rests_on_the_book() {
     let exchange = testing::TestExchange::new().await;
@@ -54,13 +80,12 @@ async fn posts_an_order_that_rests_on_the_book() {
             .expect("a valid order");
     assert_eq!(request.request_id(), 4242);
 
-    let receipt = request
-        .call(&snapshot, signing_provider(&exchange, &trader.pk), trader.address)
-        .expect("a transaction")
+    request
+        .call(&snapshot, signing_provider(&exchange, &trader.pk))
+        .expect("a call")
+        .from(trader.address)
         .submit()
-        .await
-        .expect("the order should be accepted");
-    assert!(receipt.status());
+        .await;
 
     // The decimals the caller typed have to survive the round trip through the
     // perpetual's scaler and back out of the contract unchanged
@@ -84,12 +109,13 @@ async fn simulating_leaves_the_book_untouched() {
     let call = OrderRequest::builder(btc.id, RequestType::OpenShort, udec64!(101000), udec64!(0.5))
         .build(&snapshot)
         .expect("a valid order")
-        .call(&snapshot, signing_provider(&exchange, &trader.pk), trader.address)
-        .expect("a transaction");
+        .call(&snapshot, signing_provider(&exchange, &trader.pk))
+        .expect("a call")
+        .from(trader.address);
 
     // Proving the order would be accepted must not place it, which is what
     // lets a caller show it before asking
-    call.simulate().await.expect("the order should not revert");
+    call.call().await.expect("the order should not revert");
     assert_eq!(
         snapshot_of(&exchange, trader.id)
             .await
@@ -113,13 +139,16 @@ async fn a_simulation_reports_what_the_contract_would_revert_with() {
     let err = OrderRequest::builder(btc.id, RequestType::OpenLong, udec64!(100000), udec64!(1000))
         .build(&snapshot)
         .expect("a valid order")
-        .call(&snapshot, signing_provider(&exchange, &trader.pk), trader.address)
-        .expect("a transaction")
-        .simulate()
+        .call(&snapshot, signing_provider(&exchange, &trader.pk))
+        .expect("a call")
+        .from(trader.address)
+        .call()
         .await
         .expect_err("an order beyond the account's collateral");
+    // Alloy's own error now: the SDK no longer stands between the caller and
+    // the contract's revert
     assert!(
-        matches!(err, perpl_sdk::error::DexError::Provider(_)),
+        matches!(err, alloy::contract::Error::TransportError(_)),
         "expected the contract's own revert, got {}",
         err,
     );
@@ -155,11 +184,11 @@ async fn resting_ask(
         .request_id(request_id)
         .build(&snapshot)
         .expect("a valid order")
-        .call(&snapshot, signing_provider(exchange, &trader.pk), trader.address)
-        .expect("a transaction")
+        .call(&snapshot, signing_provider(exchange, &trader.pk))
+        .expect("a call")
+        .from(trader.address)
         .submit()
-        .await
-        .expect("the order should be accepted");
+        .await;
 
     let snapshot = snapshot_of(exchange, trader.id).await;
     let order_id = snapshot
@@ -190,11 +219,11 @@ async fn cancels_a_resting_order() {
         .request_id(2)
         .build(&snapshot)
         .expect("a valid cancel")
-        .call(&snapshot, signing_provider(&exchange, &trader.pk), trader.address)
-        .expect("a transaction")
+        .call(&snapshot, signing_provider(&exchange, &trader.pk))
+        .expect("a call")
+        .from(trader.address)
         .submit()
-        .await
-        .expect("the cancel should be accepted");
+        .await;
 
     let book = snapshot_of(&exchange, trader.id).await;
     let book = book
@@ -227,11 +256,11 @@ async fn changes_a_resting_order_and_leaves_the_rest_of_it_alone() {
         .request_id(2)
         .build(&snapshot)
         .expect("a valid change")
-        .call(&snapshot, signing_provider(&exchange, &trader.pk), trader.address)
-        .expect("a transaction")
+        .call(&snapshot, signing_provider(&exchange, &trader.pk))
+        .expect("a call")
+        .from(trader.address)
         .submit()
-        .await
-        .expect("the change should be accepted");
+        .await;
 
     let after = snapshot_of(&exchange, trader.id).await;
     let book = after

@@ -1,26 +1,22 @@
-//! Executing exchange transactions: build, simulate, send, wait.
+//! Building the exchange call that executes a batch of order requests.
 //!
-//! [`Call`] is the whole of it. It holds a transaction that has not been sent
-//! yet and stages the steps separately, so a caller that wants to print the
-//! calldata, ask an operator, or stop after the simulation can, while one that
-//! wants none of that calls [`Call::submit`] and gets a receipt.
+//! Every operation the exchange takes on an order - posting it, cancelling it,
+//! changing it, topping up its collateral - is a [`types::OrderRequest`]
+//! through the same entrypoint, so they all reach the chain through this one
+//! function rather than one submit function each.
 //!
-//! The staging is deliberate: every operation the exchange takes on an order -
-//! posting it, cancelling it, changing it, topping up its collateral - is a
-//! [`types::OrderRequest`] through the same entrypoint, so they all reach the
-//! chain through this one path rather than one submit function each.
+//! What comes back is alloy's own [`RawCallBuilder`], which is where the SDK's
+//! responsibility ends: simulating it, signing it and waiting on the receipt
+//! are the caller's, and alloy already has the vocabulary for all three. The
+//! sender is left unset for the caller's fillers to supply, so a client that
+//! signs with a local key, a remote signer or a hardware wallet is served the
+//! same way.
 
-use alloy::{
-    network::{Ethereum, TransactionBuilder},
-    primitives::{Address, Bytes, TxHash},
-    providers::{PendingTransactionBuilder, Provider},
-    rpc::types::{TransactionReceipt, TransactionRequest},
-    sol_types::SolCall,
-};
+use alloy::{contract::RawCallBuilder, providers::Provider, sol_types::SolCall};
 
 use crate::{abi::dex, error::DexError, state, types};
 
-/// Transaction executing `requests` in order, sent by `from`.
+/// Call executing `requests` in order against `exchange`.
 ///
 /// `revert_on_fail` reverts the whole transaction when one request fails,
 /// rather than letting the exchange skip it and emit an error event.
@@ -30,20 +26,12 @@ use crate::{abi::dex, error::DexError, state, types};
 /// put them in, so a contract without V2 support cannot honour an attributed
 /// order at all - which is the error [`types::OrderRequest::prepare_v2`]
 /// returns.
-pub fn orders_transaction(
+pub fn orders_call<P: Provider>(
     exchange: &state::Exchange,
+    provider: P,
     requests: &[types::OrderRequest],
     revert_on_fail: bool,
-    from: Address,
-) -> Result<TransactionRequest, DexError> {
-    if let Some(untracked) = requests
-        .iter()
-        .map(types::OrderRequest::perp_id)
-        .find(|perp_id| !exchange.perpetuals().contains_key(perp_id))
-    {
-        return Err(DexError::PerpetualNotTracked(untracked));
-    }
-
+) -> Result<RawCallBuilder<P>, DexError> {
     let attributed = requests
         .iter()
         .any(|request| request.builder_attribution().is_some());
@@ -72,113 +60,10 @@ pub fn orders_transaction(
         .abi_encode()
     };
 
-    Ok(TransactionRequest::default()
-        .with_to(exchange.chain().exchange())
-        .with_from(from)
-        .with_input(Bytes::from(input)))
-}
-
-/// The [`Call`] executing `requests` - see [`orders_transaction`].
-pub fn orders_call<P: Provider>(
-    exchange: &state::Exchange,
-    provider: P,
-    from: Address,
-    requests: &[types::OrderRequest],
-    revert_on_fail: bool,
-) -> Result<Call<P>, DexError> {
-    Ok(Call::new(provider, orders_transaction(exchange, requests, revert_on_fail, from)?))
-}
-
-/// An exchange transaction that has not been sent, staged so a caller can act
-/// between the steps.
-///
-/// [`Call::simulate`] proves the call would not revert against current state,
-/// [`Call::send`] signs it and puts it on the wire, and [`Sent::wait`] waits
-/// for the receipt. [`Call::submit`] is all three for callers that need
-/// nothing in between.
-#[derive(Clone, Debug)]
-pub struct Call<P> {
-    provider: P,
-    tx: TransactionRequest,
-}
-
-impl<P: Provider> Call<P> {
-    /// Wraps `tx` to be sent through `provider`.
-    ///
-    /// Sending needs a `provider` carrying the wallet that signs for the
-    /// transaction's sender - see
-    /// [`alloy::providers::ProviderBuilder::wallet`]. Stacking that wallet on
-    /// top of an existing provider keeps whatever throttling, retry and poll
-    /// settings it was built with, rather than dialling a second connection.
-    /// Simulating needs no wallet at all.
-    pub fn new(provider: P, tx: TransactionRequest) -> Self { Self { provider, tx } }
-
-    /// Same call with an explicit gas limit, skipping estimation.
-    pub fn with_gas_limit(mut self, gas_limit: u64) -> Self {
-        self.tx.set_gas_limit(gas_limit);
-        self
-    }
-
-    /// The transaction as it will be sent, for a caller that wants to show the
-    /// calldata rather than submit it.
-    pub fn transaction(&self) -> &TransactionRequest { &self.tx }
-
-    /// Runs the call against current state without sending it, returning what
-    /// the entrypoint returns.
-    ///
-    /// A revert here is the common outcome of a bad order - insufficient
-    /// collateral, a stale mark, a reduce-only order with nothing to reduce -
-    /// and comes back decoded to the contract's own error rather than a blob.
-    pub async fn simulate(&self) -> Result<Bytes, DexError> {
-        self.provider
-            .call(self.tx.clone())
-            .await
-            .map_err(|err| DexError::Provider(err.into()))
-    }
-
-    /// Signs and sends, returning as soon as the node accepts the transaction.
-    /// The receipt is [`Sent::wait`].
-    pub async fn send(self) -> Result<Sent, DexError> {
-        let pending = self
-            .provider
-            .send_transaction(self.tx)
-            .await
-            .map_err(|err| DexError::Provider(err.into()))?;
-        Ok(Sent { hash: *pending.tx_hash(), pending })
-    }
-
-    /// Simulates, sends, and waits for a successful receipt.
-    pub async fn submit(self) -> Result<TransactionReceipt, DexError> {
-        self.simulate().await?;
-        self.send().await?.wait().await
-    }
-}
-
-/// A sent transaction, identified by its hash, whose receipt has not been
-/// waited for yet.
-#[derive(Debug)]
-pub struct Sent {
-    hash: TxHash,
-    pending: PendingTransactionBuilder<Ethereum>,
-}
-
-impl Sent {
-    pub fn tx_hash(&self) -> TxHash { self.hash }
-
-    /// Waits for the receipt, treating a reverted status as an error.
-    ///
-    /// A successful receipt only says the transaction executed: what the
-    /// exchange actually did with each order - accepted, filled, rejected - is
-    /// in its events, which [`crate::state::Exchange::apply_events`] reads.
-    pub async fn wait(self) -> Result<TransactionReceipt, DexError> {
-        let receipt = self
-            .pending
-            .get_receipt()
-            .await
-            .map_err(|err| DexError::Provider(err.into()))?;
-        if !receipt.status() {
-            return Err(DexError::TransactionReverted(self.hash));
-        }
-        Ok(receipt)
-    }
+    // Encoded rather than taken from `ExchangeInstance`'s own methods: those
+    // borrow the provider, so what they return cannot outlive the instance,
+    // and the two entrypoints decode to different types besides. Neither
+    // returns anything a caller reads - what the exchange did with each order
+    // is in its events - so a raw builder loses nothing
+    Ok(RawCallBuilder::new_raw(provider, input.into()).to(exchange.chain().exchange()))
 }

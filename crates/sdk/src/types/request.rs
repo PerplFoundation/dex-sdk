@@ -4,9 +4,9 @@ use std::{
 };
 
 use alloy::{
-    primitives::{Address, Bytes, U256},
+    contract::RawCallBuilder,
+    primitives::{Bytes, U256},
     providers::Provider,
-    rpc::types::TransactionRequest,
 };
 use fastnum::{UD64, UD128};
 
@@ -439,27 +439,19 @@ impl OrderRequest {
     /// set one; see [`MAX_MATCHES`].
     pub fn max_matches(&self) -> Option<u32> { self.max_matches }
 
-    /// Transaction executing this request on `exchange`, signed and sent by
-    /// `from` - see [`crate::exec::Call`] for the steps from here.
-    pub fn to_transaction_request(
-        &self,
-        exchange: &state::Exchange,
-        from: Address,
-    ) -> Result<TransactionRequest, DexError> {
-        crate::exec::orders_transaction(exchange, std::slice::from_ref(self), true, from)
-    }
-
-    /// This request as a staged call: build, simulate, send, wait.
+    /// This request as a call against `exchange`, ready to simulate or send.
     ///
-    /// `provider` has to carry the wallet that signs for `from` - see
-    /// [`crate::exec::Call::new`].
+    /// The sender is left unset for `provider`'s fillers to supply, and
+    /// sending needs one of them to carry a wallet that signs for it. What the
+    /// SDK hands over is alloy's own builder, so simulating, signing and
+    /// waiting on the receipt are done in alloy's vocabulary rather than a
+    /// wrapper of ours - see [`crate::exec::orders_call`], which batches.
     pub fn call<P: Provider>(
         &self,
         exchange: &state::Exchange,
         provider: P,
-        from: Address,
-    ) -> Result<crate::exec::Call<P>, DexError> {
-        Ok(crate::exec::Call::new(provider, self.to_transaction_request(exchange, from)?))
+    ) -> Result<RawCallBuilder<P>, DexError> {
+        crate::exec::orders_call(exchange, provider, std::slice::from_ref(self), true)
     }
 }
 
@@ -834,7 +826,7 @@ impl Display for OrderField {
 mod tests {
     use std::collections::HashMap;
 
-    use alloy::{primitives::address, sol_types::SolCall};
+    use alloy::{providers::ProviderBuilder, sol_types::SolCall};
     use fastnum::{decimal::Context, udec128};
 
     use super::*;
@@ -1047,21 +1039,29 @@ mod tests {
         assert!(matches!(err, DexError::UnsupportedByContract("builder attribution", _)));
     }
 
+    /// A provider that is never asked for anything: the calldata a builder
+    /// carries is settled before any request goes out.
+    fn offline_provider() -> impl Provider {
+        ProviderBuilder::new().connect_http("http://127.0.0.1:1".parse().expect("a valid url"))
+    }
+
     #[test]
     fn posts_through_the_v1_entrypoint_only_where_v2_is_absent() {
-        let from = address!("0x0000000000000000000000000000000000000042");
-
         let v2 = builder()
             .build(&exchange())
             .expect("a valid order")
-            .to_transaction_request(&exchange(), from)
-            .expect("a transaction");
+            .call(&exchange(), offline_provider())
+            .expect("a call")
+            .into_transaction_request();
         assert_eq!(
             v2.input.input().expect("calldata")[..4],
             dex::Exchange::execOrdersV2Call::SELECTOR,
         );
         assert_eq!(v2.to, Some(Chain::testnet().exchange().into()));
-        assert_eq!(v2.from, Some(from));
+        // The sender is the caller's to fill - a client may sign with a local
+        // key, a remote signer or a hardware wallet, and the SDK holds none of
+        // them
+        assert_eq!(v2.from, None);
 
         // A contract that cannot carry an extension envelope has nothing to
         // put one in, so an unattributed order goes through V1
@@ -1069,8 +1069,9 @@ mod tests {
         let v1 = builder()
             .build(&legacy)
             .expect("a valid order")
-            .to_transaction_request(&legacy, from)
-            .expect("a transaction");
+            .call(&legacy, offline_provider())
+            .expect("a call")
+            .into_transaction_request();
         assert_eq!(
             v1.input.input().expect("calldata")[..4],
             dex::Exchange::execOrdersCall::SELECTOR,

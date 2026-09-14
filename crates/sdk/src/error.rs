@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 use alloy::{
     contract,
-    primitives::{Bytes, TxHash},
+    primitives::Bytes,
     providers::{MulticallError, PendingTransactionError},
     sol_types::{self, SolInterface},
     transports,
@@ -87,9 +87,6 @@ pub enum DexError {
 
     #[error("provider error: {0}")]
     Provider(#[from] ProviderError<ExchangeErrors>),
-
-    #[error("transaction {0} reverted on chain")]
-    TransactionReverted(TxHash),
 
     #[error("deployed exchange contract ({1}) does not support {0}")]
     UnsupportedByContract(&'static str, ContractFeatures),
