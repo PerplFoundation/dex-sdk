@@ -125,7 +125,7 @@ impl OrderRequest {
     /// get the corresponding order extension envelope. Attribution is *silently
     /// dropped* by [`Self::prepare`], as the V1 entrypoints have nothing to
     /// carry it in.
-    pub fn with_builder(mut self, builder: BuilderAttribution) -> Self {
+    pub fn with_builder_attribution(mut self, builder: BuilderAttribution) -> Self {
         self.builder = Some(builder);
         self
     }
@@ -431,11 +431,14 @@ impl OrderRequest {
         OrderRequestBuilder::new(perp_id, RequestType::Change).order_id(order_id)
     }
 
+    /// Perpetual the request is against.
     pub fn perp_id(&self) -> PerpetualId { self.perp_id }
 
     /// Client order ID the request is tagged with.
     pub fn request_id(&self) -> RequestId { self.request_id }
 
+    /// What the request asks the exchange to do: post, cancel, change, or top
+    /// up a position's collateral.
     pub fn request_type(&self) -> RequestType { self.r#type }
 
     /// Limit price, in human units and the perpetual's own precision.
@@ -459,12 +462,20 @@ impl OrderRequest {
     /// one.
     pub fn last_exec_block(&self) -> Option<u64> { self.last_exec_block }
 
+    /// Block the order stops resting at, if the caller set one. Not to be
+    /// confused with [`Self::last_exec_block`], which bounds the *request*
+    /// rather than the order it posts.
     pub fn expiry_block(&self) -> Option<u64> { self.expiry_block }
 
+    /// Whether the exchange should reject the order rather than let it take
+    /// liquidity.
     pub fn post_only(&self) -> bool { self.post_only }
 
+    /// Whether the order has to fill in full or not at all.
     pub fn fill_or_kill(&self) -> bool { self.fill_or_kill }
 
+    /// Whether whatever does not fill immediately is cancelled rather than
+    /// left to rest.
     pub fn immediate_or_cancel(&self) -> bool { self.immediate_or_cancel }
 
     /// Cap on the resting orders this order may match against, if the caller
@@ -674,9 +685,9 @@ impl OrderRequestBuilder {
     }
 
     /// Attributes the order to a builder - see
-    /// [`OrderRequest::with_builder`]. Rejected by [`Self::build`] against a
-    /// contract that cannot carry attribution.
-    pub fn with_builder(mut self, builder: impl Into<Option<BuilderAttribution>>) -> Self {
+    /// [`OrderRequest::with_builder_attribution`]. Rejected by [`Self::build`]
+    /// against a contract that cannot carry attribution.
+    pub fn builder_attribution(mut self, builder: impl Into<Option<BuilderAttribution>>) -> Self {
         self.builder = builder.into();
         self
     }
@@ -1133,7 +1144,7 @@ mod tests {
         // Caught here rather than at encoding time, so a request that built is
         // one that can be sent
         let err = builder()
-            .with_builder(BuilderAttribution::new(7, dec("0.1")))
+            .builder_attribution(BuilderAttribution::new(7, dec("0.1")))
             .build(&exchange())
             .expect_err("a fee above 1%");
         assert!(matches!(err, OrderRequestBuilderError::OrderExtension(_)), "{}", err);
@@ -1181,7 +1192,7 @@ mod tests {
         let exchange =
             exchange_with(btc(), ContractFeatures::of(ContractVersion::V2_GETTERS), false);
         let err = builder()
-            .with_builder(BuilderAttribution::new(7, dec("0.0001")))
+            .builder_attribution(BuilderAttribution::new(7, dec("0.0001")))
             .build(&exchange)
             .expect_err("attribution on a contract without it");
         assert!(matches!(

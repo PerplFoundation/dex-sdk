@@ -233,7 +233,7 @@ impl CreateOrderArgs {
             .post_only(self.post_only)
             .immediate_or_cancel(self.ioc)
             .fill_or_kill(self.fok)
-            .with_builder(self.builder())
+            .builder_attribution(self.builder())
     }
 
     /// Builder attribution of the order, `None` when unattributed. Both parts
