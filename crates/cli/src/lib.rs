@@ -107,14 +107,18 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let builder = match &cli.command {
         Commands::Block { block_number: _ } => None,
         Commands::Snapshot | Commands::Trace => Some(builder),
-        Commands::Order { .. } => {
+        Commands::Order { command } => {
             if cli.perp.len() != 1 {
                 return Err(anyhow::anyhow!("exactly one perp should be provided, see `--perp`"));
             }
             // Placing an order needs the perpetual's scalers and the
             // contract's feature set, not the book-wide position set the
-            // default snapshot would pull
-            Some(builder.with_accounts(cli.account.clone()))
+            // default snapshot would pull - plus the signer's own account,
+            // whose balance and positions decide whether the exchange would
+            // take the order at all
+            let mut accounts = cli.account.clone();
+            accounts.push(types::AccountAddressOrID::Address(command.tx().signer()?.address()));
+            Some(builder.with_accounts(accounts))
         },
         Commands::Show { command } => match command {
             ShowCommands::Account { num_trades: _ } => {

@@ -86,7 +86,7 @@ through the CLI at all.
 ```bash
 # Bid 0.001 BTC at 65432.1 on mainnet BTC, resting on the book
 perpl-cli --perp 1 order create --private-key-path ~/.perpl/key \
-  --side buy --size 0.001 --price 65432.1
+  --type open-long --size 0.001 --price 65432.1
 ```
 
 Price, size and leverage are given in human units - `65432.1`, not the
@@ -111,14 +111,16 @@ pass explicitly.
 `--request-id`, `--gas-limit`, `--dry-run` and `--yes` - are listed under
 [Common to every order command](#common-to-every-order-command).
 
-- `--side <buy|sell>`: Side of the book to post on. With `--reduce-only`, `sell`
-  becomes a close-long and `buy` a close-short
+- `--type <open-long|open-short|close-long|close-short>`: Type of order to post.
+  Named outright rather than inferred from a side and a reduce-only flag: the
+  contract has no reduce-only flag, `close-long`/`close-short` *are* the
+  reduce-only types, and inferring them hid the crossover - an *ask* is what
+  reduces a long
 - `--size <DECIMAL>`: Order size, in the perpetual's lot
   precision
 - `--price <DECIMAL>`: Limit price, in the perpetual's price precision. Required
   even with `--ioc`, where it bounds how far the fill may run
 - `--leverage <DECIMAL>`: Leverage to open at [default: the perpetual's maximum]
-- `--reduce-only`: Only reduce an existing position
 - `--post-only` / `--ioc` / `--fok`: Reject rather than take liquidity / cancel
   what does not fill immediately / fill in full or not at all
 - `--expiry-block <BLOCK>`: Block the order expires at [default: never]
@@ -209,7 +211,7 @@ exports once - refusing to run whenever it happens to be set would make
 ```bash
 # Best: the key never appears in argv or the environment
 perpl-cli --perp 1 order create --private-key-path ~/.perpl/key \
-  --side buy --size 0.001 --price 65432.1
+  --type open-long --size 0.001 --price 65432.1
 ```
 
 Prefer a file or the environment variable over `--private-key`: an argument is

@@ -48,8 +48,8 @@ async fn posts_an_order_that_rests_on_the_book() {
         &[
             "--private-key",
             &trader.pk,
-            "--side",
-            "sell",
+            "--type",
+            "open-short",
             "--size",
             "0.5",
             "--price",
@@ -91,8 +91,8 @@ async fn a_dry_run_leaves_the_book_untouched() {
         &[
             "--private-key",
             &trader.pk,
-            "--side",
-            "sell",
+            "--type",
+            "open-short",
             "--size",
             "0.5",
             "--price",
@@ -135,8 +135,8 @@ async fn rejects_a_price_finer_than_the_perpetual_quotes() {
         &[
             "--private-key",
             &trader.pk,
-            "--side",
-            "sell",
+            "--type",
+            "open-short",
             "--size",
             "0.5",
             "--price",
@@ -163,8 +163,8 @@ async fn resting_ask(
         &[
             "--private-key",
             &trader.pk,
-            "--side",
-            "sell",
+            "--type",
+            "open-short",
             "--size",
             "0.5",
             "--price",

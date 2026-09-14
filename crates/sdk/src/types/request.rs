@@ -337,6 +337,15 @@ pub enum OrderField {
 /// rather than borrowing them, so this enum stands on its own.
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum OrderRequestBuilderError {
+    #[error("account {0} is frozen")]
+    AccountFrozen(AccountId),
+
+    #[error("account {0} is not tracked by the snapshot")]
+    AccountNotTracked(AccountId),
+
+    #[error("{field} {block} is not ahead of block {at_block}, which the exchange has reached")]
+    BlockAlreadyPassed { field: &'static str, block: u64, at_block: u64 },
+
     #[error("order {0} is a close order, which the exchange does not let a change amend")]
     CannotChangeCloseOrder(OrderId),
 
@@ -523,6 +532,9 @@ pub struct OrderRequestBuilder {
     amount: Option<UD128>,
     max_neg_pnl_collat_bps: u16,
     builder: Option<BuilderAttribution>,
+    // Not carried into the built request: the exchange takes the account from
+    // `msg.sender`, so this only ever feeds the checks in `build`
+    account: Option<AccountId>,
 }
 
 impl OrderRequestBuilder {
@@ -547,6 +559,7 @@ impl OrderRequestBuilder {
             last_exec_block: None,
             amount: None,
             max_neg_pnl_collat_bps: DEFAULT_MAX_NEG_PNL_COLLAT_BPS,
+            account: None,
             builder: None,
         }
     }
@@ -612,6 +625,18 @@ impl OrderRequestBuilder {
     /// once it is on the book.
     pub fn last_exec_block(mut self, block: impl Into<Option<u64>>) -> Self {
         self.last_exec_block = block.into();
+        self
+    }
+
+    /// Account the request is for, so the snapshot's own view of it can be
+    /// checked before anything is signed [default: unchecked].
+    ///
+    /// Optional because the request the exchange receives carries no account -
+    /// `msg.sender` decides that on chain - so this is purely a pre-flight
+    /// check, and a caller that has not asked the snapshot to track the
+    /// account has nothing for it to check against.
+    pub fn account(mut self, account: impl Into<Option<AccountId>>) -> Self {
+        self.account = account.into();
         self
     }
 
@@ -688,10 +713,48 @@ impl OrderRequestBuilder {
                 return Err(OrderRequestBuilderError::PerpetualPaused(self.perp_id));
             }
         }
+        // A post-only order never fills on entry, so there is nothing for
+        // either of the immediate flags to fill
         if self.post_only && self.fill_or_kill {
-            // A post-only order never fills on entry, so there is nothing for
-            // fill-or-kill to fill
             return Err(OrderRequestBuilderError::ContradictoryFlags("post-only", "fill-or-kill"));
+        }
+        if self.post_only && self.immediate_or_cancel {
+            return Err(OrderRequestBuilderError::ContradictoryFlags(
+                "post-only",
+                "immediate-or-cancel",
+            ));
+        }
+        // A block the snapshot has already passed has passed on chain too -
+        // the snapshot never runs ahead of the head - so this rejects only
+        // what is certainly stale, and lets a deadline the snapshot cannot
+        // see yet through to the contract
+        let at_block = exchange.instant().block_number();
+        if let Some(block) = self.expiry_block.filter(|block| *block <= at_block) {
+            return Err(OrderRequestBuilderError::BlockAlreadyPassed {
+                field: "expiry block",
+                block,
+                at_block,
+            });
+        }
+        if let Some(block) = self.last_exec_block.filter(|block| *block <= at_block) {
+            return Err(OrderRequestBuilderError::BlockAlreadyPassed {
+                field: "last execution block",
+                block,
+                at_block,
+            });
+        }
+        // Only when the caller named an account, and only against what the
+        // snapshot holds: the exchange decides whose order this is from
+        // `msg.sender`, so this catches a mistake early rather than deciding
+        // anything
+        if let Some(account_id) = self.account {
+            let account = exchange
+                .accounts()
+                .get(&account_id)
+                .ok_or(OrderRequestBuilderError::AccountNotTracked(account_id))?;
+            if account.frozen() {
+                return Err(OrderRequestBuilderError::AccountFrozen(account_id));
+            }
         }
         // Checked for every request type, including the ones the contract
         // ignores it on: a value it would ignore is a mistake worth hearing
@@ -704,11 +767,19 @@ impl OrderRequestBuilder {
                 max: MAX_MATCHES,
             });
         }
-        if self.builder.is_some() && !exchange.features().builder_attribution() {
-            return Err(OrderRequestBuilderError::UnsupportedByContract(
-                "builder attribution",
-                exchange.features(),
-            ));
+        if let Some(builder) = self.builder {
+            if !exchange.features().builder_attribution() {
+                return Err(OrderRequestBuilderError::UnsupportedByContract(
+                    "builder attribution",
+                    exchange.features(),
+                ));
+            }
+            // The envelope is encoded at `prepare_v2`, which would catch an
+            // out-of-range rate on the way to the wire. Catching it here means
+            // a request that built is a request that can be sent, and the
+            // exchange rejects an over-range rate for the whole batch rather
+            // than the one order that carried it
+            builder.encode()?;
         }
 
         // The order a cancel or a change names, which supplies whatever the
@@ -1009,6 +1080,63 @@ mod tests {
             err,
             OrderRequestBuilderError::ContradictoryFlags("post-only", "fill-or-kill")
         ));
+    }
+
+    #[test]
+    fn checks_the_account_only_when_the_caller_names_one() {
+        // The snapshot the other tests use tracks no accounts at all, so an
+        // unnamed account has to stay unchecked rather than fail closed
+        builder().build(&exchange()).expect("an unchecked account");
+        assert!(matches!(
+            builder().account(77).build(&exchange()),
+            Err(OrderRequestBuilderError::AccountNotTracked(77))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_deadline_the_exchange_has_already_reached() {
+        // The test snapshot sits at block 0, so block 0 is behind it and any
+        // later block is still ahead
+        for field in ["expiry block", "last execution block"] {
+            let with_block = |block| {
+                let b = builder();
+                if field == "expiry block" {
+                    b.expiry_block(block)
+                } else {
+                    b.last_exec_block(block)
+                }
+            };
+            assert!(matches!(
+                with_block(0u64).build(&exchange()),
+                Err(OrderRequestBuilderError::BlockAlreadyPassed { field: f, block: 0, at_block: 0 })
+                    if f == field
+            ));
+            with_block(1u64).build(&exchange()).expect("a block ahead");
+        }
+    }
+
+    #[test]
+    fn rejects_post_only_against_either_immediate_flag() {
+        // A post-only order never fills on entry, so neither flag has
+        // anything to act on
+        assert!(matches!(
+            builder()
+                .post_only(true)
+                .immediate_or_cancel(true)
+                .build(&exchange()),
+            Err(OrderRequestBuilderError::ContradictoryFlags("post-only", "immediate-or-cancel"))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_builder_fee_above_the_contract_ceiling() {
+        // Caught here rather than at encoding time, so a request that built is
+        // one that can be sent
+        let err = builder()
+            .with_builder(BuilderAttribution::new(7, dec("0.1")))
+            .build(&exchange())
+            .expect_err("a fee above 1%");
+        assert!(matches!(err, OrderRequestBuilderError::OrderExtension(_)), "{}", err);
     }
 
     #[test]

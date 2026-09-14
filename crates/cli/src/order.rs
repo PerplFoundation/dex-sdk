@@ -18,7 +18,6 @@ use alloy::{
     network::EthereumWallet,
     primitives::Address,
     providers::{Provider, ProviderBuilder},
-    rpc::types::BlockId,
     signers::local::PrivateKeySigner,
 };
 use anyhow::{Context as _, bail};
@@ -26,7 +25,7 @@ use colored::Colorize;
 use fastnum::UD64;
 use perpl_sdk::{
     Chain,
-    state::{self, Exchange, Order, Perpetual},
+    state::{Exchange, Order, Perpetual},
     types::{self, OrderRequest, OrderRequestBuilderError, RequestType},
 };
 
@@ -50,39 +49,16 @@ pub(crate) async fn run<P: Provider + Clone>(
         OrderCommands::Cancel(args) => (args.to_builder(perp_id), &args.tx),
         OrderCommands::Change(args) => (args.to_builder(perp_id), &args.tx),
     };
-    // Everything checkable without the network first - precision, leverage,
-    // contradictory flags, whether the order is even on the book - so a
-    // mistyped price is reported before an account lookup that would fail for
-    // its own reasons
-    let request = builder
-        .build(exchange)
-        .map_err(|err| describe(err, exchange))?;
-
-    submit(chain, provider, exchange, &request, tx_args, highlights).await
-}
-
-/// Signs and submits one request, simulating it and - unless this is a dry run
-/// - asking first, then tracing the resulting transaction.
-async fn submit<P: Provider + Clone>(
-    chain: &Chain,
-    provider: P,
-    exchange: &Exchange,
-    request: &OrderRequest,
-    args: &OrderTxArgs,
-    highlights: &Highlights,
-) -> anyhow::Result<()> {
-    // The error deliberately carries no detail from the key itself - a parse
-    // failure that echoed the input would put it on the terminal
-    let signer: PrivateKeySigner = args
-        .signing_key()?
-        .expose()
-        .parse()
-        .map_err(|_| anyhow::anyhow!("the signing key is not a valid private key"))?;
+    let signer = tx_args.signer()?;
     let from = signer.address();
 
-    let account_id = state::account_id_by_address(chain, provider.clone(), from, BlockId::latest())
-        .await
-        .with_context(|| format!("resolving exchange account of {}", from))?
+    // The snapshot was told to track this account when it was built, so it is
+    // already here - no second lookup, and the same state the request is about
+    // to be checked against
+    let account_id = exchange
+        .accounts()
+        .values()
+        .find(|account| account.address() == from)
         // The exchange opens an account on deposit, not on order, and that is
         // the common mistake here
         .ok_or_else(|| {
@@ -90,7 +66,35 @@ async fn submit<P: Provider + Clone>(
                 "{} has no exchange account; deposit collateral before placing an order",
                 from,
             )
-        })?;
+        })?
+        .id();
+
+    // Everything checkable without the network first - precision, leverage,
+    // contradictory flags, whether the account is frozen, whether the order is
+    // even on the book - so a mistyped price is reported before anything is
+    // signed
+    let request = builder
+        .account(account_id)
+        .build(exchange)
+        .map_err(|err| describe(err, exchange))?;
+
+    submit(chain, provider, exchange, &request, signer, account_id, tx_args, highlights).await
+}
+
+/// Signs and submits one request, simulating it and - unless this is a dry run
+/// - asking first, then tracing the resulting transaction.
+#[allow(clippy::too_many_arguments)]
+async fn submit<P: Provider + Clone>(
+    chain: &Chain,
+    provider: P,
+    exchange: &Exchange,
+    request: &OrderRequest,
+    signer: PrivateKeySigner,
+    account_id: types::AccountId,
+    args: &OrderTxArgs,
+    highlights: &Highlights,
+) -> anyhow::Result<()> {
+    let from = signer.address();
 
     let perp = exchange
         .perpetuals()
