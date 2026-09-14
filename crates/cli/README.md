@@ -122,8 +122,8 @@ pass explicitly.
 - `--post-only` / `--ioc` / `--fok`: Reject rather than take liquidity / cancel
   what does not fill immediately / fill in full or not at all
 - `--expiry-block <BLOCK>`: Block the order expires at [default: never]
-- `--max-matches <N>`: Maximum resting orders to match against [default:
-  unlimited]
+- `--max-matches <N>`: Maximum resting orders to match against, from 1 to 1000
+  [default: 1000, the exchange's own cap]
 - `--max-neg-pnl-collat-bps <BPS>`: Additional collateral, in basis points of
   notional, the exchange may draw to cover the position's negative unrealized
   PnL on a fill [default: 1000]

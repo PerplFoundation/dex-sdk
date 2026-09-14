@@ -12,7 +12,7 @@ pub use event::*;
 pub use extension::*;
 pub use order::{OrderSide, OrderType};
 pub use request::{
-    DEFAULT_MAX_NEG_PNL_COLLAT_BPS, OrderField, OrderRequest, OrderRequestBuilder,
+    DEFAULT_MAX_NEG_PNL_COLLAT_BPS, MAX_MATCHES, OrderField, OrderRequest, OrderRequestBuilder,
     OrderRequestError, RequestType,
 };
 pub use trade::*;

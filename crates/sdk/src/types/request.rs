@@ -296,6 +296,17 @@ impl From<RequestType> for OrderType {
 /// is valid, and stricter: it lets the exchange draw nothing.
 pub const DEFAULT_MAX_NEG_PNL_COLLAT_BPS: u16 = 1000;
 
+/// Most resting orders the matching engine will walk for a single order
+/// (`C._MAX_MATCHES`).
+///
+/// A loop bound the contract applies for gas safety, not a market parameter:
+/// it does not revert above it, it silently substitutes its own maximum, and
+/// it does the same for zero. An order that asked to match at most one resting
+/// order and got a thousand is the opposite of what was asked, so
+/// [`OrderRequestBuilder::build`] rejects anything outside `1..=1000` rather
+/// than let the substitution happen.
+pub const MAX_MATCHES: u32 = 1000;
+
 /// Field of an order request a fault refers to.
 ///
 /// Carried by [`OrderRequestError::Precision`] instead of a rendered name, so
@@ -329,6 +340,9 @@ pub enum OrderRequestError {
 
     #[error("leverage {requested} exceeds the maximum of {max} on perpetual {perp}")]
     LeverageTooHigh { perp: PerpetualId, requested: UD64, max: UD64 },
+
+    #[error("max matches {requested} is outside the exchange's range of 1 to {max}")]
+    MaxMatchesOutOfRange { requested: u32, max: u32 },
 
     #[error("a {0:?} request requires {1}")]
     MissingField(RequestType, &'static str),
@@ -420,6 +434,10 @@ impl OrderRequest {
     pub fn fill_or_kill(&self) -> bool { self.fill_or_kill }
 
     pub fn immediate_or_cancel(&self) -> bool { self.immediate_or_cancel }
+
+    /// Cap on the resting orders this order may match against, if the caller
+    /// set one; see [`MAX_MATCHES`].
+    pub fn max_matches(&self) -> Option<u32> { self.max_matches }
 
     /// Transaction executing this request on `exchange`, signed and sent by
     /// `from` - see [`crate::exec::Call`] for the steps from here.
@@ -560,8 +578,9 @@ impl OrderRequestBuilder {
         self
     }
 
-    /// Maximum resting orders this order may match against [default:
-    /// unlimited].
+    /// Maximum resting orders this order may match against, from 1 to
+    /// [`MAX_MATCHES`] [default: [`MAX_MATCHES`], which is what the exchange
+    /// walks for an order that names none].
     pub fn max_matches(mut self, max_matches: impl Into<Option<u32>>) -> Self {
         self.max_matches = max_matches.into();
         self
@@ -648,6 +667,18 @@ impl OrderRequestBuilder {
             // A post-only order never fills on entry, so there is nothing for
             // fill-or-kill to fill
             return Err(OrderRequestError::ContradictoryFlags("post-only", "fill-or-kill").into());
+        }
+        // Checked for every request type, including the ones the contract
+        // ignores it on: a value it would ignore is a mistake worth hearing
+        // about either way
+        if let Some(max_matches) = self.max_matches
+            && (max_matches == 0 || max_matches > MAX_MATCHES)
+        {
+            return Err(OrderRequestError::MaxMatchesOutOfRange {
+                requested: max_matches,
+                max: MAX_MATCHES,
+            }
+            .into());
         }
         if self.builder.is_some() && !exchange.features().builder_attribution() {
             return Err(DexError::UnsupportedByContract(
@@ -911,6 +942,35 @@ mod tests {
             .to_string();
         assert!(err.contains("100"), "{}", err);
         assert!(err.contains("50"), "{}", err);
+    }
+
+    #[test]
+    fn rejects_max_matches_the_exchange_would_substitute_its_own_for() {
+        // The contract does not revert on either bound - it swaps in
+        // C._MAX_MATCHES - so an order that asked to walk one resting order
+        // would quietly walk a thousand
+        for requested in [0, MAX_MATCHES + 1] {
+            let err = builder()
+                .max_matches(requested)
+                .build(&exchange())
+                .expect_err("max matches out of range");
+            assert!(matches!(
+                err,
+                DexError::OrderRequest(OrderRequestError::MaxMatchesOutOfRange {
+                    requested: r,
+                    max: MAX_MATCHES,
+                }) if r == requested
+            ));
+        }
+
+        // An omitted value is the caller declining to pick one, which is the
+        // substitution working as intended
+        let request = builder()
+            .max_matches(MAX_MATCHES)
+            .build(&exchange())
+            .expect("a valid order");
+        assert_eq!(request.max_matches(), Some(MAX_MATCHES));
+        assert_eq!(builder().build(&exchange()).unwrap().max_matches(), None);
     }
 
     #[test]

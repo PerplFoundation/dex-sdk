@@ -180,9 +180,10 @@ pub struct CreateOrderArgs {
     #[arg(long, default_value_t = false)]
     pub fok: bool,
 
-    /// Maximum resting orders this order may match against [default:
-    /// unlimited]
-    #[arg(long)]
+    /// Maximum resting orders this order may match against, from 1 to 1000
+    /// [default: 1000, which is what the exchange walks for an order that
+    /// names none]
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=types::MAX_MATCHES as i64))]
     pub max_matches: Option<u32>,
 
     /// Additional collateral, in basis points of notional, the exchange may
