@@ -12,8 +12,6 @@
 //! it. All three commands share one submission path, because to the exchange
 //! they are the same operation with a different request type.
 
-use std::io::{IsTerminal, Write};
-
 use alloy::{
     network::EthereumWallet,
     primitives::Address,
@@ -126,13 +124,13 @@ async fn submit<P: Provider + Clone>(
         .context("simulating the request - it would revert on chain")?;
     println!("{}", "Simulated without reverting.".green());
 
+    // The only stop between building and sending. A prompt used to sit after
+    // the simulation too, but the book moves between the two, so an order held
+    // for an operator to read is an order simulated against state it will not
+    // meet - `--dry-run` is the deliberate look, and a run without it is a
+    // deliberate send
     if args.dry_run {
         println!("\n{}\n  {}", "Dry run, nothing was sent. Calldata:".yellow(), call.calldata(),);
-        return Ok(());
-    }
-
-    if !args.yes && !confirm(request.request_type())? {
-        println!("{}", "Aborted.".yellow());
         return Ok(());
     }
 
@@ -312,22 +310,4 @@ fn amendment_of(from: Option<u64>, to: u64) -> String {
         Some(from) if from != to => format!("block {} -> {}", from, to),
         Some(from) => format!("block {} (unchanged)", from),
     }
-}
-
-/// Asks the operator to confirm, treating a non-interactive stdin as a refusal
-/// rather than an assent - a piped run should pass `--yes` deliberately.
-fn confirm(r#type: RequestType) -> anyhow::Result<bool> {
-    if !std::io::stdin().is_terminal() {
-        bail!("stdin is not a terminal; pass `--yes` to submit without confirmation");
-    }
-    let what = match r#type {
-        RequestType::Cancel => "Submit this cancellation? [y/N] ",
-        RequestType::Change => "Submit this change? [y/N] ",
-        _ => "Submit this order? [y/N] ",
-    };
-    print!("{}", what.bold());
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }

@@ -351,12 +351,6 @@ pub struct OrderTxArgs {
     /// Build and simulate the request, print what would be sent, then stop
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
-
-    /// Submit without asking for confirmation. Deliberately has no environment
-    /// variable: one exported in a shell profile would arm every later order
-    /// silently, which is the opposite of what a confirmation is for
-    #[arg(long, short = 'y', visible_alias = "auto-confirm", default_value_t = false)]
-    pub yes: bool,
 }
 
 impl OrderTxArgs {
@@ -740,14 +734,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_confirm_is_an_alias_of_yes() {
-        assert!(!create_order(&[]).tx.yes);
-        assert!(create_order(&["--yes"]).tx.yes);
-        assert!(create_order(&["-y"]).tx.yes);
-        assert!(create_order(&["--auto-confirm"]).tx.yes);
-    }
-
-    #[test]
     fn builder_attribution_needs_both_halves() {
         assert_eq!(create_order(&[]).builder(), None);
 
@@ -841,16 +827,15 @@ mod tests {
 
     #[test]
     fn every_order_command_signs_the_same_way() {
-        // The signing key, gas limit, dry run and confirmation are one flattened
-        // group, so they are spelled the same whichever request is being sent
+        // The signing key, gas limit and dry run are one flattened group, so
+        // they are spelled the same whichever request is being sent
         let OrderCommands::Cancel(args) =
-            order_command(&["delete", "--order-id", "3", "--private-key", KEY, "--dry-run", "-y"])
+            order_command(&["delete", "--order-id", "3", "--private-key", KEY, "--dry-run"])
         else {
             panic!("expected `order cancel`");
         };
         assert_eq!(args.tx.signing_key().unwrap().expose(), KEY);
         assert!(args.tx.dry_run);
-        assert!(args.tx.yes);
         // ... and the key is no more printable here than anywhere else
         assert!(!format!("{:?}", args).contains(KEY));
     }

@@ -100,15 +100,20 @@ Error: --price 65432.123456 carries more precision than perpetual's 1 decimal
 place(s) allows; it would become 65432.1
 ```
 
-Before anything is signed the command prints the order it built, then simulates
-the call, then asks to confirm. `--dry-run` stops after the simulation and
-prints the calldata; `--yes` skips the prompt, which a non-interactive run must
-pass explicitly.
+Before anything is signed the command prints the order it built and simulates
+the call. A run without `--dry-run` then sends it; a run with `--dry-run` stops
+there and prints the calldata.
+
+There is deliberately no confirmation prompt between the simulation and the
+send. The book moves between the two, so an order held open for someone to read
+is an order simulated against state it will no longer meet by the time it
+lands - the prompt would buy a false reassurance rather than a real check.
+`--dry-run` is the deliberate look; a run without it is a deliberate send.
 
 ### Options
 
 `order create` only. The flags every order command shares - the signing key,
-`--request-id`, `--gas-limit`, `--dry-run` and `--yes` - are listed under
+`--request-id`, `--gas-limit` and `--dry-run` - are listed under
 [Common to every order command](#common-to-every-order-command).
 
 - `--type <open-long|open-short|close-long|close-short>`: Type of order to post.
@@ -198,7 +203,6 @@ signed.
   is on the book
 - `--gas-limit <GAS>`: Gas limit [default: estimated]
 - `--dry-run`: Build and simulate, print what would be sent, then stop
-- `-y`, `--yes`, `--auto-confirm`: Submit without the confirmation prompt
 
 ### The signing key
 
@@ -223,9 +227,6 @@ both print `[redacted]`, so it cannot reach the terminal through a debug print
 of the parsed arguments, a panic, an error chain, or `--help` with
 `PERPL_PRIVATE_KEY` set. A key that fails to parse is reported without echoing
 what was read.
-
-`--yes` has no environment variable by design: one exported in a shell profile
-would silently arm every later order.
 
 The account must already exist: the exchange opens one on deposit, so deposit
 collateral before placing a first order.
