@@ -85,7 +85,7 @@ async fn test_sc_v1174() {
         .order_v2(
             maker.id,
             order(1, btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
-                .with_builder(maker_builder),
+                .with_builder_attribution(maker_builder),
         )
         .await
         .get_receipt()
@@ -210,7 +210,7 @@ async fn test_sc_v1174() {
         .order_v2(
             taker.id,
             order(2, btc_perp.id, OpenLong, udec64!(100000), udec64!(0.1))
-                .with_builder(taker_builder),
+                .with_builder_attribution(taker_builder),
         )
         .await
         .get_receipt()

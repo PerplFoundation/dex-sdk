@@ -11,7 +11,10 @@ use chrono::{DateTime, Utc};
 pub use event::*;
 pub use extension::*;
 pub use order::{OrderSide, OrderType};
-pub use request::{OrderRequest, RequestType};
+pub use request::{
+    DEFAULT_MAX_NEG_PNL_COLLAT_BPS, MAX_MATCHES, OrderField, OrderRequest, OrderRequestBuilder,
+    OrderRequestBuilderError, RequestType,
+};
 pub use trade::*;
 
 /// ID of perpetual contract.

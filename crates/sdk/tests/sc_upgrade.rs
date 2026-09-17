@@ -188,10 +188,13 @@ async fn test_contract_upgrade_mid_stream() {
     // A builder-attributed order cannot even be prepared against this contract
     let builder = BuilderAttribution::new(BUILDER, BUILDER_FEE);
     let rejected = order(3, btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
-        .with_builder(builder)
+        .with_builder_attribution(builder)
         .prepare_v2(&state.snapshot().clone());
     assert!(
-        matches!(rejected, Err(perpl_sdk::error::DexError::UnsupportedByContract(..))),
+        matches!(
+            rejected,
+            Err(perpl_sdk::types::OrderRequestBuilderError::UnsupportedByContract(..))
+        ),
         "builder attribution must not be submitted to a contract that cannot carry it",
     );
 
@@ -218,7 +221,8 @@ async fn test_contract_upgrade_mid_stream() {
     _ = btc_perp
         .order_v2(
             maker.id,
-            order(10, btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1)).with_builder(builder),
+            order(10, btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
+                .with_builder_attribution(builder),
         )
         .await
         .get_receipt()
@@ -512,7 +516,7 @@ async fn test_contract_upgrade_mid_stream() {
         // ...and the same order request the old contract had to reject now
         // prepares an envelope
         let (_, extension) = order(12, btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
-            .with_builder(builder)
+            .with_builder_attribution(builder)
             .prepare_v2(&snapshot)
             .expect("upgraded contract carries builder attribution");
         assert_eq!(BuilderAttribution::decode(&extension).unwrap(), Some(builder));
