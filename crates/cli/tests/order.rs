@@ -13,18 +13,8 @@ use perpl_sdk::{state::SnapshotBuilder, testing, types};
 /// Builds the argument vector a user would type, pointed at the test exchange.
 /// The signing key is left to `extra` so each test can choose its source.
 fn cli(rpc: &str, exchange: &str, perp: &str, extra: &[&str]) -> Cli {
-    let mut argv = vec![
-        "perpl-cli",
-        "--rpc",
-        rpc,
-        "--exchange",
-        exchange,
-        "--perp",
-        perp,
-        "order",
-        "create",
-        "--yes",
-    ];
+    let mut argv =
+        vec!["perpl-cli", "--rpc", rpc, "--exchange", exchange, "--perp", perp, "order", "create"];
     argv.extend_from_slice(extra);
     Cli::try_parse_from(argv).expect("valid arguments")
 }
@@ -48,8 +38,8 @@ async fn posts_an_order_that_rests_on_the_book() {
         &[
             "--private-key",
             &trader.pk,
-            "--side",
-            "sell",
+            "--type",
+            "open-short",
             "--size",
             "0.5",
             "--price",
@@ -91,8 +81,8 @@ async fn a_dry_run_leaves_the_book_untouched() {
         &[
             "--private-key",
             &trader.pk,
-            "--side",
-            "sell",
+            "--type",
+            "open-short",
             "--size",
             "0.5",
             "--price",
@@ -135,8 +125,8 @@ async fn rejects_a_price_finer_than_the_perpetual_quotes() {
         &[
             "--private-key",
             &trader.pk,
-            "--side",
-            "sell",
+            "--type",
+            "open-short",
             "--size",
             "0.5",
             "--price",
@@ -163,8 +153,8 @@ async fn resting_ask(
         &[
             "--private-key",
             &trader.pk,
-            "--side",
-            "sell",
+            "--type",
+            "open-short",
             "--size",
             "0.5",
             "--price",
@@ -224,7 +214,6 @@ async fn delete_takes_a_resting_order_off_the_book() {
             &btc.id.to_string(),
             "order",
             "delete",
-            "--yes",
             "--private-key",
             &trader.pk,
             "--order-id",
@@ -258,7 +247,6 @@ async fn update_moves_a_resting_order_and_leaves_its_size_alone() {
             &btc.id.to_string(),
             "order",
             "update",
-            "--yes",
             "--private-key",
             &trader.pk,
             "--order-id",
@@ -299,7 +287,6 @@ async fn an_update_that_amends_nothing_says_which_flags_to_pass() {
             &btc.id.to_string(),
             "order",
             "update",
-            "--yes",
             "--private-key",
             &trader.pk,
             "--order-id",

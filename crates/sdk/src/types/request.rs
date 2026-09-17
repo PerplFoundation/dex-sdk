@@ -4,14 +4,14 @@ use std::{
 };
 
 use alloy::{
-    primitives::{Address, Bytes, U256},
+    contract::RawCallBuilder,
+    primitives::{Bytes, U256},
     providers::Provider,
-    rpc::types::TransactionRequest,
 };
 use fastnum::{UD64, UD128};
 
 use super::*;
-use crate::{abi::dex::Exchange::OrderDesc, error::DexError, num, state};
+use crate::{abi::dex::Exchange::OrderDesc, num, state};
 
 /// Type of the order request.
 ///
@@ -125,7 +125,7 @@ impl OrderRequest {
     /// get the corresponding order extension envelope. Attribution is *silently
     /// dropped* by [`Self::prepare`], as the V1 entrypoints have nothing to
     /// carry it in.
-    pub fn with_builder(mut self, builder: BuilderAttribution) -> Self {
+    pub fn with_builder_attribution(mut self, builder: BuilderAttribution) -> Self {
         self.builder = Some(builder);
         self
     }
@@ -164,16 +164,19 @@ impl OrderRequest {
     /// does not support, or a builder fee rate the contract's decoder would
     /// reject - which reverts `execOrderV2` and skips the order on the batched
     /// path.
-    pub fn prepare_v2(&self, exchange: &state::Exchange) -> Result<(OrderDesc, Bytes), DexError> {
+    pub fn prepare_v2(
+        &self,
+        exchange: &state::Exchange,
+    ) -> Result<(OrderDesc, Bytes), OrderRequestBuilderError> {
         let perp = exchange
             .perpetuals()
             .get(&self.perp_id)
-            .ok_or(DexError::PerpetualNotTracked(self.perp_id))?;
+            .ok_or(OrderRequestBuilderError::PerpetualNotTracked(self.perp_id))?;
         let extension = match self.builder {
             None => Bytes::new(),
             Some(builder) => {
                 if !exchange.features().builder_attribution() {
-                    return Err(DexError::UnsupportedByContract(
+                    return Err(OrderRequestBuilderError::UnsupportedByContract(
                         "builder attribution",
                         exchange.features(),
                     ));
@@ -296,11 +299,22 @@ impl From<RequestType> for OrderType {
 /// is valid, and stricter: it lets the exchange draw nothing.
 pub const DEFAULT_MAX_NEG_PNL_COLLAT_BPS: u16 = 1000;
 
+/// Most resting orders the matching engine will walk for a single order
+/// (`C._MAX_MATCHES`).
+///
+/// A loop bound the contract applies for gas safety, not a market parameter:
+/// it does not revert above it, it silently substitutes its own maximum, and
+/// it does the same for zero. An order that asked to match at most one resting
+/// order and got a thousand is the opposite of what was asked, so
+/// [`OrderRequestBuilder::build`] rejects anything outside `1..=1000` rather
+/// than let the substitution happen.
+pub const MAX_MATCHES: u32 = 1000;
+
 /// Field of an order request a fault refers to.
 ///
-/// Carried by [`OrderRequestError::Precision`] instead of a rendered name, so
-/// a caller can name the field in the terms *its* own users typed - a CLI
-/// flag, a form field, a JSON key.
+/// Carried by [`OrderRequestBuilderError::Precision`] instead of a rendered
+/// name, so a caller can name the field in the terms *its* own users typed - a
+/// CLI flag, a form field, a JSON key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OrderField {
     Price,
@@ -313,8 +327,25 @@ pub enum OrderField {
 /// Every variant is a state the contract would revert on - except
 /// [`Self::Precision`], which it would not: it truncates. Losing digits from a
 /// price the caller typed is the one failure worth being noisy about.
+///
+/// Separate from [`DexError`], and deliberately: a client that only reads
+/// state never builds a request, and has no business matching on what building
+/// one can go wrong with. The three variants that name something the *snapshot*
+/// lacks rather than something the caller typed -
+/// [`Self::PerpetualNotTracked`], [`Self::OrderNotFound`],
+/// [`Self::UnsupportedByContract`] - restate their [`DexError`] counterparts
+/// rather than borrowing them, so this enum stands on its own.
 #[derive(Clone, Debug, thiserror::Error)]
-pub enum OrderRequestError {
+pub enum OrderRequestBuilderError {
+    #[error("account {0} is frozen")]
+    AccountFrozen(AccountId),
+
+    #[error("account {0} is not tracked by the snapshot")]
+    AccountNotTracked(AccountId),
+
+    #[error("{field} {block} is not ahead of block {at_block}, which the exchange has reached")]
+    BlockAlreadyPassed { field: &'static str, block: u64, at_block: u64 },
+
     #[error("order {0} is a close order, which the exchange does not let a change amend")]
     CannotChangeCloseOrder(OrderId),
 
@@ -330,11 +361,23 @@ pub enum OrderRequestError {
     #[error("leverage {requested} exceeds the maximum of {max} on perpetual {perp}")]
     LeverageTooHigh { perp: PerpetualId, requested: UD64, max: UD64 },
 
+    #[error("max matches {requested} is outside the exchange's range of 1 to {max}")]
+    MaxMatchesOutOfRange { requested: u32, max: u32 },
+
     #[error("a {0:?} request requires {1}")]
     MissingField(RequestType, &'static str),
 
     #[error("a change of order {0} that amends nothing would spend gas to no effect")]
     NothingToChange(OrderId),
+
+    #[error("order extension error: {0}")]
+    OrderExtension(#[from] OrderExtensionError),
+
+    #[error("order {1} not found on perpetual {0}")]
+    OrderNotFound(PerpetualId, OrderId),
+
+    #[error("perpetual {0} is not tracked")]
+    PerpetualNotTracked(PerpetualId),
 
     #[error("perpetual {0} is paused")]
     PerpetualPaused(PerpetualId),
@@ -344,6 +387,9 @@ pub enum OrderRequestError {
          allows; it would become {rescaled}"
     )]
     Precision { field: OrderField, value: UD64, decimals: u8, rescaled: UD64 },
+
+    #[error("deployed exchange contract ({1}) does not support {0}")]
+    UnsupportedByContract(&'static str, state::ContractFeatures),
 }
 
 impl OrderRequest {
@@ -385,11 +431,14 @@ impl OrderRequest {
         OrderRequestBuilder::new(perp_id, RequestType::Change).order_id(order_id)
     }
 
+    /// Perpetual the request is against.
     pub fn perp_id(&self) -> PerpetualId { self.perp_id }
 
     /// Client order ID the request is tagged with.
     pub fn request_id(&self) -> RequestId { self.request_id }
 
+    /// What the request asks the exchange to do: post, cancel, change, or top
+    /// up a position's collateral.
     pub fn request_type(&self) -> RequestType { self.r#type }
 
     /// Limit price, in human units and the perpetual's own precision.
@@ -409,39 +458,43 @@ impl OrderRequest {
     /// assign one.
     pub fn order_id(&self) -> Option<OrderId> { self.order_id }
 
-    /// Block a [`RequestType::Change`] is conditioned on the order not having
-    /// executed since.
+    /// Last block the exchange may execute this request on, if the caller set
+    /// one.
     pub fn last_exec_block(&self) -> Option<u64> { self.last_exec_block }
 
+    /// Block the order stops resting at, if the caller set one. Not to be
+    /// confused with [`Self::last_exec_block`], which bounds the *request*
+    /// rather than the order it posts.
     pub fn expiry_block(&self) -> Option<u64> { self.expiry_block }
 
+    /// Whether the exchange should reject the order rather than let it take
+    /// liquidity.
     pub fn post_only(&self) -> bool { self.post_only }
 
+    /// Whether the order has to fill in full or not at all.
     pub fn fill_or_kill(&self) -> bool { self.fill_or_kill }
 
+    /// Whether whatever does not fill immediately is cancelled rather than
+    /// left to rest.
     pub fn immediate_or_cancel(&self) -> bool { self.immediate_or_cancel }
 
-    /// Transaction executing this request on `exchange`, signed and sent by
-    /// `from` - see [`crate::exec::Call`] for the steps from here.
-    pub fn to_transaction_request(
-        &self,
-        exchange: &state::Exchange,
-        from: Address,
-    ) -> Result<TransactionRequest, DexError> {
-        crate::exec::orders_transaction(exchange, std::slice::from_ref(self), true, from)
-    }
+    /// Cap on the resting orders this order may match against, if the caller
+    /// set one; see [`MAX_MATCHES`].
+    pub fn max_matches(&self) -> Option<u32> { self.max_matches }
 
-    /// This request as a staged call: build, simulate, send, wait.
+    /// This request as a call against `exchange`, ready to simulate or send.
     ///
-    /// `provider` has to carry the wallet that signs for `from` - see
-    /// [`crate::exec::Call::new`].
+    /// The sender is left unset for `provider`'s fillers to supply, and
+    /// sending needs one of them to carry a wallet that signs for it. What the
+    /// SDK hands over is alloy's own builder, so simulating, signing and
+    /// waiting on the receipt are done in alloy's vocabulary rather than a
+    /// wrapper of ours - see [`crate::exec::orders_call`], which batches.
     pub fn call<P: Provider>(
         &self,
         exchange: &state::Exchange,
         provider: P,
-        from: Address,
-    ) -> Result<crate::exec::Call<P>, DexError> {
-        Ok(crate::exec::Call::new(provider, self.to_transaction_request(exchange, from)?))
+    ) -> Result<RawCallBuilder<P>, OrderRequestBuilderError> {
+        crate::exec::orders_call(exchange, provider, std::slice::from_ref(self), true)
     }
 }
 
@@ -449,8 +502,8 @@ impl OrderRequest {
 /// a snapshot before anything is signed.
 ///
 /// The checks are the ones the contract would otherwise apply on chain, where
-/// the revert reason is far less legible than an [`OrderRequestError`] - plus
-/// precision, which the contract does not check at all.
+/// the revert reason is far less legible than an [`OrderRequestBuilderError`] -
+/// plus precision, which the contract does not check at all.
 ///
 /// Every optional setter takes either the value or an [`Option`] of it, so
 /// arguments that arrive already optional need no unwrapping:
@@ -490,6 +543,9 @@ pub struct OrderRequestBuilder {
     amount: Option<UD128>,
     max_neg_pnl_collat_bps: u16,
     builder: Option<BuilderAttribution>,
+    // Not carried into the built request: the exchange takes the account from
+    // `msg.sender`, so this only ever feeds the checks in `build`
+    account: Option<AccountId>,
 }
 
 impl OrderRequestBuilder {
@@ -514,6 +570,7 @@ impl OrderRequestBuilder {
             last_exec_block: None,
             amount: None,
             max_neg_pnl_collat_bps: DEFAULT_MAX_NEG_PNL_COLLAT_BPS,
+            account: None,
             builder: None,
         }
     }
@@ -560,17 +617,37 @@ impl OrderRequestBuilder {
         self
     }
 
-    /// Maximum resting orders this order may match against [default:
-    /// unlimited].
+    /// Maximum resting orders this order may match against, from 1 to
+    /// [`MAX_MATCHES`] [default: [`MAX_MATCHES`], which is what the exchange
+    /// walks for an order that names none].
     pub fn max_matches(mut self, max_matches: impl Into<Option<u32>>) -> Self {
         self.max_matches = max_matches.into();
         self
     }
 
-    /// Block a [`RequestType::Change`] is conditioned on the order having last
-    /// executed at.
+    /// Last block the exchange may execute this request on [default: no
+    /// deadline].
+    ///
+    /// A staleness guard on the *request*, not on the order it names, and it
+    /// applies to every request type: past this block the contract rejects the
+    /// operation rather than applying it, so a transaction that sat in the
+    /// mempool cannot land against a book that has moved on. Not to be
+    /// confused with [`Self::expiry_block`], which is how long the order rests
+    /// once it is on the book.
     pub fn last_exec_block(mut self, block: impl Into<Option<u64>>) -> Self {
         self.last_exec_block = block.into();
+        self
+    }
+
+    /// Account the request is for, so the snapshot's own view of it can be
+    /// checked before anything is signed [default: unchecked].
+    ///
+    /// Optional because the request the exchange receives carries no account -
+    /// `msg.sender` decides that on chain - so this is purely a pre-flight
+    /// check, and a caller that has not asked the snapshot to track the
+    /// account has nothing for it to check against.
+    pub fn account(mut self, account: impl Into<Option<AccountId>>) -> Self {
+        self.account = account.into();
         self
     }
 
@@ -608,9 +685,9 @@ impl OrderRequestBuilder {
     }
 
     /// Attributes the order to a builder - see
-    /// [`OrderRequest::with_builder`]. Rejected by [`Self::build`] against a
-    /// contract that cannot carry attribution.
-    pub fn with_builder(mut self, builder: impl Into<Option<BuilderAttribution>>) -> Self {
+    /// [`OrderRequest::with_builder_attribution`]. Rejected by [`Self::build`]
+    /// against a contract that cannot carry attribution.
+    pub fn builder_attribution(mut self, builder: impl Into<Option<BuilderAttribution>>) -> Self {
         self.builder = builder.into();
         self
     }
@@ -625,11 +702,14 @@ impl OrderRequestBuilder {
     /// it is not amending - is taken from the order as it rests. That is why
     /// these need a snapshot that tracks the perpetual's book rather than just
     /// its scalers.
-    pub fn build(self, exchange: &state::Exchange) -> Result<OrderRequest, DexError> {
+    pub fn build(
+        self,
+        exchange: &state::Exchange,
+    ) -> Result<OrderRequest, OrderRequestBuilderError> {
         let perp = exchange
             .perpetuals()
             .get(&self.perp_id)
-            .ok_or(DexError::PerpetualNotTracked(self.perp_id))?;
+            .ok_or(OrderRequestBuilderError::PerpetualNotTracked(self.perp_id))?;
 
         // Cancelling is how a client gets *out*, so it is not blocked on the
         // states that stop an order going on: whether a halted exchange still
@@ -638,22 +718,79 @@ impl OrderRequestBuilder {
             // Fail on the states the contract would reject anyway, where the
             // revert reason is far less legible than this
             if exchange.is_halted() {
-                return Err(OrderRequestError::ExchangeHalted.into());
+                return Err(OrderRequestBuilderError::ExchangeHalted);
             }
             if perp.is_paused() {
-                return Err(OrderRequestError::PerpetualPaused(self.perp_id).into());
+                return Err(OrderRequestBuilderError::PerpetualPaused(self.perp_id));
             }
         }
+        // A post-only order never fills on entry, so there is nothing for
+        // either of the immediate flags to fill
         if self.post_only && self.fill_or_kill {
-            // A post-only order never fills on entry, so there is nothing for
-            // fill-or-kill to fill
-            return Err(OrderRequestError::ContradictoryFlags("post-only", "fill-or-kill").into());
+            return Err(OrderRequestBuilderError::ContradictoryFlags("post-only", "fill-or-kill"));
         }
-        if self.builder.is_some() && !exchange.features().builder_attribution() {
-            return Err(DexError::UnsupportedByContract(
-                "builder attribution",
-                exchange.features(),
+        if self.post_only && self.immediate_or_cancel {
+            return Err(OrderRequestBuilderError::ContradictoryFlags(
+                "post-only",
+                "immediate-or-cancel",
             ));
+        }
+        // A block the snapshot has already passed has passed on chain too -
+        // the snapshot never runs ahead of the head - so this rejects only
+        // what is certainly stale, and lets a deadline the snapshot cannot
+        // see yet through to the contract
+        let at_block = exchange.instant().block_number();
+        if let Some(block) = self.expiry_block.filter(|block| *block <= at_block) {
+            return Err(OrderRequestBuilderError::BlockAlreadyPassed {
+                field: "expiry block",
+                block,
+                at_block,
+            });
+        }
+        if let Some(block) = self.last_exec_block.filter(|block| *block <= at_block) {
+            return Err(OrderRequestBuilderError::BlockAlreadyPassed {
+                field: "last execution block",
+                block,
+                at_block,
+            });
+        }
+        // Only when the caller named an account, and only against what the
+        // snapshot holds: the exchange decides whose order this is from
+        // `msg.sender`, so this catches a mistake early rather than deciding
+        // anything
+        if let Some(account_id) = self.account {
+            let account = exchange
+                .accounts()
+                .get(&account_id)
+                .ok_or(OrderRequestBuilderError::AccountNotTracked(account_id))?;
+            if account.frozen() {
+                return Err(OrderRequestBuilderError::AccountFrozen(account_id));
+            }
+        }
+        // Checked for every request type, including the ones the contract
+        // ignores it on: a value it would ignore is a mistake worth hearing
+        // about either way
+        if let Some(max_matches) = self.max_matches
+            && (max_matches == 0 || max_matches > MAX_MATCHES)
+        {
+            return Err(OrderRequestBuilderError::MaxMatchesOutOfRange {
+                requested: max_matches,
+                max: MAX_MATCHES,
+            });
+        }
+        if let Some(builder) = self.builder {
+            if !exchange.features().builder_attribution() {
+                return Err(OrderRequestBuilderError::UnsupportedByContract(
+                    "builder attribution",
+                    exchange.features(),
+                ));
+            }
+            // The envelope is encoded at `prepare_v2`, which would catch an
+            // out-of-range rate on the way to the wire. Catching it here means
+            // a request that built is a request that can be sent, and the
+            // exchange rejects an over-range rate for the whole batch rather
+            // than the one order that carried it
+            builder.encode()?;
         }
 
         // The order a cancel or a change names, which supplies whatever the
@@ -662,24 +799,24 @@ impl OrderRequestBuilder {
             RequestType::Cancel | RequestType::Change => {
                 let order_id = self
                     .order_id
-                    .ok_or(OrderRequestError::MissingField(self.r#type, "an order ID"))?;
+                    .ok_or(OrderRequestBuilderError::MissingField(self.r#type, "an order ID"))?;
                 let order = perp
                     .l3_book()
                     .get_order(order_id)
-                    .ok_or(DexError::OrderNotFound(self.perp_id, order_id))?;
+                    .ok_or(OrderRequestBuilderError::OrderNotFound(self.perp_id, order_id))?;
                 if matches!(self.r#type, RequestType::Change) {
                     if matches!(order.r#type(), OrderType::CloseLong | OrderType::CloseShort) {
-                        return Err(OrderRequestError::CannotChangeCloseOrder(order_id).into());
+                        return Err(OrderRequestBuilderError::CannotChangeCloseOrder(order_id));
                     }
                     if self.price.is_none() && self.size.is_none() && self.expiry_block.is_none() {
-                        return Err(OrderRequestError::NothingToChange(order_id).into());
+                        return Err(OrderRequestBuilderError::NothingToChange(order_id));
                     }
                     // An expired order is past the block it was good to, so
                     // the exchange wants to be told the new one explicitly
                     if order.is_expired() && self.expiry_block.is_none() {
-                        return Err(
-                            OrderRequestError::ChangeExpiredOrderNeedsNewExpiry(order_id).into()
-                        );
+                        return Err(OrderRequestBuilderError::ChangeExpiredOrderNeedsNewExpiry(
+                            order_id,
+                        ));
                     }
                 }
                 Some(order)
@@ -693,11 +830,11 @@ impl OrderRequestBuilder {
         let price = self
             .price
             .or_else(|| resting.map(|order| order.price()))
-            .ok_or(OrderRequestError::MissingField(self.r#type, "a price"))?;
+            .ok_or(OrderRequestBuilderError::MissingField(self.r#type, "a price"))?;
         let size = self
             .size
             .or_else(|| resting.map(|order| order.size()))
-            .ok_or(OrderRequestError::MissingField(self.r#type, "a size"))?;
+            .ok_or(OrderRequestBuilderError::MissingField(self.r#type, "a size"))?;
         let price = quantize(price, perp.price_converter(), OrderField::Price)?;
         let size = quantize(size, perp.size_converter(), OrderField::Size)?;
         let leverage = match self.leverage {
@@ -712,12 +849,11 @@ impl OrderRequestBuilder {
         // A cancel only takes an order off the book, so the perpetual's current
         // cap is not its business - it was met when the order went on
         if leverage > perp.initial_margin() && !matches!(self.r#type, RequestType::Cancel) {
-            return Err(OrderRequestError::LeverageTooHigh {
+            return Err(OrderRequestBuilderError::LeverageTooHigh {
                 perp: self.perp_id,
                 requested: leverage,
                 max: perp.initial_margin(),
-            }
-            .into());
+            });
         }
 
         Ok(OrderRequest {
@@ -759,10 +895,10 @@ fn quantize(
     value: UD64,
     converter: num::Converter,
     field: OrderField,
-) -> Result<UD64, OrderRequestError> {
+) -> Result<UD64, OrderRequestBuilderError> {
     let rescaled = value.rescale(converter.decimals() as i16);
     if rescaled != value {
-        return Err(OrderRequestError::Precision {
+        return Err(OrderRequestBuilderError::Precision {
             field,
             value,
             decimals: converter.decimals(),
@@ -796,7 +932,7 @@ impl Display for OrderField {
 mod tests {
     use std::collections::HashMap;
 
-    use alloy::{primitives::address, sol_types::SolCall};
+    use alloy::{providers::ProviderBuilder, sol_types::SolCall};
     use fastnum::{decimal::Context, udec128};
 
     use super::*;
@@ -914,6 +1050,35 @@ mod tests {
     }
 
     #[test]
+    fn rejects_max_matches_the_exchange_would_substitute_its_own_for() {
+        // The contract does not revert on either bound - it swaps in
+        // C._MAX_MATCHES - so an order that asked to walk one resting order
+        // would quietly walk a thousand
+        for requested in [0, MAX_MATCHES + 1] {
+            let err = builder()
+                .max_matches(requested)
+                .build(&exchange())
+                .expect_err("max matches out of range");
+            assert!(matches!(
+                err,
+                OrderRequestBuilderError::MaxMatchesOutOfRange {
+                    requested: r,
+                    max: MAX_MATCHES,
+                } if r == requested
+            ));
+        }
+
+        // An omitted value is the caller declining to pick one, which is the
+        // substitution working as intended
+        let request = builder()
+            .max_matches(MAX_MATCHES)
+            .build(&exchange())
+            .expect("a valid order");
+        assert_eq!(request.max_matches(), Some(MAX_MATCHES));
+        assert_eq!(builder().build(&exchange()).unwrap().max_matches(), None);
+    }
+
+    #[test]
     fn rejects_contradictory_flags() {
         // A post-only order never fills on entry, so there is nothing for
         // fill-or-kill to fill
@@ -924,25 +1089,76 @@ mod tests {
             .expect_err("contradictory flags");
         assert!(matches!(
             err,
-            DexError::OrderRequest(OrderRequestError::ContradictoryFlags(
-                "post-only",
-                "fill-or-kill"
-            ))
+            OrderRequestBuilderError::ContradictoryFlags("post-only", "fill-or-kill")
         ));
+    }
+
+    #[test]
+    fn checks_the_account_only_when_the_caller_names_one() {
+        // The snapshot the other tests use tracks no accounts at all, so an
+        // unnamed account has to stay unchecked rather than fail closed
+        builder().build(&exchange()).expect("an unchecked account");
+        assert!(matches!(
+            builder().account(77).build(&exchange()),
+            Err(OrderRequestBuilderError::AccountNotTracked(77))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_deadline_the_exchange_has_already_reached() {
+        // The test snapshot sits at block 0, so block 0 is behind it and any
+        // later block is still ahead
+        for field in ["expiry block", "last execution block"] {
+            let with_block = |block| {
+                let b = builder();
+                if field == "expiry block" {
+                    b.expiry_block(block)
+                } else {
+                    b.last_exec_block(block)
+                }
+            };
+            assert!(matches!(
+                with_block(0u64).build(&exchange()),
+                Err(OrderRequestBuilderError::BlockAlreadyPassed { field: f, block: 0, at_block: 0 })
+                    if f == field
+            ));
+            with_block(1u64).build(&exchange()).expect("a block ahead");
+        }
+    }
+
+    #[test]
+    fn rejects_post_only_against_either_immediate_flag() {
+        // A post-only order never fills on entry, so neither flag has
+        // anything to act on
+        assert!(matches!(
+            builder()
+                .post_only(true)
+                .immediate_or_cancel(true)
+                .build(&exchange()),
+            Err(OrderRequestBuilderError::ContradictoryFlags("post-only", "immediate-or-cancel"))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_builder_fee_above_the_contract_ceiling() {
+        // Caught here rather than at encoding time, so a request that built is
+        // one that can be sent
+        let err = builder()
+            .builder_attribution(BuilderAttribution::new(7, dec("0.1")))
+            .build(&exchange())
+            .expect_err("a fee above 1%");
+        assert!(matches!(err, OrderRequestBuilderError::OrderExtension(_)), "{}", err);
     }
 
     #[test]
     fn rejects_an_order_on_a_halted_exchange_or_paused_perpetual() {
         let halted = exchange_with(btc(), ContractFeatures::current(), true);
-        assert!(matches!(
-            builder().build(&halted),
-            Err(DexError::OrderRequest(OrderRequestError::ExchangeHalted))
-        ));
+        assert!(matches!(builder().build(&halted), Err(OrderRequestBuilderError::ExchangeHalted)));
 
         let paused = exchange_with(btc().with_paused(true), ContractFeatures::current(), false);
         assert!(matches!(
             builder().build(&paused),
-            Err(DexError::OrderRequest(OrderRequestError::PerpetualPaused(PERP_ID)))
+            Err(OrderRequestBuilderError::PerpetualPaused(PERP_ID))
         ));
     }
 
@@ -950,7 +1166,9 @@ mod tests {
     fn rejects_an_order_on_a_perpetual_the_snapshot_does_not_track() {
         let err = OrderRequest::builder(PERP_ID + 1, RequestType::OpenLong, dec("1"), dec("1"))
             .build(&exchange());
-        assert!(matches!(err, Err(DexError::PerpetualNotTracked(id)) if id == PERP_ID + 1));
+        assert!(
+            matches!(err, Err(OrderRequestBuilderError::PerpetualNotTracked(id)) if id == PERP_ID + 1)
+        );
     }
 
     #[test]
@@ -974,27 +1192,38 @@ mod tests {
         let exchange =
             exchange_with(btc(), ContractFeatures::of(ContractVersion::V2_GETTERS), false);
         let err = builder()
-            .with_builder(BuilderAttribution::new(7, dec("0.0001")))
+            .builder_attribution(BuilderAttribution::new(7, dec("0.0001")))
             .build(&exchange)
             .expect_err("attribution on a contract without it");
-        assert!(matches!(err, DexError::UnsupportedByContract("builder attribution", _)));
+        assert!(matches!(
+            err,
+            OrderRequestBuilderError::UnsupportedByContract("builder attribution", _)
+        ));
+    }
+
+    /// A provider that is never asked for anything: the calldata a builder
+    /// carries is settled before any request goes out.
+    fn offline_provider() -> impl Provider {
+        ProviderBuilder::new().connect_http("http://127.0.0.1:1".parse().expect("a valid url"))
     }
 
     #[test]
     fn posts_through_the_v1_entrypoint_only_where_v2_is_absent() {
-        let from = address!("0x0000000000000000000000000000000000000042");
-
         let v2 = builder()
             .build(&exchange())
             .expect("a valid order")
-            .to_transaction_request(&exchange(), from)
-            .expect("a transaction");
+            .call(&exchange(), offline_provider())
+            .expect("a call")
+            .into_transaction_request();
         assert_eq!(
             v2.input.input().expect("calldata")[..4],
             dex::Exchange::execOrdersV2Call::SELECTOR,
         );
         assert_eq!(v2.to, Some(Chain::testnet().exchange().into()));
-        assert_eq!(v2.from, Some(from));
+        // The sender is the caller's to fill - a client may sign with a local
+        // key, a remote signer or a hardware wallet, and the SDK holds none of
+        // them
+        assert_eq!(v2.from, None);
 
         // A contract that cannot carry an extension envelope has nothing to
         // put one in, so an unattributed order goes through V1
@@ -1002,8 +1231,9 @@ mod tests {
         let v1 = builder()
             .build(&legacy)
             .expect("a valid order")
-            .to_transaction_request(&legacy, from)
-            .expect("a transaction");
+            .call(&legacy, offline_provider())
+            .expect("a call")
+            .into_transaction_request();
         assert_eq!(
             v1.input.input().expect("calldata")[..4],
             dex::Exchange::execOrdersCall::SELECTOR,
@@ -1051,7 +1281,7 @@ mod tests {
         // ... while placing one still is
         assert!(matches!(
             builder().build(&paused),
-            Err(DexError::OrderRequest(OrderRequestError::PerpetualPaused(PERP_ID)))
+            Err(OrderRequestBuilderError::PerpetualPaused(PERP_ID))
         ));
     }
 
@@ -1060,11 +1290,11 @@ mod tests {
         let exchange = with_resting_ask("101000", "0.5");
         assert!(matches!(
             OrderRequest::cancel(PERP_ID, oid(9)).build(&exchange),
-            Err(DexError::OrderNotFound(PERP_ID, id)) if id == oid(9)
+            Err(OrderRequestBuilderError::OrderNotFound(PERP_ID, id)) if id == oid(9)
         ));
         assert!(matches!(
             OrderRequest::change(PERP_ID, oid(9)).price(dec("102000")).build(&exchange),
-            Err(DexError::OrderNotFound(PERP_ID, id)) if id == oid(9)
+            Err(OrderRequestBuilderError::OrderNotFound(PERP_ID, id)) if id == oid(9)
         ));
     }
 
@@ -1095,7 +1325,7 @@ mod tests {
         // It would cost gas and change nothing, which is never what was meant
         assert!(matches!(
             OrderRequest::change(PERP_ID, oid(1)).build(&with_resting_ask("101000", "0.5")),
-            Err(DexError::OrderRequest(OrderRequestError::NothingToChange(id))) if id == oid(1)
+            Err(OrderRequestBuilderError::NothingToChange(id)) if id == oid(1)
         ));
     }
 
@@ -1116,10 +1346,7 @@ mod tests {
         let err = OrderRequest::builder(PERP_ID, RequestType::Cancel, dec("1"), dec("1"))
             .build(&exchange())
             .expect_err("a cancel without an order");
-        assert!(matches!(
-            err,
-            DexError::OrderRequest(OrderRequestError::MissingField(RequestType::Cancel, _))
-        ));
+        assert!(matches!(err, OrderRequestBuilderError::MissingField(RequestType::Cancel, _)));
     }
 
     #[test]
@@ -1133,7 +1360,7 @@ mod tests {
         );
         assert!(matches!(
             OrderRequest::change(PERP_ID, oid(1)).price(dec("102000")).build(&exchange),
-            Err(DexError::OrderRequest(OrderRequestError::CannotChangeCloseOrder(id)))
+            Err(OrderRequestBuilderError::CannotChangeCloseOrder(id))
                 if id == oid(1)
         ));
         // ... but it can still be cancelled

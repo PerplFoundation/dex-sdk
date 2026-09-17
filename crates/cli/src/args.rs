@@ -1,6 +1,9 @@
 use std::{path::PathBuf, str::FromStr};
 
-use alloy::primitives::{Address, TxHash};
+use alloy::{
+    primitives::{Address, TxHash},
+    signers::local::PrivateKeySigner,
+};
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use fastnum::{UD64, decimal::Context};
@@ -105,30 +108,35 @@ pub enum OrderCommands {
     Change(Box<ChangeOrderArgs>),
 }
 
-/// Side of the book an order rests on, which together with `--reduce-only`
-/// picks the request type the exchange expects.
+/// The four order types the exchange posts to a book, named as the exchange
+/// names them.
+///
+/// Spelled out rather than inferred from a side and a reduce-only flag: an
+/// `Open*` and a `Close*` are not the same order with a flag set. A `Close*`
+/// is bounded by an existing position and locks against it, where an `Open*`
+/// locks collateral, so which one was meant is not something to guess at from
+/// two arguments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
-pub enum Side {
-    /// Bid: opens a long, or closes a short when reduce-only
-    Buy,
-    /// Ask: opens a short, or closes a long when reduce-only
-    Sell,
+pub enum OrderKind {
+    /// Bid that opens or adds to a long position
+    OpenLong,
+    /// Ask that opens or adds to a short position
+    OpenShort,
+    /// Ask that reduces an existing long position
+    CloseLong,
+    /// Bid that reduces an existing short position
+    CloseShort,
 }
 
-impl Side {
-    /// This side in the SDK's terms.
-    pub fn order_side(self) -> types::OrderSide {
+impl OrderKind {
+    /// This order type in the SDK's terms.
+    pub fn request_type(self) -> types::RequestType {
         match self {
-            Side::Buy => types::OrderSide::Bid,
-            Side::Sell => types::OrderSide::Ask,
+            OrderKind::OpenLong => types::RequestType::OpenLong,
+            OrderKind::OpenShort => types::RequestType::OpenShort,
+            OrderKind::CloseLong => types::RequestType::CloseLong,
+            OrderKind::CloseShort => types::RequestType::CloseShort,
         }
-    }
-
-    /// Request type this side maps to. The exchange has no side flag - the
-    /// request type carries both the direction and whether the order may only
-    /// reduce an existing position, and the mapping is the SDK's.
-    pub fn request_type(self, reduce_only: bool) -> types::RequestType {
-        types::RequestType::from_side(self.order_side(), reduce_only)
     }
 }
 
@@ -140,9 +148,10 @@ impl Side {
 /// contract stores, so no caller ever writes a scale factor by hand.
 #[derive(clap::Args, Debug)]
 pub struct CreateOrderArgs {
-    /// Side of the book to post on
-    #[arg(long, value_enum)]
-    pub side: Side,
+    /// Type of order to post: whether it opens or closes, and in which
+    /// direction
+    #[arg(long = "type", value_enum, value_name = "TYPE")]
+    pub kind: OrderKind,
 
     /// Order size, a decimal in the perpetual's lot precision, eg. `0.001`
     #[arg(long, value_name = "DECIMAL", value_parser = decimal)]
@@ -153,11 +162,6 @@ pub struct CreateOrderArgs {
     /// far the fill may run
     #[arg(long, value_name = "DECIMAL", value_parser = decimal)]
     pub price: UD64,
-
-    /// Only reduce an existing position: turns `--side sell` into a close-long
-    /// and `--side buy` into a close-short
-    #[arg(long, default_value_t = false)]
-    pub reduce_only: bool,
 
     /// Leverage to open the position at, eg. `10` or `12.5`, to at most two
     /// decimal places [default: the perpetual's maximum]
@@ -180,9 +184,10 @@ pub struct CreateOrderArgs {
     #[arg(long, default_value_t = false)]
     pub fok: bool,
 
-    /// Maximum resting orders this order may match against [default:
-    /// unlimited]
-    #[arg(long)]
+    /// Maximum resting orders this order may match against, from 1 to 1000
+    /// [default: 1000, which is what the exchange walks for an order that
+    /// names none]
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=types::MAX_MATCHES as i64))]
     pub max_matches: Option<u32>,
 
     /// Additional collateral, in basis points of notional, the exchange may
@@ -210,7 +215,7 @@ pub struct CreateOrderArgs {
 
 impl CreateOrderArgs {
     /// Request type the exchange expects for this order.
-    pub fn request_type(&self) -> types::RequestType { self.side.request_type(self.reduce_only) }
+    pub fn request_type(&self) -> types::RequestType { self.kind.request_type() }
 
     /// The SDK builder for this order, on the perpetual given by `--perp`.
     ///
@@ -223,11 +228,12 @@ impl CreateOrderArgs {
             .expiry_block(self.expiry_block)
             .max_matches(self.max_matches)
             .max_neg_pnl_collat_bps(self.max_neg_pnl_collat_bps)
+            .last_exec_block(self.tx.last_exec_block)
             .request_id(self.tx.request_id)
             .post_only(self.post_only)
             .immediate_or_cancel(self.ioc)
             .fill_or_kill(self.fok)
-            .with_builder(self.builder())
+            .builder_attribution(self.builder())
     }
 
     /// Builder attribution of the order, `None` when unattributed. Both parts
@@ -257,7 +263,9 @@ impl CancelOrderArgs {
     /// The SDK builder for this cancellation, on the perpetual given by
     /// `--perp`.
     pub fn to_builder(&self, perp_id: types::PerpetualId) -> types::OrderRequestBuilder {
-        types::OrderRequest::cancel(perp_id, self.order_id).request_id(self.tx.request_id)
+        types::OrderRequest::cancel(perp_id, self.order_id)
+            .last_exec_block(self.tx.last_exec_block)
+            .request_id(self.tx.request_id)
     }
 }
 
@@ -286,10 +294,6 @@ pub struct ChangeOrderArgs {
     #[arg(long)]
     pub expiry_block: Option<u64>,
 
-    /// Only apply the change if the order has not executed since this block
-    #[arg(long, value_name = "BLOCK")]
-    pub last_exec_block: Option<u64>,
-
     #[command(flatten)]
     pub tx: OrderTxArgs,
 }
@@ -307,7 +311,7 @@ impl ChangeOrderArgs {
             .price(self.price)
             .size(self.size)
             .expiry_block(self.expiry_block)
-            .last_exec_block(self.last_exec_block)
+            .last_exec_block(self.tx.last_exec_block)
             .request_id(self.tx.request_id)
     }
 }
@@ -333,6 +337,13 @@ pub struct OrderTxArgs {
     #[arg(long, value_name = "PATH")]
     pub private_key_path: Option<PathBuf>,
 
+    /// Last block the exchange may execute this request on, after which it is
+    /// rejected rather than applied [default: no deadline]. Guards against a
+    /// transaction sitting in the mempool and landing against a book that has
+    /// moved on
+    #[arg(long, value_name = "BLOCK")]
+    pub last_exec_block: Option<u64>,
+
     /// Gas limit for the transaction [default: estimated]
     #[arg(long)]
     pub gas_limit: Option<u64>,
@@ -340,12 +351,6 @@ pub struct OrderTxArgs {
     /// Build and simulate the request, print what would be sent, then stop
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
-
-    /// Submit without asking for confirmation. Deliberately has no environment
-    /// variable: one exported in a shell profile would arm every later order
-    /// silently, which is the opposite of what a confirmation is for
-    #[arg(long, short = 'y', visible_alias = "auto-confirm", default_value_t = false)]
-    pub yes: bool,
 }
 
 impl OrderTxArgs {
@@ -356,6 +361,20 @@ impl OrderTxArgs {
     /// `PERPL_PRIVATE_KEY` is the sort of thing a shell profile exports once:
     /// refusing to run whenever it happens to be set would make
     /// `--private-key-path` unusable in exactly the setup that most wants it.
+    /// The signer this command's key names.
+    ///
+    /// Resolved before the snapshot is taken as well as before signing: the
+    /// account whose positions and balance the request is validated against is
+    /// the signer's, so the snapshot has to be told to track it.
+    pub fn signer(&self) -> anyhow::Result<PrivateKeySigner> {
+        // The error deliberately carries no detail from the key itself - a
+        // parse failure that echoed the input would put it on the terminal
+        self.signing_key()?
+            .expose()
+            .parse()
+            .map_err(|_| anyhow::anyhow!("the signing key is not a valid private key"))
+    }
+
     pub fn signing_key(&self) -> anyhow::Result<Secret> {
         if let Some(path) = &self.private_key_path {
             let contents = std::fs::read_to_string(path)
@@ -372,6 +391,17 @@ impl OrderTxArgs {
                  PERPL_PRIVATE_KEY",
             )
         })
+    }
+}
+
+impl OrderCommands {
+    /// What this command needs to get its transaction signed and sent.
+    pub fn tx(&self) -> &OrderTxArgs {
+        match self {
+            OrderCommands::Create(args) => &args.tx,
+            OrderCommands::Cancel(args) => &args.tx,
+            OrderCommands::Change(args) => &args.tx,
+        }
     }
 }
 
@@ -564,8 +594,8 @@ mod tests {
             "1",
             "order",
             "create",
-            "--side",
-            "buy",
+            "--type",
+            "open-long",
             "--size",
             "0.001",
             "--price",
@@ -602,15 +632,35 @@ mod tests {
     }
 
     #[test]
-    fn side_and_reduce_only_pick_the_request_type() {
+    fn the_order_type_is_named_rather_than_inferred() {
         use types::RequestType::*;
-        assert!(matches!(Side::Buy.request_type(false), OpenLong));
-        assert!(matches!(Side::Sell.request_type(false), OpenShort));
-        assert!(matches!(Side::Sell.request_type(true), CloseLong));
-        assert!(matches!(Side::Buy.request_type(true), CloseShort));
+        assert!(matches!(OrderKind::OpenLong.request_type(), OpenLong));
+        assert!(matches!(OrderKind::OpenShort.request_type(), OpenShort));
+        assert!(matches!(OrderKind::CloseLong.request_type(), CloseLong));
+        assert!(matches!(OrderKind::CloseShort.request_type(), CloseShort));
 
         assert!(matches!(create_order(&[]).request_type(), OpenLong));
-        assert!(matches!(create_order(&["--reduce-only"]).request_type(), CloseShort));
+
+        // The crossover the old `--side sell --reduce-only` spelling hid: an
+        // ask is what reduces a *long*
+        let closes_long = Cli::try_parse_from([
+            "perpl-cli",
+            "--perp",
+            "1",
+            "order",
+            "create",
+            "--type",
+            "close-long",
+            "--size",
+            "0.001",
+            "--price",
+            "65432.1",
+        ])
+        .expect("valid arguments");
+        let Commands::Order { command: OrderCommands::Create(args) } = closes_long.command else {
+            panic!("an order create");
+        };
+        assert!(matches!(args.request_type(), CloseLong));
     }
 
     #[test]
@@ -664,8 +714,8 @@ mod tests {
             "1",
             "order",
             "create",
-            "--side",
-            "buy",
+            "--type",
+            "open-long",
             "--size",
             "1",
             "--price",
@@ -681,14 +731,6 @@ mod tests {
                 assert!(args.tx.signing_key().is_err());
             }
         }
-    }
-
-    #[test]
-    fn auto_confirm_is_an_alias_of_yes() {
-        assert!(!create_order(&[]).tx.yes);
-        assert!(create_order(&["--yes"]).tx.yes);
-        assert!(create_order(&["-y"]).tx.yes);
-        assert!(create_order(&["--auto-confirm"]).tx.yes);
     }
 
     #[test]
@@ -709,8 +751,8 @@ mod tests {
                 "1",
                 "order",
                 "create",
-                "--side",
-                "buy",
+                "--type",
+                "open-long",
                 "--size",
                 "1",
                 "--price",
@@ -785,16 +827,15 @@ mod tests {
 
     #[test]
     fn every_order_command_signs_the_same_way() {
-        // The signing key, gas limit, dry run and confirmation are one flattened
-        // group, so they are spelled the same whichever request is being sent
+        // The signing key, gas limit and dry run are one flattened group, so
+        // they are spelled the same whichever request is being sent
         let OrderCommands::Cancel(args) =
-            order_command(&["delete", "--order-id", "3", "--private-key", KEY, "--dry-run", "-y"])
+            order_command(&["delete", "--order-id", "3", "--private-key", KEY, "--dry-run"])
         else {
             panic!("expected `order cancel`");
         };
         assert_eq!(args.tx.signing_key().unwrap().expose(), KEY);
         assert!(args.tx.dry_run);
-        assert!(args.tx.yes);
         // ... and the key is no more printable here than anywhere else
         assert!(!format!("{:?}", args).contains(KEY));
     }

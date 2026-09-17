@@ -86,7 +86,7 @@ through the CLI at all.
 ```bash
 # Bid 0.001 BTC at 65432.1 on mainnet BTC, resting on the book
 perpl-cli --perp 1 order create --private-key-path ~/.perpl/key \
-  --side buy --size 0.001 --price 65432.1
+  --type open-long --size 0.001 --price 65432.1
 ```
 
 Price, size and leverage are given in human units - `65432.1`, not the
@@ -100,30 +100,37 @@ Error: --price 65432.123456 carries more precision than perpetual's 1 decimal
 place(s) allows; it would become 65432.1
 ```
 
-Before anything is signed the command prints the order it built, then simulates
-the call, then asks to confirm. `--dry-run` stops after the simulation and
-prints the calldata; `--yes` skips the prompt, which a non-interactive run must
-pass explicitly.
+Before anything is signed the command prints the order it built and simulates
+the call. A run without `--dry-run` then sends it; a run with `--dry-run` stops
+there and prints the calldata.
+
+There is deliberately no confirmation prompt between the simulation and the
+send. The book moves between the two, so an order held open for someone to read
+is an order simulated against state it will no longer meet by the time it
+lands - the prompt would buy a false reassurance rather than a real check.
+`--dry-run` is the deliberate look; a run without it is a deliberate send.
 
 ### Options
 
 `order create` only. The flags every order command shares - the signing key,
-`--request-id`, `--gas-limit`, `--dry-run` and `--yes` - are listed under
+`--request-id`, `--gas-limit` and `--dry-run` - are listed under
 [Common to every order command](#common-to-every-order-command).
 
-- `--side <buy|sell>`: Side of the book to post on. With `--reduce-only`, `sell`
-  becomes a close-long and `buy` a close-short
+- `--type <open-long|open-short|close-long|close-short>`: Type of order to post.
+  Named outright rather than inferred from a side and a reduce-only flag: the
+  contract has no reduce-only flag, `close-long`/`close-short` *are* the
+  reduce-only types, and inferring them hid the crossover - an *ask* is what
+  reduces a long
 - `--size <DECIMAL>`: Order size, in the perpetual's lot
   precision
 - `--price <DECIMAL>`: Limit price, in the perpetual's price precision. Required
   even with `--ioc`, where it bounds how far the fill may run
 - `--leverage <DECIMAL>`: Leverage to open at [default: the perpetual's maximum]
-- `--reduce-only`: Only reduce an existing position
 - `--post-only` / `--ioc` / `--fok`: Reject rather than take liquidity / cancel
   what does not fill immediately / fill in full or not at all
 - `--expiry-block <BLOCK>`: Block the order expires at [default: never]
-- `--max-matches <N>`: Maximum resting orders to match against [default:
-  unlimited]
+- `--max-matches <N>`: Maximum resting orders to match against, from 1 to 1000
+  [default: 1000, the exchange's own cap]
 - `--max-neg-pnl-collat-bps <BPS>`: Additional collateral, in basis points of
   notional, the exchange may draw to cover the position's negative unrealized
   PnL on a fill [default: 1000]
@@ -170,8 +177,6 @@ perpl-cli --perp 1 order update --private-key-path ~/.perpl/key \
   the size it has]
 - `--expiry-block <BLOCK>`: Expiry block to set [default: the order's own].
   Required when the order has already expired
-- `--last-exec-block <BLOCK>`: Only apply the change if the order has not
-  executed since this block
 
 Sizing *down* keeps the order's queue priority; sizing up sends it to the back
 of its level. The summary printed before signing shows each value the change
@@ -190,9 +195,14 @@ signed.
 - `--private-key-path <PATH>`: File to read the signing key from, whitespace
   trimmed. Takes precedence over the other two sources
 - `--private-key <KEY>`: Key to sign with, or `PERPL_PRIVATE_KEY`
+- `--last-exec-block <BLOCK>`: Last block the exchange may execute the request
+  on, after which it is rejected rather than applied [default: no deadline].
+  A guard on the *request*, not on the order it names: it stops a transaction
+  that sat in the mempool from landing against a book that has moved on. Not to
+  be confused with `--expiry-block`, which is how long an order rests once it
+  is on the book
 - `--gas-limit <GAS>`: Gas limit [default: estimated]
 - `--dry-run`: Build and simulate, print what would be sent, then stop
-- `-y`, `--yes`, `--auto-confirm`: Submit without the confirmation prompt
 
 ### The signing key
 
@@ -205,7 +215,7 @@ exports once - refusing to run whenever it happens to be set would make
 ```bash
 # Best: the key never appears in argv or the environment
 perpl-cli --perp 1 order create --private-key-path ~/.perpl/key \
-  --side buy --size 0.001 --price 65432.1
+  --type open-long --size 0.001 --price 65432.1
 ```
 
 Prefer a file or the environment variable over `--private-key`: an argument is
@@ -217,9 +227,6 @@ both print `[redacted]`, so it cannot reach the terminal through a debug print
 of the parsed arguments, a panic, an error chain, or `--help` with
 `PERPL_PRIVATE_KEY` set. A key that fails to parse is reported without echoing
 what was read.
-
-`--yes` has no environment variable by design: one exported in a shell profile
-would silently arm every later order.
 
 The account must already exist: the exchange opens one on deposit, so deposit
 collateral before placing a first order.

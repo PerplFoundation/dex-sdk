@@ -12,13 +12,10 @@
 //! it. All three commands share one submission path, because to the exchange
 //! they are the same operation with a different request type.
 
-use std::io::{IsTerminal, Write};
-
 use alloy::{
     network::EthereumWallet,
     primitives::Address,
     providers::{Provider, ProviderBuilder},
-    rpc::types::BlockId,
     signers::local::PrivateKeySigner,
 };
 use anyhow::{Context as _, bail};
@@ -26,9 +23,8 @@ use colored::Colorize;
 use fastnum::UD64;
 use perpl_sdk::{
     Chain,
-    error::DexError,
-    state::{self, Exchange, Order, Perpetual},
-    types::{self, OrderRequest, OrderRequestError, RequestType},
+    state::{Exchange, Order, Perpetual},
+    types::{self, OrderRequest, OrderRequestBuilderError, RequestType},
 };
 
 use crate::{
@@ -51,47 +47,52 @@ pub(crate) async fn run<P: Provider + Clone>(
         OrderCommands::Cancel(args) => (args.to_builder(perp_id), &args.tx),
         OrderCommands::Change(args) => (args.to_builder(perp_id), &args.tx),
     };
+    let signer = tx_args.signer()?;
+    let from = signer.address();
+
+    // The snapshot was told to track this account when it was built, so it is
+    // already here - no second lookup, and the same state the request is about
+    // to be checked against
+    let account_id = exchange
+        .accounts()
+        .values()
+        .find(|account| account.address() == from)
+        // The exchange opens an account on deposit, not on order, and that is
+        // the common mistake here
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} has no exchange account; create an account and deposit collateral before placing an order",
+                from,
+            )
+        })?
+        .id();
+
     // Everything checkable without the network first - precision, leverage,
-    // contradictory flags, whether the order is even on the book - so a
-    // mistyped price is reported before an account lookup that would fail for
-    // its own reasons
+    // contradictory flags, whether the account is frozen, whether the order is
+    // even on the book - so a mistyped price is reported before anything is
+    // signed
     let request = builder
+        .account(account_id)
         .build(exchange)
         .map_err(|err| describe(err, exchange))?;
 
-    submit(chain, provider, exchange, &request, tx_args, highlights).await
+    submit(chain, provider, exchange, &request, signer, account_id, tx_args, highlights).await
 }
 
 /// Signs and submits one request, simulating it and - unless this is a dry run
 /// - asking first, then tracing the resulting transaction.
+#[allow(clippy::too_many_arguments)]
 async fn submit<P: Provider + Clone>(
     chain: &Chain,
     provider: P,
     exchange: &Exchange,
     request: &OrderRequest,
+    signer: PrivateKeySigner,
+    account_id: types::AccountId,
     args: &OrderTxArgs,
     highlights: &Highlights,
 ) -> anyhow::Result<()> {
-    // The error deliberately carries no detail from the key itself - a parse
-    // failure that echoed the input would put it on the terminal
-    let signer: PrivateKeySigner = args
-        .signing_key()?
-        .expose()
-        .parse()
-        .map_err(|_| anyhow::anyhow!("the signing key is not a valid private key"))?;
     let from = signer.address();
-
-    let account_id = state::account_id_by_address(chain, provider.clone(), from, BlockId::latest())
-        .await
-        .with_context(|| format!("resolving exchange account of {}", from))?
-        // The exchange opens an account on deposit, not on order, and that is
-        // the common mistake here
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "{} has no exchange account; deposit collateral before placing an order",
-                from,
-            )
-        })?;
 
     let perp = exchange
         .perpetuals()
@@ -109,40 +110,42 @@ async fn submit<P: Provider + Clone>(
         .wallet(EthereumWallet::from(signer))
         .connect_provider(provider.clone());
 
-    let mut call = request.call(exchange, wallet_provider, from)?;
+    // The sender is set here rather than left to the wallet filler: the filler
+    // supplies it when the transaction is signed, but the simulation below is
+    // an `eth_call` that goes out before any of that, and the exchange decides
+    // what an order may do from `msg.sender`
+    let mut call = request.call(exchange, wallet_provider)?.from(from);
     if let Some(gas) = args.gas_limit {
-        call = call.with_gas_limit(gas);
+        call = call.gas(gas);
     }
 
-    call.simulate()
+    call.call()
         .await
         .context("simulating the request - it would revert on chain")?;
     println!("{}", "Simulated without reverting.".green());
 
+    // The only stop between building and sending. A prompt used to sit after
+    // the simulation too, but the book moves between the two, so an order held
+    // for an operator to read is an order simulated against state it will not
+    // meet - `--dry-run` is the deliberate look, and a run without it is a
+    // deliberate send
     if args.dry_run {
-        println!(
-            "\n{}\n  {}",
-            "Dry run, nothing was sent. Calldata:".yellow(),
-            call.transaction()
-                .input
-                .input()
-                .cloned()
-                .unwrap_or_default(),
-        );
+        println!("\n{}\n  {}", "Dry run, nothing was sent. Calldata:".yellow(), call.calldata(),);
         return Ok(());
     }
 
-    if !args.yes && !confirm(request.request_type())? {
-        println!("{}", "Aborted.".yellow());
-        return Ok(());
-    }
-
-    let sent = call.send().await.context("submitting the transaction")?;
-    let tx_hash = sent.tx_hash();
+    let pending = call.send().await.context("submitting the transaction")?;
+    let tx_hash = *pending.tx_hash();
     println!("Submitted {}, waiting for the receipt...", tx_hash.to_string().bright_blue());
-    sent.wait()
+    // A successful receipt only says the transaction executed; what the
+    // exchange did with the request is in the events `tx::render` reads below
+    let receipt = pending
+        .get_receipt()
         .await
         .context("waiting for the transaction receipt")?;
+    if !receipt.status() {
+        bail!("transaction {} reverted on chain", tx_hash);
+    }
 
     // The events say what the exchange actually did with the request -
     // accepted, partially filled, rejected - which the receipt status alone
@@ -153,38 +156,40 @@ async fn submit<P: Provider + Clone>(
 /// Renders a rejected request in the terms the caller typed it in: their own
 /// flags, and the perpetual's symbol rather than only its ID.
 ///
-/// Anything that is not a request fault - an untracked perpetual, an order
-/// that is not on the book, a contract without builder attribution, an RPC
-/// failure - already reads well enough as the SDK reports it.
-fn describe(err: DexError, exchange: &Exchange) -> anyhow::Error {
-    let DexError::OrderRequest(fault) = &err else {
-        return err.into();
-    };
-    match fault {
+/// Anything the caller cannot have typed wrong - an untracked perpetual, an
+/// order that is not on the book, a contract without builder attribution -
+/// already reads well enough as the SDK reports it, and falls through.
+fn describe(fault: OrderRequestBuilderError, exchange: &Exchange) -> anyhow::Error {
+    match &fault {
         // The SDK's message opens with the field it faulted on - `price`,
         // `size`, `leverage` - which is the flag the caller typed, less the
         // dashes
-        OrderRequestError::Precision { .. } => anyhow::anyhow!("--{}", fault),
-        OrderRequestError::ExchangeHalted => anyhow::anyhow!("{}, no order can be placed", fault),
-        OrderRequestError::PerpetualPaused(perp_id) => {
+        OrderRequestBuilderError::Precision { .. } => anyhow::anyhow!("--{}", fault),
+        OrderRequestBuilderError::ExchangeHalted => {
+            anyhow::anyhow!("{}, no order can be placed", fault)
+        },
+        OrderRequestBuilderError::PerpetualPaused(perp_id) => {
             anyhow::anyhow!("{} ({}), no order can be placed", fault, symbol(exchange, *perp_id))
         },
-        OrderRequestError::LeverageTooHigh { perp, .. } => {
+        OrderRequestBuilderError::LeverageTooHigh { perp, .. } => {
             anyhow::anyhow!("{} ({})", fault, symbol(exchange, *perp))
         },
         // The one contradictory pair the exchange has; the explanation is
         // specific to it, so a future pair falls through to the SDK's message
-        OrderRequestError::ContradictoryFlags("post-only", "fill-or-kill") => anyhow::anyhow!(
-            "--post-only and --fok contradict each other: a post-only order never fills on entry",
-        ),
-        OrderRequestError::NothingToChange(order_id) => anyhow::anyhow!(
+        OrderRequestBuilderError::ContradictoryFlags("post-only", "fill-or-kill") => {
+            anyhow::anyhow!(
+                "--post-only and --fok contradict each other: a post-only order never fills on \
+                 entry",
+            )
+        },
+        OrderRequestBuilderError::NothingToChange(order_id) => anyhow::anyhow!(
             "nothing to change about order {}: pass `--price`, `--size` or `--expiry-block`",
             order_id,
         ),
-        OrderRequestError::ChangeExpiredOrderNeedsNewExpiry(_) => {
+        OrderRequestBuilderError::ChangeExpiredOrderNeedsNewExpiry(_) => {
             anyhow::anyhow!("{}, pass `--expiry-block`", fault)
         },
-        _ => err.into(),
+        _ => fault.into(),
     }
 }
 
@@ -233,11 +238,14 @@ fn print_summary(
                     amendment_of(resting.map(Order::expiry_block), expiry),
                 );
             }
-            if let Some(block) = request.last_exec_block() {
-                println!("  Only if unfilled since block {}", block);
-            }
         },
         _ => print_order(perp, request),
+    }
+
+    // A deadline on the request rather than on the order, so it reads the same
+    // whichever of them is being signed
+    if let Some(block) = request.last_exec_block() {
+        println!("  Not after       block {}", block);
     }
 
     // The request is the authority on the client order ID, which it defaulted
@@ -302,22 +310,4 @@ fn amendment_of(from: Option<u64>, to: u64) -> String {
         Some(from) if from != to => format!("block {} -> {}", from, to),
         Some(from) => format!("block {} (unchanged)", from),
     }
-}
-
-/// Asks the operator to confirm, treating a non-interactive stdin as a refusal
-/// rather than an assent - a piped run should pass `--yes` deliberately.
-fn confirm(r#type: RequestType) -> anyhow::Result<bool> {
-    if !std::io::stdin().is_terminal() {
-        bail!("stdin is not a terminal; pass `--yes` to submit without confirmation");
-    }
-    let what = match r#type {
-        RequestType::Cancel => "Submit this cancellation? [y/N] ",
-        RequestType::Change => "Submit this change? [y/N] ",
-        _ => "Submit this order? [y/N] ",
-    };
-    print!("{}", what.bold());
-    std::io::stdout().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }
