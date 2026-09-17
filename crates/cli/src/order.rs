@@ -61,7 +61,8 @@ pub(crate) async fn run<P: Provider + Clone>(
         // the common mistake here
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "{} has no exchange account; create an account and deposit collateral before placing an order",
+                "{} has no exchange account; create an account and deposit collateral before \
+                 placing an order",
                 from,
             )
         })?
