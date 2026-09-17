@@ -15,3 +15,6 @@ target
 
 # RustRover
 .idea/
+
+# release archives built by the `binaries` job
+dist/

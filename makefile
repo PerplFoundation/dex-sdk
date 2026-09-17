@@ -4,7 +4,12 @@ DEV_BRANCH := dev
 
 VERSION := $(shell sed -n 's/^version *= *"\(.*\)"/\1/p' $(TOML_FILE))
 
-.PHONY: dev-version release tag lint fmt build test run codegen all
+# Binaries built by the `binaries` job in .github/workflows/main.yaml and
+# downloaded into dist/ before `release` runs. Empty on a local checkout, in
+# which case the release is cut without assets.
+RELEASE_ASSETS := $(wildcard dist/*.tar.gz dist/*.sha256)
+
+.PHONY: dev-version print-version release tag lint fmt build test run codegen all
 
 
 dev-version:
@@ -23,6 +28,10 @@ dev-version:
 	exit 1
 
 
+print-version:
+	@sed -n 's/^version *= *"\(.*\)"/\1/p' $(TOML_FILE)
+
+
 release:
 	@set -e; \
 	VERSION=$$(sed -n 's/^version *= *"\(.*\)"/\1/p' $(TOML_FILE)); \
@@ -31,7 +40,10 @@ release:
 	git push origin "v$$VERSION"; \
 	gh release create "v$$VERSION" \
 		--title "v$$VERSION" \
-		--notes "Release v$$VERSION"
+		--notes "Release v$$VERSION" \
+		$(RELEASE_ASSETS)
+
+
 check: 
 	cargo check
 fmt:

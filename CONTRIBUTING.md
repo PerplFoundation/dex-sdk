@@ -86,8 +86,23 @@ Do not hand roll releases!
 ## Versioning and releases
 
 * **Verify Expected Version Number** Ci enforces a difference in version number for any pr.
-* **On push to `main`** — [`main.yaml`](.github/workflows/main.yaml) runs `cargo publish`
-  and then `make release`, which tags `vX.Y.Z` and creates the GitHub release.
+* **On push to `main`** — [`main.yaml`](.github/workflows/main.yaml) runs two jobs in order.
+* First, a `binaries` matrix builds `perpl-cli` on a native runner per target and uploads
+  one `perpl-cli-vX.Y.Z-<target>.tar.gz` (plus a `.sha256`) as a workflow artifact:
+
+  | Target | Runner |
+  | ------ | ------ |
+  | `x86_64-unknown-linux-gnu` | `ubuntu-22.04` |
+  | `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` |
+  | `x86_64-apple-darwin` | `macos-15-intel` |
+  | `aarch64-apple-darwin` | `macos-15` |
+
+  Native runners rather than a cross-compiler: rustls pulls in `aws-lc-sys`, which compiles
+  C and would need a matching cmake/linker toolchain per target.
+* Only if **all four** succeed does the `release` job run `cargo publish` and then
+  `make release`, which tags `vX.Y.Z` and cuts the GitHub release with those archives
+  attached. A publish to crates.io cannot be undone, so it is deliberately the last
+  irreversible step: a target that fails to build costs a re-run, not a burnt version.
 
 Because a merge into `main` publishes a crate version immediately, `main` is protected.
 

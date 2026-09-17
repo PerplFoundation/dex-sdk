@@ -1,5 +1,7 @@
 #  Workflow to perform a release on merge into main branch
-# pushes a new tag and creates a GitHub release
+# builds the `perpl-cli` binaries first, then — only once every target has built —
+# publishes to crates.io, pushes a new tag, and creates a GitHub release carrying
+# those binaries as assets.
 
 name: Release
 on:
@@ -15,7 +17,63 @@ permissions:
 
 
 jobs:
+  # One native runner per target: `aws-lc-sys` (pulled in by rustls) builds C and
+  # needs cmake plus a matching toolchain, which makes true cross-compilation far
+  # more trouble than renting the right machine.
+  #
+  # This runs *before* the release job because `cargo publish` cannot be undone —
+  # a target that fails to build should cost nothing but a re-run.
+  binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ubuntu 22.04 rather than 24.04 so the binary links against glibc 2.35
+          # and still runs on older distros.
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: aarch64-apple-darwin
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659
+        with:
+          toolchain: 1.97
+          target: ${{ matrix.target }}
+
+      - name: Build perpl-cli
+        run: cargo build --release --locked -p perpl-cli --target ${{ matrix.target }}
+
+      - name: Package
+        id: package
+        run: |
+          set -euo pipefail
+          NAME="perpl-cli-v$(make print-version)-${{ matrix.target }}"
+          mkdir -p "staging/$NAME" dist
+          cp "target/${{ matrix.target }}/release/perpl-cli" "staging/$NAME/"
+          cp README.md LICENSE "staging/$NAME/"
+          tar -czf "dist/$NAME.tar.gz" -C staging "$NAME"
+          shasum -a 256 "dist/$NAME.tar.gz" | awk '{print $1}' > "dist/$NAME.tar.gz.sha256"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
   release:
+    needs: binaries
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -42,6 +100,30 @@ jobs:
         with:
           toolchain: 1.97
           components: rustfmt, clippy
+
+      # Collapses every matrix leg's `dist/` back into one `dist/`, which is where
+      # `make release` picks the assets up from.
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: dist
+          pattern: perpl-cli-*
+          merge-multiple: true
+
+      - name: Check every target is present
+        run: |
+          set -euo pipefail
+          VERSION=$(make print-version)
+          for target in \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu \
+            x86_64-apple-darwin \
+            aarch64-apple-darwin
+          do
+            test -f "dist/perpl-cli-v$VERSION-$target.tar.gz" \
+              || { echo "missing binary for $target"; exit 1; }
+          done
+          ls -l dist
 
       - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18
         id: auth
