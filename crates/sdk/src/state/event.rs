@@ -712,16 +712,36 @@ fn request_order_id(order_id: U256) -> Option<types::OrderId> {
     }
 }
 
+/// Narrows a request field the CALLER chose, not the contract.
+///
+/// `Uint::to()` panics on overflow, and every field of `OrderRequest`/`V2` is
+/// the caller's `OrderDesc` echoed verbatim: `_emitOrderStartDelim` runs ahead
+/// of `_validOrder` so the request is logged "regardless of failure mode", and
+/// `execOrders(descs, revertOnFail)` is permissionless with the flag chosen by
+/// the caller - so an order the contract rejected is skipped, not reverted, and
+/// its log is mined. `lastExecutionBlock`, `maxMatches` and `leverageHdths` are
+/// not bounded above at all, so even a valid order can carry a full-width one.
+///
+/// A panic here would take down the consuming application on a log that any
+/// account can put on chain for the price of one transaction, so this saturates
+/// instead - the same fail-soft choice [`request_order_id`] already makes.
+fn narrow<T>(v: U256) -> T
+where
+    U256: alloy::primitives::ruint::UintTryTo<T>,
+{
+    v.saturating_to()
+}
+
 impl From<&OrderRequest> for OrderContext {
     fn from(value: &OrderRequest) -> Self {
         Self {
-            perpetual_id: value.perpId.to(),
-            account_id: value.accountId.to(),
-            request_id: value.orderDescId.to(),
+            perpetual_id: narrow(value.perpId),
+            account_id: narrow(value.accountId),
+            request_id: narrow(value.orderDescId),
             order_id: request_order_id(value.orderId),
             r#type: value.orderType.into(),
             price: value.pricePNS,
-            expiry_block: value.expiryBlock.to(),
+            expiry_block: narrow(value.expiryBlock),
             leverage: value.leverageHdths,
             post_only: value.postOnly,
             fill_or_kill: value.fillOrKill,
@@ -738,13 +758,13 @@ impl From<&OrderRequest> for OrderContext {
 impl From<&OrderRequestV2> for OrderContext {
     fn from(value: &OrderRequestV2) -> Self {
         Self {
-            perpetual_id: value.perpId.to(),
-            account_id: value.accountId.to(),
-            request_id: value.orderDescId.to(),
+            perpetual_id: narrow(value.perpId),
+            account_id: narrow(value.accountId),
+            request_id: narrow(value.orderDescId),
             order_id: request_order_id(value.orderId),
             r#type: value.orderType.into(),
             price: value.pricePNS,
-            expiry_block: value.expiryBlock.to(),
+            expiry_block: narrow(value.expiryBlock),
             leverage: value.leverageHdths,
             post_only: value.postOnly,
             fill_or_kill: value.fillOrKill,
@@ -761,5 +781,50 @@ impl From<&OrderRequestV2> for OrderContext {
             clearing_remaining_order: false,
             position_closed_at_log_index: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `OrderRequest`/`V2` echo the caller's `OrderDesc` before the contract
+    /// validates it, and `lastExecutionBlock`/`maxMatches`/`leverageHdths` are
+    /// never bounded above, so a full-width field reaches this conversion from
+    /// an ordinary account for the price of one transaction. It must saturate,
+    /// not panic - a panic takes the consuming application down with it.
+    #[test]
+    fn order_request_saturates_rather_than_panicking() {
+        let ctx = OrderContext::from(&OrderRequestV2 {
+            // Bounded on-chain, standing in for the safe half.
+            perpId: U256::from(1),
+            accountId: U256::from(2),
+            orderDescId: U256::MAX,
+            orderId: U256::MAX,
+            orderType: 1,
+            pricePNS: U256::MAX,
+            lotLNS: U256::MAX,
+            expiryBlock: U256::MAX,
+            postOnly: false,
+            fillOrKill: false,
+            immediateOrCancel: false,
+            maxMatches: U256::MAX,
+            leverageHdths: U256::MAX,
+            lastExecutionBlock: U256::MAX,
+            amountCNS: U256::MAX,
+            maxNegPnlCollatBPS: U256::MAX,
+            gasLeft: U256::MAX,
+            extension: Default::default(),
+        });
+
+        assert_eq!(ctx.perpetual_id, 1);
+        assert_eq!(ctx.account_id, 2);
+        assert_eq!(ctx.request_id, u64::MAX);
+        assert_eq!(ctx.expiry_block, u64::MAX);
+        // Fields the SDK deliberately keeps at full width, and the one it
+        // already refused to narrow.
+        assert_eq!(ctx.price, U256::MAX);
+        assert_eq!(ctx.leverage, U256::MAX);
+        assert_eq!(ctx.order_id, None);
     }
 }
