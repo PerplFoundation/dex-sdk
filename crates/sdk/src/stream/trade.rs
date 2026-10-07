@@ -439,8 +439,10 @@ mod tests {
     use std::time::Duration;
 
     use alloy::{
-        primitives::I256, providers::ProviderBuilder, rpc::client::RpcClient,
-        transports::layers::RetryBackoffLayer,
+        primitives::I256,
+        providers::ProviderBuilder,
+        rpc::client::RpcClient,
+        transports::layers::{RetryBackoffLayer, ThrottleLayer},
     };
     use fastnum::udec64;
     use futures::StreamExt;
@@ -647,6 +649,7 @@ mod tests {
     #[tokio::test]
     async fn test_stream_recent_blocks() {
         let client = RpcClient::builder()
+            .layer(ThrottleLayer::new(15))
             .layer(RetryBackoffLayer::new(10, 100, 200))
             .connect("https://testnet-rpc.monad.xyz")
             .await
