@@ -6,7 +6,7 @@ mod trade;
 
 use std::{fmt::Display, str::FromStr};
 
-use alloy::primitives::Address;
+use alloy::primitives::{Address, U256};
 use chrono::{DateTime, Utc};
 pub use event::*;
 pub use extension::*;
@@ -50,6 +50,36 @@ pub type OrderId = std::num::NonZeroU16;
 
 /// Order request ID.
 pub type RequestId = u64;
+
+/// Order ID of a request, `None` for trigger order requests - their order IDs
+/// might exceed `u16::MAX` and they are not supported by the SDK yet.
+pub(crate) fn try_order_id(order_id: U256) -> Option<OrderId> {
+    if order_id <= U256::from(u16::MAX) {
+        std::num::NonZeroU16::new(order_id.to::<u16>())
+    } else {
+        None
+    }
+}
+
+/// Narrows a request field the CALLER chose, not the contract.
+///
+/// `Uint::to()` panics on overflow, and every field of `OrderRequest`/`V2` is
+/// the caller's `OrderDesc` echoed verbatim: `_emitOrderStartDelim` runs ahead
+/// of `_validOrder` so the request is logged "regardless of failure mode", and
+/// `execOrders(descs, revertOnFail)` is permissionless with the flag chosen by
+/// the caller - so an order the contract rejected is skipped, not reverted, and
+/// its log is mined. `lastExecutionBlock`, `maxMatches` and `leverageHdths` are
+/// not bounded above at all, so even a valid order can carry a full-width one.
+///
+/// A panic here would take down the consuming application on a log that any
+/// account can put on chain for the price of one transaction, so this saturates
+/// instead - the same fail-soft choice [`try_order_id`] already makes.
+pub(crate) fn narrow<T>(v: U256) -> T
+where
+    U256: alloy::primitives::ruint::UintTryTo<T>,
+{
+    v.saturating_to()
+}
 
 /// Instant in chain history the state/event is up to date with.
 #[derive(Clone, Copy, Debug, PartialEq, PartialOrd, Eq, Ord, Hash, Default)]
