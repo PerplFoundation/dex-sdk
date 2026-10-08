@@ -298,10 +298,13 @@ impl TradeProcessor {
         let request_type: types::RequestType = order_type.into();
         // Only track context for order types that can have fills
         if let Some(side) = request_type.try_side() {
+            // Request fields are the caller's `OrderDesc` echoed verbatim, so
+            // they may be full-width: saturate rather than panic, see
+            // [`types::narrow`].
             self.order_context = Some(OrderContext {
-                perpetual_id: perp_id.to(),
-                account_id: account_id.to(),
-                request_id: request_id.to(),
+                perpetual_id: types::narrow(perp_id),
+                account_id: types::narrow(account_id),
+                request_id: types::narrow(request_id),
                 side,
                 builder,
             });
@@ -436,8 +439,10 @@ mod tests {
     use std::time::Duration;
 
     use alloy::{
-        primitives::I256, providers::ProviderBuilder, rpc::client::RpcClient,
-        transports::layers::RetryBackoffLayer,
+        primitives::I256,
+        providers::ProviderBuilder,
+        rpc::client::RpcClient,
+        transports::layers::{RetryBackoffLayer, ThrottleLayer},
     };
     use fastnum::udec64;
     use futures::StreamExt;
@@ -489,6 +494,28 @@ mod tests {
                 PerpetualConverters { price_converter: converter, size_converter: converter },
             )]),
         }
+    }
+
+    /// `orderDescId` is chosen by the caller and logged before the contract
+    /// validates the order, so a value wider than `u64` reaches the stream from
+    /// any account for the price of one transaction. It must saturate, not
+    /// panic - a panic takes the consuming application down with it.
+    #[test]
+    fn order_request_saturates_rather_than_panicking() {
+        let mut processor = TradeProcessor::new(normalization_config(1));
+        let mut request = order_request(1, 7, 0, 1, None);
+        let ExchangeEvents::OrderRequestV2(ref mut e) = request else { unreachable!() };
+        e.orderDescId = U256::MAX;
+
+        _ = processor.process_event(&RawEvent::empty(request));
+
+        let context = processor
+            .order_context
+            .as_ref()
+            .expect("bid request tracked");
+        assert_eq!(context.perpetual_id, 1);
+        assert_eq!(context.account_id, 7);
+        assert_eq!(context.request_id, u64::MAX);
     }
 
     #[test]
@@ -622,6 +649,7 @@ mod tests {
     #[tokio::test]
     async fn test_stream_recent_blocks() {
         let client = RpcClient::builder()
+            .layer(ThrottleLayer::new(15))
             .layer(RetryBackoffLayer::new(10, 100, 200))
             .connect("https://testnet-rpc.monad.xyz")
             .await
