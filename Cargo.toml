@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/sdk", "crates/cli"]
 
 [workspace.package]
-version = "0.2.10"
+version = "0.2.11"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/PerplFoundation/dex-sdk"
@@ -44,3 +44,13 @@ tokio = { version = "1.53.1", features = [
   "time",
 ] }
 tokio-util = { version = "0.7.19" }
+
+# Not used directly: floors for the whole dependency graph. rustls-webpki
+# 0.103.16 is the first release that rejects a certificate path through the
+# compromised eMudhra (emSign) intermediates of October 2026, and
+# webpki-root-certs 1.0.10 drops the root that signed them. Nothing above them
+# requires either yet (rustls 0.23.46 accepts 0.103.14), and a library's
+# lockfile reaches no consumer -- so without these, a downstream lockfile keeps
+# whatever it resolved first, and only a floor here moves it on upgrade.
+rustls-webpki = { version = "0.103.16", default-features = false }
+webpki-root-certs = { version = "1.0.10" }
