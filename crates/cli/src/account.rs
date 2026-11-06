@@ -15,19 +15,22 @@ use crossterm::{
 };
 use fastnum::UD64;
 use futures::StreamExt;
-use perpl_sdk::{Chain, state::Exchange, stream, types};
+use perpl_sdk::{Chain, state::Exchange, types};
 use tabled::{Table, Tabled, settings::Style};
 use tokio_util::sync::CancellationToken;
 
-pub(crate) async fn render<P: Provider + Clone>(
+use crate::Streaming;
+
+pub(crate) async fn render<P: Provider + Clone + 'static>(
     chain: Chain,
     provider: P,
+    streaming: &Streaming,
     mut exchange: Exchange,
     num_blocks: Option<u64>,
     num_trades: usize,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let stream = stream::raw(&chain, provider, exchange.instant().next(), tokio::time::sleep);
+    let stream = streaming.once(&chain, provider, exchange.instant().next());
     let mut stream = pin!(stream);
 
     let mut blocks_left = num_blocks;

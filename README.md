@@ -30,9 +30,13 @@ cargo doc -p perpl-sdk --no-deps --open
 
 ## Crates
 
-* [perpl-sdk](./crates/sdk/README.md): SDK types for building and maintaining in-memory cache of the exchange state, along with order posting helpers.
+* [perpl-sdk](./crates/sdk/README.md): SDK types for building and maintaining in-memory cache of the exchange state, streamed by commit state over websocket and/or polling, along with order posting helpers.
 * [perpl-cli](./crates/cli/README.md): CLI for reading and tracing exchange state and events, and for placing, cancelling and changing orders.
 
 ## Usage
 
 See [PerplFoundation/dex-sdk-examples](https://github.com/PerplFoundation/dex-sdk-examples) for some usage examples.
+
+## Design notes
+
+* [Event source](./docs/design/event-source.md): the commit-state-aware event stream, the Monad node and alloy behaviour it relies on, and the measurements behind its defaults.

@@ -5,8 +5,17 @@
 //! Convenient in-memory cache of on-chain exchange state.
 //!
 //! Use [`state::SnapshotBuilder`] to capture initial state snapshot, then
-//! [`stream::raw`] to catch up with the recent state and keep snapshot
-//! up to date.
+//! [`stream::EventSource`] (or the simpler, polling-only [`stream::raw`]) to
+//! catch up with the recent state and keep snapshot up to date.
+//!
+//! [`stream::EventSource`] follows Monad's consensus: every block is
+//! delivered as soon as it reaches the requested [`types::CommitState`]
+//! (`Proposed`, `Voted` or `Finalized`) and again when it finalizes,
+//! subscribing over websocket where one is available and polling to fill
+//! every gap, so the stream is always continuous and delivered exactly once
+//! per block and commit state. [`state::Exchange::apply_events_at`] keeps a
+//! speculative overlay for the blocks below the commit state the consumer
+//! trusts, next to the committed snapshot.
 //!
 //! Use [`types::OrderRequest::builder`] to build an order from decimals in
 //! human units - it quantizes them against the perpetual's own precision and
@@ -29,10 +38,6 @@
 //!
 //! * Funding events processing is to follow.
 //!
-//! * Current version relies on log polling to implement reliably continuous
-//!   stream of events. Future versions could improve indexing latency by
-//!   utilizing WebSocket subscriptions and/or Monad [`execution events`].
-//!
 //! * Test coverage is far below reasonable.
 //!
 //! # Features
@@ -41,6 +46,7 @@
 //! | --- | --- | --- |
 //! | `display` | yes | Enables [`std::fmt::Display`] implementation for state types. |
 //! | `testing` | yes | Enables [`testing`] module. |
+//! | `ws` | no | WebSocket subscriptions for [`stream::EventSource::with_ws_url`]. Needs a tokio runtime. |
 //!
 //! # Testing
 //!
@@ -49,7 +55,6 @@
 //!
 //!
 //! [`Perpl`]: https://perpl.xyz
-//! [`execution events`]: https://docs.monad.xyz/execution-events/
 
 pub mod abi;
 pub mod error;

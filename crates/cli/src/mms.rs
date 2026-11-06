@@ -17,7 +17,7 @@ use futures::StreamExt;
 use perpl_sdk::{
     Chain,
     state::{Exchange, OrderBook, OrderEventType, Perpetual, StateEvents},
-    stream, types,
+    types,
 };
 use tabled::{
     Table,
@@ -25,7 +25,7 @@ use tabled::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{args::BookArgs, highlight::Highlights};
+use crate::{Streaming, args::BookArgs, highlight::Highlights};
 
 /// Tight band around the mid the makers' resting size is measured in, the depth
 /// a taker actually pays for.
@@ -43,9 +43,10 @@ pub(crate) struct Maker {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn render<P: Provider + Clone>(
+pub(crate) async fn render<P: Provider + Clone + 'static>(
     chain: Chain,
     provider: P,
+    streaming: &Streaming,
     mut exchange: Exchange,
     makers: Vec<Maker>,
     highlights: Highlights,
@@ -53,7 +54,7 @@ pub(crate) async fn render<P: Provider + Clone>(
     num_blocks: Option<u64>,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let stream = stream::raw(&chain, provider, exchange.instant().next(), tokio::time::sleep);
+    let stream = streaming.once(&chain, provider, exchange.instant().next());
     let mut stream = pin!(stream);
 
     let mut blocks_left = num_blocks;

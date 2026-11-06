@@ -3,14 +3,15 @@ use std::pin::pin;
 use alloy::providers::Provider;
 use colored::Colorize;
 use futures::StreamExt;
-use perpl_sdk::{Chain, abi::dex::Exchange::ExchangeEvents, state::Exchange, stream};
+use perpl_sdk::{Chain, abi::dex::Exchange::ExchangeEvents, state::Exchange};
 use tokio_util::sync::CancellationToken;
 
-use crate::highlight::Highlights;
+use crate::{Streaming, highlight::Highlights};
 
-pub(crate) async fn render<P: Provider + Clone>(
+pub(crate) async fn render<P: Provider + Clone + 'static>(
     chain: Chain,
     provider: P,
+    streaming: &Streaming,
     mut exchange: Exchange,
     highlights: &Highlights,
     num_blocks: Option<u64>,
@@ -19,7 +20,11 @@ pub(crate) async fn render<P: Provider + Clone>(
     println!("{}\n", format!("{:#^144}", " Initial Snapshot ").bold().purple());
     println!("{:#}", exchange);
 
-    let stream = stream::raw(&chain, provider, exchange.instant().next(), tokio::time::sleep);
+    // Every commit state at or above the minimum is traced, each block
+    // again at each state; the snapshot commits at `trace_commit`, lower
+    // states show as speculative state events
+    let commit = streaming.trace_commit();
+    let (stream, _handle) = streaming.source(&chain, provider, exchange.instant().next());
     let mut stream = pin!(stream);
 
     let mut blocks_left = num_blocks;
@@ -32,11 +37,20 @@ pub(crate) async fn render<P: Provider + Clone>(
         }
 
         let block_events = res?;
+        let tag = format!(
+            " [{}]{}",
+            block_events.commit_state(),
+            if block_events.supersedes() { " [supersedes]" } else { "" }
+        );
+        let state_events = exchange.apply_events_at(&block_events, commit)?;
+        if state_events.is_none() && !block_events.supersedes() {
+            // Re-send of a block already committed: just note the progress
+            println!("{}", format!("{}{}", block_events.instant(), tag).bold().purple());
+            continue;
+        }
         println!("\n\n{}\n", format!("{:=^144}", " Block Events ").bold().purple());
 
-        println!("{}", format!("{}", block_events.instant()).bold().purple());
-
-        let state_events = exchange.apply_events(&block_events)?;
+        println!("{}", format!("{}{}", block_events.instant(), tag).bold().purple());
 
         let mut prev_tx = None;
         let state_events_ref = state_events.as_ref();

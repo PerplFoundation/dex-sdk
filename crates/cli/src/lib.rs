@@ -20,12 +20,13 @@ use alloy::{
 };
 use anyhow::Context;
 use args::Cli;
+use futures::Stream;
 use perpl_sdk::{
     Chain,
     abi::{dex, errors::Exchange::ExchangeErrors},
     error::{DexError, ProviderError, RevertReason},
     state::SnapshotBuilder,
-    types,
+    stream, types,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -35,6 +36,54 @@ use crate::{
     mms::Maker,
 };
 
+/// How the live commands stream events, from the global flags.
+#[derive(Clone, Debug)]
+pub(crate) struct Streaming {
+    ws_urls: Vec<String>,
+    min: types::CommitState,
+}
+
+impl Streaming {
+    /// Lowest commit state delivered.
+    pub(crate) fn min(&self) -> types::CommitState { self.min }
+
+    /// Commit state `trace` takes its snapshot at and commits blocks at:
+    /// never below `Voted`, so a `proposed` trace shows proposals as
+    /// speculative state on top of a committed snapshot.
+    pub(crate) fn trace_commit(&self) -> types::CommitState {
+        self.min.max(types::CommitState::Voted)
+    }
+
+    /// The multi-level event source.
+    pub(crate) fn source<P: Provider + Clone + 'static>(
+        &self,
+        chain: &Chain,
+        provider: P,
+        from: types::StateInstant,
+    ) -> (
+        impl Stream<Item = Result<stream::RawBlockEvents, DexError>> + Send + 'static,
+        stream::SourceHandle,
+    ) {
+        let mut source = stream::EventSource::new(chain, provider, from).min_commit_state(self.min);
+        for url in &self.ws_urls {
+            source = source.with_ws_url(url.clone());
+        }
+        source.build(tokio::time::sleep)
+    }
+
+    /// One batch per height at or above the minimum commit state, which is
+    /// what the live views apply as-is. Ends with an error if a `proposed`
+    /// block that was shown gets superseded, as the view would be stale.
+    pub(crate) fn once<P: Provider + Clone + 'static>(
+        &self,
+        chain: &Chain,
+        provider: P,
+        from: types::StateInstant,
+    ) -> impl Stream<Item = Result<stream::RawBlockEvents, DexError>> + Send + 'static {
+        stream::once(self.source(chain, provider, from).0)
+    }
+}
+
 pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let chain = if cli.testnet { Chain::testnet() } else { Chain::mainnet() };
     let (rpc, default) = cli.rpc.map(|rpc| (rpc, false)).unwrap_or(if cli.testnet {
@@ -42,6 +91,24 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         (args::DEFAULT_MAINNET_RPC_PROVIDER.to_string(), true)
     });
+    let ws_urls = if cli.no_ws {
+        vec![]
+    } else if !cli.ws_url.is_empty() {
+        cli.ws_url.clone()
+    } else if default {
+        vec![
+            if cli.testnet {
+                args::DEFAULT_TESTNET_WS_PROVIDER
+            } else {
+                args::DEFAULT_MAINNET_WS_PROVIDER
+            }
+            .to_string(),
+        ]
+    } else {
+        vec![]
+    };
+    let streaming =
+        Streaming { ws_urls, min: cli.commit_state.unwrap_or(types::CommitState::Voted) };
     let client = if default || cli.rpc_throttle.is_some() {
         // Apply throttling with default RPC
         RpcClient::builder()
@@ -99,6 +166,13 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     let mut builder = SnapshotBuilder::new(&chain, provider.clone());
     if let Some(block) = cli.block {
         builder = builder.at_block(BlockId::number(block));
+    } else {
+        // The live views apply every block they show, so they snapshot at
+        // the state they show; `trace` commits at `Voted` at the lowest
+        builder = builder.at_commit_state(match cli.command {
+            Commands::Trace => streaming.trace_commit(),
+            _ => streaming.min(),
+        });
     }
 
     if !cli.account.is_empty() {
@@ -192,6 +266,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 account::render(
                     chain,
                     provider,
+                    &streaming,
                     exchange.unwrap(),
                     cli.num_blocks,
                     *num_trades,
@@ -203,6 +278,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 book::render(
                     chain,
                     provider,
+                    &streaming,
                     exchange.unwrap(),
                     book,
                     &highlights,
@@ -215,6 +291,7 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 mms::render(
                     chain,
                     provider,
+                    &streaming,
                     exchange.unwrap(),
                     makers,
                     highlights,
@@ -225,14 +302,22 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
                 .await?
             },
             ShowCommands::Trades => {
-                trades::render(chain, provider, &highlights, cli.num_blocks, cancellation_token)
-                    .await?
+                trades::render(
+                    chain,
+                    provider,
+                    &streaming,
+                    &highlights,
+                    cli.num_blocks,
+                    cancellation_token,
+                )
+                .await?
             },
         },
         Commands::Trace => {
             trace::render(
                 chain,
                 provider,
+                &streaming,
                 exchange.unwrap(),
                 &highlights,
                 cli.num_blocks,

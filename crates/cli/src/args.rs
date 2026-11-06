@@ -11,6 +11,8 @@ use perpl_sdk::types;
 
 pub(crate) const DEFAULT_MAINNET_RPC_PROVIDER: &str = "https://rpc.monad.xyz";
 pub(crate) const DEFAULT_TESTNET_RPC_PROVIDER: &str = "https://testnet-rpc.monad.xyz";
+pub(crate) const DEFAULT_MAINNET_WS_PROVIDER: &str = "wss://rpc.monad.xyz";
+pub(crate) const DEFAULT_TESTNET_WS_PROVIDER: &str = "wss://testnet-rpc.monad.xyz";
 pub(crate) const DEFAULT_RPC_THROTTLING: u32 = 15;
 
 #[derive(Parser, Debug)]
@@ -31,6 +33,21 @@ pub struct Cli {
     /// none for custom]
     #[arg(long, global = true)]
     pub rpc_throttle: Option<u32>,
+
+    /// WebSocket endpoint(s) to subscribe to for lower latency, repeatable
+    /// [default: wss://rpc.monad.xyz / wss://testnet-rpc.monad.xyz along with
+    /// the default RPC, none with a custom `--rpc`]
+    #[arg(long, global = true, value_name = "URL")]
+    pub ws_url: Vec<String>,
+
+    /// Poll only, without a WebSocket subscription
+    #[arg(long, global = true)]
+    pub no_ws: bool,
+
+    /// Lowest commit state of blocks to trace or show: proposed (executed, may
+    /// be abandoned), voted (safe) or finalized [default: voted]
+    #[arg(long, global = true, value_name = "STATE")]
+    pub commit_state: Option<types::CommitState>,
 
     /// Exchange smart contract address [default: mainnet/testnet smart
     /// contracts]

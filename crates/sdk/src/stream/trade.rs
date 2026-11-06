@@ -1,6 +1,13 @@
-use std::{collections::HashMap, num::NonZeroU16};
+use std::{
+    collections::{HashMap, VecDeque},
+    num::NonZeroU16,
+};
 
-use alloy::{eips::BlockId, primitives::U256, providers::Provider};
+use alloy::{
+    eips::BlockId,
+    primitives::{B256, U256},
+    providers::Provider,
+};
 use futures::{Stream, StreamExt};
 
 use crate::{
@@ -14,12 +21,24 @@ pub type TradeEvent = types::EventContext<types::Trade>;
 pub type BlockTrades = types::BlockEvents<TradeEvent>;
 
 /// Returns stream of normalized trade events aggregated from the [`super::raw`]
-/// event stream, batched per block.
+/// or [`super::EventSource`] event stream, batched per block.
 ///
 /// Listens to `MakerOrderFilledV2` and `TakerOrderFilledV2` events (and their
 /// V1 predecessors when replaying pre-v1.1.7.4 history), batches all maker
 /// fills per taker into unified `Trade` events, normalizes fixed-point values
 /// to decimals and recovers builder attribution from the order requests.
+///
+/// # Commit states
+///
+/// One [`BlockTrades`] batch is produced per input batch, carrying the input's
+/// commit state, block hash and `supersedes` flag. Fed from [`super::raw`]
+/// that is one `Voted` batch per block, as before. Fed from an
+/// [`super::EventSource`] with a lower [`super::EventSource::min_commit_state`]
+/// the same trades arrive first in a `Proposed` (or `Voted`) batch and again
+/// in the `Finalized` one, and a superseding batch replaces every batch at its
+/// height and above. A trade is identified by its block hash, transaction
+/// hash and log index. Consumers that want one batch per height put
+/// [`super::once`] or [`super::finalized`] in front.
 ///
 /// # Safety note
 ///
@@ -162,6 +181,19 @@ pub struct TradeProcessor {
     maker_orders: HashMap<(types::PerpetualId, types::OrderId), PlacedOrder>,
     pending_maker_fills: Vec<PendingMakerFill>,
     prev_tx_index: Option<u64>,
+    /// Undo log of `maker_orders` writes made by `Proposed` blocks, oldest
+    /// first: a superseded proposal must not attribute later fills of a
+    /// reused order ID to an order that never existed. Promoted (dropped)
+    /// when the block arrives again at `Voted` or above.
+    journal: VecDeque<JournalEntry>,
+    /// Index into `journal` of the block being processed, if `Proposed`.
+    journaling: Option<usize>,
+}
+
+struct JournalEntry {
+    height: u64,
+    hash: Option<B256>,
+    undo: Vec<((types::PerpetualId, types::OrderId), Option<PlacedOrder>)>,
 }
 
 /// Attribution of an order observed being placed, recovered at fill time.
@@ -180,13 +212,22 @@ impl TradeProcessor {
             maker_orders: HashMap::new(),
             pending_maker_fills: Vec::new(),
             prev_tx_index: None,
+            journal: VecDeque::new(),
+            journaling: None,
         }
     }
 
     /// Process a block of raw events and extract trades.
     ///
-    /// This is pure logic - no async, no I/O.
+    /// This is pure logic - no async, no I/O. The output carries the input's
+    /// tags; see [`trade`] for what re-sent and superseding blocks mean.
     pub fn process_block(&mut self, events: &super::RawBlockEvents) -> BlockTrades {
+        // Transaction scratch never outlives a block
+        self.order_context = None;
+        self.pending_maker_fills.clear();
+        self.prev_tx_index = None;
+        self.reconcile_journal(events);
+
         let mut trades = Vec::new();
 
         for event in events.events() {
@@ -203,7 +244,53 @@ impl TradeProcessor {
             self.prev_tx_index = Some(event.tx_index());
         }
 
-        BlockTrades::new(events.instant(), trades)
+        self.journaling = None;
+        events.map_events(|_| trades)
+    }
+
+    /// Undoes or promotes journaled `maker_orders` writes for the block about
+    /// to be processed, and opens a journal entry for it if it is `Proposed`.
+    fn reconcile_journal(&mut self, events: &super::RawBlockEvents) {
+        let height = events.block_number();
+        let hash = events.block_hash();
+        let state = events.commit_state();
+
+        // A rewind, or a committed block that differs from the proposal
+        // applied at its height: everything from that height up is gone.
+        let conflicting = self
+            .journal
+            .iter()
+            .any(|e| e.height == height && hash.is_some() && e.hash.is_some() && e.hash != hash);
+        if events.supersedes() || conflicting {
+            while self.journal.back().is_some_and(|e| e.height >= height) {
+                let entry = self.journal.pop_back().expect("checked above");
+                for (key, prev) in entry.undo.into_iter().rev() {
+                    match prev {
+                        Some(order) => self.maker_orders.insert(key, order),
+                        None => self.maker_orders.remove(&key),
+                    };
+                }
+            }
+        }
+
+        if state >= types::CommitState::Voted {
+            // Committed: the proposal's writes stand
+            self.journal.retain(|e| e.height > height);
+            self.journaling = None;
+        } else {
+            let same = self
+                .journal
+                .iter()
+                .position(|e| e.height == height && e.hash == hash && hash.is_some());
+            self.journaling = Some(match same {
+                Some(index) => index,
+                None => {
+                    self.journal
+                        .push_back(JournalEntry { height, hash, undo: Vec::new() });
+                    self.journal.len() - 1
+                },
+            });
+        }
     }
 
     /// Process a single event, potentially emitting a trade.
@@ -237,13 +324,19 @@ impl TradeProcessor {
                     && self.config.perpetuals.contains_key(&context.perpetual_id)
                     && let Some(order_id) = NonZeroU16::new(e.orderId.to())
                 {
-                    self.maker_orders.insert(
-                        (context.perpetual_id, order_id),
+                    let key = (context.perpetual_id, order_id);
+                    let prev = self.maker_orders.insert(
+                        key,
                         PlacedOrder {
                             client_order_id: context.request_id,
                             builder: context.builder,
                         },
                     );
+                    if let Some(index) = self.journaling
+                        && let Some(entry) = self.journal.get_mut(index)
+                    {
+                        entry.undo.push((key, prev));
+                    }
                 }
                 None
             },
@@ -672,5 +765,191 @@ mod tests {
         for bt in &block_trades {
             println!("block trades: {:?}", bt);
         }
+    }
+}
+
+#[cfg(test)]
+mod journal_tests {
+    use alloy::primitives::{B256, Bytes, TxHash, U256};
+
+    use super::*;
+    use crate::{
+        abi::dex::Exchange::{MakerOrderFilledV2, OrderPlaced, OrderRequestV2, TakerOrderFilledV2},
+        types::{CommitState, StateInstant},
+    };
+
+    const PERP: types::PerpetualId = 7;
+
+    fn processor() -> TradeProcessor {
+        let converters = PerpetualConverters {
+            price_converter: num::Converter::new(0),
+            size_converter: num::Converter::new(0),
+        };
+        TradeProcessor::new(NormalizationConfig {
+            collateral_converter: num::Converter::new(0),
+            perpetuals: HashMap::from([(PERP, converters)]),
+        })
+    }
+
+    fn request(account: u64, desc: u64) -> ExchangeEvents {
+        ExchangeEvents::OrderRequestV2(OrderRequestV2 {
+            perpId: U256::from(PERP),
+            accountId: U256::from(account),
+            orderDescId: U256::from(desc),
+            orderId: U256::ZERO,
+            orderType: 0, // OpenLong
+            pricePNS: U256::from(100),
+            lotLNS: U256::from(1),
+            expiryBlock: U256::ZERO,
+            postOnly: false,
+            fillOrKill: false,
+            immediateOrCancel: false,
+            maxMatches: U256::ZERO,
+            leverageHdths: U256::ZERO,
+            lastExecutionBlock: U256::ZERO,
+            amountCNS: U256::ZERO,
+            maxNegPnlCollatBPS: U256::ZERO,
+            gasLeft: U256::ZERO,
+            extension: Bytes::new(),
+        })
+    }
+
+    fn placed(order_id: u64) -> ExchangeEvents {
+        ExchangeEvents::OrderPlaced(OrderPlaced {
+            orderId: U256::from(order_id),
+            lotLNS: U256::from(1),
+            lockedBalanceCNS: U256::ZERO,
+            amountCNS: Default::default(),
+            balanceCNS: U256::ZERO,
+        })
+    }
+
+    fn maker_fill(account: u64, order_id: u64) -> ExchangeEvents {
+        ExchangeEvents::MakerOrderFilledV2(MakerOrderFilledV2 {
+            perpId: U256::from(PERP),
+            accountId: U256::from(account),
+            orderId: U256::from(order_id),
+            pricePNS: U256::from(100),
+            lotLNS: U256::from(1),
+            feeCNS: U256::ZERO,
+            lockedBalanceCNS: U256::ZERO,
+            amountCNS: Default::default(),
+            balanceCNS: U256::ZERO,
+            builderId: U256::ZERO,
+            builderFeeCNS: U256::ZERO,
+        })
+    }
+
+    fn taker_fill() -> ExchangeEvents {
+        ExchangeEvents::TakerOrderFilledV2(TakerOrderFilledV2 {
+            entryPricePNS: U256::from(100),
+            collatPricePNS: U256::from(100),
+            pnlPricePNS: U256::from(100),
+            lotLNS: U256::from(1),
+            feeCNS: U256::ZERO,
+            amountCNS: Default::default(),
+            balanceCNS: U256::ZERO,
+            builderId: U256::ZERO,
+            builderFeeCNS: U256::ZERO,
+        })
+    }
+
+    fn block(
+        height: u64,
+        hash: u8,
+        state: CommitState,
+        supersedes: bool,
+        events: Vec<ExchangeEvents>,
+    ) -> super::super::RawBlockEvents {
+        let events = events
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| super::super::RawEvent::new(TxHash::repeat_byte(hash), 0, i as u64, e))
+            .collect();
+        super::super::RawBlockEvents::new(StateInstant::new(height, height), events)
+            .with_commit_state(state)
+            .with_block_hash(B256::repeat_byte(hash))
+            .superseding(supersedes)
+    }
+
+    fn fill_block(height: u64, hash: u8, state: CommitState) -> super::super::RawBlockEvents {
+        block(height, hash, state, false, vec![request(3, 33), maker_fill(1, 7), taker_fill()])
+    }
+
+    #[test]
+    fn output_carries_input_tags_and_same_trades_at_every_state() {
+        let mut p = processor();
+        p.process_block(&block(1, 1, CommitState::Voted, false, vec![request(1, 11), placed(7)]));
+        let proposed = p.process_block(&fill_block(2, 2, CommitState::Proposed));
+        assert_eq!(proposed.commit_state(), CommitState::Proposed);
+        assert_eq!(proposed.block_hash(), Some(B256::repeat_byte(2)));
+        assert_eq!(proposed.events().len(), 1);
+        let trade = proposed.events()[0].event();
+        assert_eq!(trade.taker_request_id, 33);
+        assert_eq!(trade.maker_fills[0].maker_client_order_id, Some(11));
+
+        let finalized = p.process_block(&fill_block(2, 2, CommitState::Finalized));
+        assert_eq!(finalized.commit_state(), CommitState::Finalized);
+        assert_eq!(finalized.events().len(), 1);
+        assert_eq!(finalized.events()[0].event().maker_fills[0].maker_client_order_id, Some(11));
+        assert!(p.journal.is_empty(), "nothing left journaled");
+    }
+
+    #[test]
+    fn superseded_proposal_does_not_attribute_a_reused_order_id() {
+        let mut p = processor();
+        // Order 7 was placed for request 11 long ago.
+        p.process_block(&block(1, 1, CommitState::Voted, false, vec![request(1, 11), placed(7)]));
+        // A proposal re-places order 7 for request 22 ...
+        p.process_block(&block(
+            2,
+            2,
+            CommitState::Proposed,
+            false,
+            vec![request(2, 22), placed(7)],
+        ));
+        assert_eq!(p.journal.len(), 1);
+        // ... and is abandoned in favour of a proposal that does not.
+        p.process_block(&block(2, 9, CommitState::Proposed, true, vec![]));
+        let trades = p.process_block(&fill_block(3, 3, CommitState::Proposed));
+        assert_eq!(trades.events()[0].event().maker_fills[0].maker_client_order_id, Some(11));
+        // Committing promotes the journal.
+        p.process_block(&block(2, 9, CommitState::Finalized, false, vec![]));
+        p.process_block(&fill_block(3, 3, CommitState::Finalized));
+        assert!(p.journal.is_empty());
+    }
+
+    #[test]
+    fn committed_block_differing_from_proposal_undoes_it() {
+        let mut p = processor();
+        p.process_block(&block(1, 1, CommitState::Voted, false, vec![request(1, 11), placed(7)]));
+        p.process_block(&block(
+            2,
+            2,
+            CommitState::Proposed,
+            false,
+            vec![request(2, 22), placed(7)],
+        ));
+        // Finalized 2 is another block (no supersedes flag from a naive source).
+        p.process_block(&block(2, 9, CommitState::Finalized, false, vec![]));
+        let trades = p.process_block(&fill_block(3, 3, CommitState::Finalized));
+        assert_eq!(trades.events()[0].event().maker_fills[0].maker_client_order_id, Some(11));
+    }
+
+    #[test]
+    fn legacy_voted_input_never_journals_and_scratch_resets_per_block() {
+        let mut p = processor();
+        // A block ending mid-request: the context must not leak into the next.
+        p.process_block(&block(1, 1, CommitState::Voted, false, vec![request(1, 11)]));
+        assert!(p.journal.is_empty());
+        let trades = p.process_block(&block(
+            2,
+            2,
+            CommitState::Voted,
+            false,
+            vec![maker_fill(1, 7), taker_fill()],
+        ));
+        assert!(trades.events().is_empty(), "no request context in this block");
+        assert!(p.journal.is_empty());
     }
 }

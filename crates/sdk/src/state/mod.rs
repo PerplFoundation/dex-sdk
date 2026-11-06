@@ -2,7 +2,11 @@
 //!
 //! Initial state snapshot has to be taken from the recent on-chain state by the
 //! [`SnapshotBuilder`], then the snapshot can be kept up to date by the event
-//! data from [`crate::stream::raw`] in a consistent manner.
+//! data from [`crate::stream::EventSource`] or [`crate::stream::raw`] in a
+//! consistent manner: [`Exchange::apply_events`] commits every block it is
+//! given, [`Exchange::apply_events_at`] commits only blocks at or above a
+//! chosen [`crate::types::CommitState`] and keeps the rest in a speculative
+//! overlay.
 //!
 //! [`Exchange`] is at the root of indexed state and provides access to all
 //! nested state entities, as well as basic market data derived from observed
@@ -73,7 +77,8 @@ const DEFAULT_POSITIONS_PER_BATCH: usize = 1000;
 const PERPETUAL_PROBES_PER_BATCH: usize = 256;
 
 /// Builds a consistent snapshot of the exchange state
-/// that can be then kept up-to-date by the data from [`crate::stream::raw`].
+/// that can be then kept up-to-date by the data from
+/// [`crate::stream::EventSource`] or [`crate::stream::raw`].
 pub struct SnapshotBuilder<P> {
     chain: Chain,
     instance: dex::Exchange::ExchangeInstance<P>,
@@ -109,6 +114,19 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
     /// consistency.
     pub fn at_block(mut self, block: BlockId) -> Self {
         self.block_id = block;
+        self
+    }
+
+    /// Sets the block tag to fetch the state at by commit state: `Proposed`
+    /// is `latest`, `Voted` is `safe` (the default), `Finalized` is
+    /// `finalized`.
+    ///
+    /// A consumer that commits only `Finalized` blocks (see
+    /// [`Exchange::apply_events_at`]) should snapshot at `Finalized` too, so
+    /// that the committed snapshot never holds a block consensus could still
+    /// abandon.
+    pub fn at_commit_state(mut self, state: types::CommitState) -> Self {
+        self.block_id = BlockId::Number(state.block_tag());
         self
     }
 

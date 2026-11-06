@@ -27,7 +27,8 @@ perpl-sdk = { version = "0.2", default-features = false, features = ["display"] 
 
 State tracking is two steps: take a consistent snapshot at some block with
 [`state::SnapshotBuilder`], then feed the raw event stream from
-[`stream::raw`] into `Exchange::apply_events` to catch up and stay current.
+[`stream::EventSource`] (or the simpler, polling-only [`stream::raw`]) into
+`Exchange::apply_events` to catch up and stay current.
 
 ```rust
 use std::pin::pin;
@@ -52,9 +53,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     println!("{} perpetuals @ {}", exchange.perpetuals().len(), exchange.instant());
 
-    // Keep the snapshot up to date, starting from the block right after it.
-    let events = stream::raw(&chain, provider, exchange.instant().next(), tokio::time::sleep);
-    let mut events = pin!(events);
+    // Keep the snapshot up to date, starting from the block right after it:
+    // one batch per block once it is voted on (the `safe` tag), the same
+    // cadence `stream::raw` has, but catching up in block ranges.
+    let (events, _handle) =
+        stream::EventSource::new(&chain, provider, exchange.instant().next()).build(tokio::time::sleep);
+    let mut events = pin!(stream::once(events));
     while let Some(block_events) = events.next().await {
         let state_events = exchange.apply_events(&block_events?)?;
         for event in state_events.iter().flat_map(|block| block.events()) {
@@ -64,6 +68,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+### Commit states, websockets and speculative state
+
+Monad executes a block as soon as it is proposed and announces it again at
+every later consensus stage. `EventSource` follows that: it delivers every
+block at the lowest `types::CommitState` asked for (`Proposed`, `Voted` or
+`Finalized`) and once more when it finalizes, tagging each batch with its
+state, block hash and consensus block id. Subscribing over websocket (feature
+`ws`) gets a `Proposed` block about 300 ms before `Voted` and 600 ms before
+`Finalized`; polling fills every gap, so the stream is continuous and
+delivered exactly once per block and state no matter what the subscription
+does. A proposal consensus abandons shows up as a later batch at the same
+height with `supersedes()` set, which invalidates every speculative batch
+from that height up.
+
+`Exchange::apply_events_at` takes the commit state to *trust*: blocks at or
+above it update the committed snapshot, blocks below it update a speculative
+overlay (`Exchange::speculative()`) and still produce state events, so a
+consumer can react to a proposed fill immediately and settle on the finalized
+one:
+
+```rust
+use perpl_sdk::{state::SnapshotBuilder, stream, types::CommitState};
+
+let mut exchange = SnapshotBuilder::new(&chain, provider.clone())
+    .with_accounts(vec![account])
+    .at_commit_state(CommitState::Finalized) // never hold a revertible block
+    .build()
+    .await?;
+
+let (events, handle) = stream::EventSource::new(&chain, provider, exchange.instant().next())
+    .min_commit_state(CommitState::Proposed)
+    .with_ws_url("wss://rpc.monad.xyz") // feature `ws`; repeatable, earliest wins
+    .build(tokio::time::sleep);
+let mut events = pin!(events);
+while let Some(block) = events.next().await {
+    let block = block?;
+    // Proposed and Voted batches go to the overlay, Finalized ones commit
+    if let Some(state_events) = exchange.apply_events_at(&block, CommitState::Finalized)? {
+        println!(
+            "{} [{}{}] {} state events; speculative book at {}",
+            block.instant(),
+            block.commit_state(),
+            if block.supersedes() { ", supersedes" } else { "" },
+            state_events.events().len(),
+            exchange.speculative_instant(),
+        );
+    }
+}
+let _ = handle.status(); // connection and cursor state, for monitoring
+```
+
+The `stream::once` adapter turns the multi-level stream back into one batch
+per block (the first at or above the minimum), and `stream::finalized` keeps
+only finalized ones. Both `stream::raw` and `Exchange::apply_events` keep
+working as before; they are the `Voted` and the commit-everything special
+cases of the above.
 
 `Chain::mainnet()` and `Chain::testnet()` carry the deployed contract addresses;
 `Chain::custom` points the SDK at another deployment. By default the SDK
@@ -79,11 +140,15 @@ than failing on a missing selector.
 
 ### Trades
 
-[`stream::trade`] wraps the raw stream into normalized trade events, batching
-all maker fills per taker and converting fixed-point values to decimals:
+[`stream::trade`] wraps a raw stream into normalized trade events, batching
+all maker fills per taker and converting fixed-point values to decimals. Fed
+from an `EventSource` with `min_commit_state(Proposed)` it yields the trades
+of a proposed block right away and again, tagged `Finalized`, when the block
+finalizes:
 
 ```rust
-let raw = stream::raw(&chain, provider.clone(), exchange.instant().next(), tokio::time::sleep);
+let (raw, _) = stream::EventSource::new(&chain, provider.clone(), exchange.instant().next())
+    .build(tokio::time::sleep);
 let trades = stream::trade(&chain, provider, raw).await?;
 ```
 
@@ -169,6 +234,7 @@ targets the V1 entrypoints, which cannot carry builder attribution.
 | `display` | yes | `std::fmt::Display` implementations for state types (order book views, account and exchange rendering). |
 | `testing` | yes | The `testing` module: a local Anvil-based exchange deployment. Pulls in `alloy/node-bindings`. |
 | `test-utils` | no | Test builders (`Perpetual::for_test`, `with_bid`, `with_ask`, …) for downstream crates, without exposing internal mutation methods in production builds. |
+| `ws` | no | WebSocket subscriptions for `stream::EventSource::with_ws_url`. Pulls in alloy's pubsub transport, which needs a tokio runtime. |
 
 ## Testing
 

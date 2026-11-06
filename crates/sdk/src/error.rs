@@ -55,6 +55,12 @@ pub enum DexError {
     #[error("block out of order, expected: {0}, got: {1}")]
     BlockOutOfOrder(u64, u64),
 
+    #[error("block {0} was superseded by another proposal at the same height")]
+    BlockSuperseded(u64),
+
+    #[error("committed block {0} differs from the block the snapshot was updated with")]
+    CommittedBlockMismatch(u64),
+
     #[error("fee schedule not found: {0}")]
     FeeScheduleNotFound(FeeScheduleKey),
 

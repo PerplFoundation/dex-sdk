@@ -1,5 +1,6 @@
-use std::iter;
+use std::{collections::VecDeque, iter};
 
+use alloy::primitives::B256;
 use fastnum::{D64, D256, UD64, UD128};
 use itertools::chain;
 
@@ -52,11 +53,32 @@ struct RawTakerFill {
 ///
 /// [`super::SnapshotBuilder`] can be used to create the snapshot at
 /// specified/latest block, which can then be kept up to date by
-/// calling [`Self::apply_events`] with events from [`crate::stream::raw`].
+/// calling [`Self::apply_events`] with events from [`crate::stream::raw`] or
+/// [`Self::apply_events_at`] with events from [`crate::stream::EventSource`].
+///
+/// # Committed state and speculative overlay
+///
+/// The snapshot itself is the *committed* state: every accessor on `self`
+/// reads it, and [`Self::instant`] is the block it is consistent with. A
+/// consumer of `Proposed` or `Voted` updates that commits only at a higher
+/// state (see [`Self::apply_events_at`]) also gets a *speculative overlay*:
+/// a full copy of the snapshot with the not-yet-committed blocks applied on
+/// top, reachable through [`Self::speculative`]. The overlay is rebuilt from
+/// the committed state whenever a block commits or a proposal is superseded,
+/// which costs one clone of the snapshot (tens to a few hundred microseconds)
+/// per committed block.
 #[derive(Clone, derive_more::Debug)]
 pub struct Exchange {
     chain: Chain,
     instant: types::StateInstant,
+    /// Hash of the last committed block, `None` right after a snapshot.
+    block_hash: Option<B256>,
+    /// Speculative blocks applied above the committed state, oldest first.
+    #[debug(skip)]
+    spec_applied: VecDeque<stream::RawBlockEvents>,
+    /// Committed state plus `spec_applied`, built lazily.
+    #[debug(skip)]
+    spec_state: Option<Box<Exchange>>,
     features: ContractFeatures,
     collateral_converter: num::Converter,
     funding_interval_blocks: u32,
@@ -93,6 +115,9 @@ impl Exchange {
         Self {
             chain,
             instant,
+            block_hash: None,
+            spec_applied: VecDeque::new(),
+            spec_state: None,
             features,
             collateral_converter,
             funding_interval_blocks,
@@ -113,8 +138,27 @@ impl Exchange {
     /// Chain the snapshot collected from.
     pub fn chain(&self) -> &Chain { &self.chain }
 
-    /// Instant the snapshot is consistent with or was last updated at.
+    /// Instant the committed snapshot is consistent with or was last updated
+    /// at.
     pub fn instant(&self) -> types::StateInstant { self.instant }
+
+    /// Hash of the last committed block, `None` right after a snapshot or
+    /// when the committing batches carried no hash.
+    pub fn block_hash(&self) -> Option<B256> { self.block_hash }
+
+    /// The speculative overlay: committed state plus every block applied
+    /// below the commit state through [`Self::apply_events_at`], `None` when
+    /// there is no such block. Read the `Proposed`-level book, positions or
+    /// balances from here.
+    pub fn speculative(&self) -> Option<&Exchange> { self.spec_state.as_deref() }
+
+    /// The most recent view available: the speculative overlay when there is
+    /// one, the committed snapshot otherwise.
+    pub fn latest(&self) -> &Exchange { self.spec_state.as_deref().unwrap_or(self) }
+
+    /// Instant of the speculative overlay, or of the committed snapshot
+    /// without one.
+    pub fn speculative_instant(&self) -> types::StateInstant { self.latest().instant }
 
     /// Feature set of the *deployed* contract, which can lag behind the
     /// revision the SDK targets ([`Self::revision`]). Detected while
@@ -221,18 +265,138 @@ impl Exchange {
         &mut self,
         events: &stream::RawBlockEvents,
     ) -> Result<Option<StateBlockEvents>, DexError> {
-        let next_instant = events.instant();
-        if self.instant >= next_instant {
+        self.apply_events_at(events, types::CommitState::Proposed)
+    }
+
+    /// Updates the snapshot by a block of events, committing it only if the
+    /// block reached `min` commit state.
+    ///
+    /// A block at or above `min` is applied to the committed snapshot exactly
+    /// as [`Self::apply_events`] does. A block below `min` is applied to the
+    /// speculative overlay instead (see [`Self::speculative`]); its state
+    /// events are produced all the same, tagged with the block's commit
+    /// state, but nothing the accessors of `self` return changes. Blocks
+    /// marked [`stream::RawBlockEvents::supersedes`] drop the overlay from
+    /// their height up before being applied, so a consumer that keeps its own
+    /// derived state should treat such a batch as a rewind.
+    ///
+    /// Within each layer, blocks are expected strictly in order; a re-send of
+    /// an already applied block (the same height and hash at a higher commit
+    /// state) is ignored and returns `None`, and committing a block whose
+    /// hash differs from the one the committed snapshot was built with fails
+    /// with [`DexError::CommittedBlockMismatch`], as the snapshot has to be
+    /// rebuilt then. That can only happen when committing below `Finalized`.
+    ///
+    /// A `min` of `Proposed` commits everything, which is what
+    /// [`Self::apply_events`] does; `Finalized` never commits anything a
+    /// `Proposed`-level source could later supersede, at the price of the
+    /// committed snapshot trailing the chain tip by about two blocks.
+    pub fn apply_events_at(
+        &mut self,
+        events: &stream::RawBlockEvents,
+        min: types::CommitState,
+    ) -> Result<Option<StateBlockEvents>, DexError> {
+        let height = events.block_number();
+        if events.supersedes() {
+            self.spec_applied.retain(|b| b.block_number() < height);
+            self.spec_state = None;
+        }
+        if events.commit_state() >= min {
+            return self.commit(events);
+        }
+
+        // Speculative path
+        let committed = self.instant.block_number();
+        if height <= committed {
+            // Committed already, possibly through another source
+            return Ok(None);
+        }
+        let known = self
+            .spec_applied
+            .iter()
+            .any(|b| b.block_number() == height && b.block_hash() == events.block_hash());
+        if known {
+            // Re-send at a higher state
+            return Ok(None);
+        }
+        if self
+            .spec_applied
+            .back()
+            .is_some_and(|b| b.block_number() >= height)
+        {
+            // Another proposal at a height already applied speculatively
+            self.spec_applied.retain(|b| b.block_number() < height);
+            self.spec_state = None;
+        }
+        if self.spec_state.is_none() {
+            let mut base = self.clone();
+            base.spec_applied = VecDeque::new();
+            base.spec_state = None;
+            for block in &self.spec_applied {
+                base.apply_block(block)?;
+            }
+            self.spec_state = Some(Box::new(base));
+        }
+        let overlay = self.spec_state.as_mut().expect("overlay built above");
+        let expected = overlay.instant.block_number() + 1;
+        if height != expected {
+            return Err(DexError::BlockOutOfOrder(expected, height));
+        }
+        let state_events = overlay.apply_block(events)?;
+        overlay.block_hash = events.block_hash();
+        self.spec_applied.push_back(events.clone());
+        Ok(Some(Self::tag(state_events, events)))
+    }
+
+    fn commit(
+        &mut self,
+        events: &stream::RawBlockEvents,
+    ) -> Result<Option<StateBlockEvents>, DexError> {
+        let height = events.block_number();
+        let committed = self.instant.block_number();
+        if height <= committed {
+            if height == committed
+                && let (Some(theirs), Some(ours)) = (events.block_hash(), self.block_hash)
+                && theirs != ours
+            {
+                return Err(DexError::CommittedBlockMismatch(height));
+            }
             // Block already applied
             return Ok(None);
         }
-        if self.instant.block_number() + 1 < next_instant.block_number() {
+        if committed + 1 < height {
             // Block arrived out of order
-            return Err(DexError::BlockOutOfOrder(
-                self.instant.block_number() + 1,
-                next_instant.block_number(),
-            ));
+            return Err(DexError::BlockOutOfOrder(committed + 1, height));
         }
+        let state_events = self.apply_block(events)?;
+        self.block_hash = events.block_hash();
+        // Keep only speculative blocks above the committed one and built on it
+        let diverged = self
+            .spec_applied
+            .iter()
+            .find(|b| b.block_number() == height)
+            .is_some_and(|b| b.block_hash() != events.block_hash());
+        if diverged {
+            self.spec_applied.clear();
+        } else {
+            self.spec_applied.retain(|b| b.block_number() > height);
+        }
+        self.spec_state = None;
+        Ok(Some(Self::tag(state_events, events)))
+    }
+
+    /// Tags state events with the identity of the raw block they came from.
+    fn tag(state_events: StateBlockEvents, events: &stream::RawBlockEvents) -> StateBlockEvents {
+        state_events.with_tags_of(events)
+    }
+
+    /// Applies a block to this state unconditionally; the caller checks order
+    /// and commit state.
+    fn apply_block(
+        &mut self,
+        events: &stream::RawBlockEvents,
+    ) -> Result<StateBlockEvents, DexError> {
+        let next_instant = events.instant();
 
         // apply_events runs three passes over the block:
         // Pass 1 — funding: settle the block's scheduled funding on each
@@ -329,7 +493,7 @@ impl Exchange {
             }
         }
 
-        Ok(Some(StateBlockEvents::new(self.instant, state_events)))
+        Ok(StateBlockEvents::new(self.instant, state_events))
     }
 
     pub(crate) fn apply_raw_event(

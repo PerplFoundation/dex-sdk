@@ -10,7 +10,7 @@ use perpl_sdk::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::highlight::Highlights;
+use crate::{Streaming, highlight::Highlights};
 
 /// Renders the builder attribution of a fill, empty without a builder.
 fn builder_suffix(builder: Option<BuilderAttribution>, builder_fee: UD64) -> String {
@@ -19,9 +19,10 @@ fn builder_suffix(builder: Option<BuilderAttribution>, builder_fee: UD64) -> Str
         .unwrap_or_default()
 }
 
-pub(crate) async fn render<P: Provider + Clone>(
+pub(crate) async fn render<P: Provider + Clone + 'static>(
     chain: Chain,
     provider: P,
+    streaming: &Streaming,
     highlights: &Highlights,
     num_blocks: Option<u64>,
     cancellation_token: CancellationToken,
@@ -29,7 +30,7 @@ pub(crate) async fn render<P: Provider + Clone>(
     let block_num = provider.get_block_number().await?;
 
     let raw_events_stream =
-        stream::raw(&chain, provider.clone(), StateInstant::new(block_num, 0), tokio::time::sleep);
+        streaming.once(&chain, provider.clone(), StateInstant::new(block_num, 0));
     let trades_stream = stream::trade(&chain, provider, raw_events_stream).await?;
     let mut trades_stream = pin!(trades_stream);
 

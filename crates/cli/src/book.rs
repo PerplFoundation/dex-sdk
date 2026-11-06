@@ -9,21 +9,23 @@ use crossterm::{
     terminal::{Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures::StreamExt;
-use perpl_sdk::{Chain, state::Exchange, stream};
+use perpl_sdk::{Chain, state::Exchange};
 use tokio_util::sync::CancellationToken;
 
-use crate::{args::BookArgs, highlight::Highlights};
+use crate::{Streaming, args::BookArgs, highlight::Highlights};
 
-pub(crate) async fn render<P: Provider + Clone>(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn render<P: Provider + Clone + 'static>(
     chain: Chain,
     provider: P,
+    streaming: &Streaming,
     mut exchange: Exchange,
     book_args: &BookArgs,
     highlights: &Highlights,
     num_blocks: Option<u64>,
     cancellation_token: CancellationToken,
 ) -> anyhow::Result<()> {
-    let stream = stream::raw(&chain, provider, exchange.instant().next(), tokio::time::sleep);
+    let stream = streaming.once(&chain, provider, exchange.instant().next());
     let mut stream = pin!(stream);
 
     let mut blocks_left = num_blocks;
