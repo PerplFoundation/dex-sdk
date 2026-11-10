@@ -113,7 +113,7 @@ while let Some(block) = events.next().await {
             block.commit_state(),
             if block.supersedes() { ", supersedes" } else { "" },
             state_events.events().len(),
-            exchange.speculative_instant(),
+            exchange.latest_instant(),
         );
     }
 }

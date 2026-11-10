@@ -158,7 +158,7 @@ impl Exchange {
 
     /// Instant of the speculative overlay, or of the committed snapshot
     /// without one.
-    pub fn speculative_instant(&self) -> types::StateInstant { self.latest().instant }
+    pub fn latest_instant(&self) -> types::StateInstant { self.latest().instant }
 
     /// Feature set of the *deployed* contract, which can lag behind the
     /// revision the SDK targets ([`Self::revision`]). Detected while

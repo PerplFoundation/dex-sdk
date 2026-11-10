@@ -481,7 +481,7 @@ impl Exchange {
     pub fn block_hash(&self) -> Option<B256>;              // last committed block's hash
     pub fn speculative(&self) -> Option<&Exchange>;        // overlay view (Proposed-level book etc.)
     pub fn latest(&self) -> &Exchange;                     // overlay if any, else self
-    pub fn speculative_instant(&self) -> StateInstant;     // == instant() without overlay
+    pub fn latest_instant(&self) -> StateInstant;     // == instant() without overlay
 }
 ```
 

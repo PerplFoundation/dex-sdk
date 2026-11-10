@@ -69,7 +69,7 @@ fn speculative_blocks_build_the_overlay_without_touching_committed_state() {
     let overlay = ex.speculative().expect("overlay");
     assert_eq!(overlay.instant().block_number(), 11);
     assert!(overlay.accounts().contains_key(&1));
-    assert_eq!(ex.speculative_instant().block_number(), 11);
+    assert_eq!(ex.latest_instant().block_number(), 11);
 
     // Voted re-send of the same block: still below min, ignored.
     assert!(
