@@ -58,6 +58,16 @@ These apply to every command.
 - `--testnet`: Use testnet provider and contract addresses [default: mainnet]
 - `--rpc-throttle <REQ_PER_SEC>`: RPC throttling (req/sec) [default: 15 for the
   default RPC providers, none for a custom `--rpc`]
+- `--ws-url <URL>`: WebSocket endpoint(s) to subscribe to for lower latency,
+  repeatable [default: `wss://rpc.monad.xyz` or `wss://testnet-rpc.monad.xyz`
+  along with the default RPC, none with a custom `--rpc`]
+- `--no-ws`: Poll only, without a WebSocket subscription
+- `--commit-state <STATE>`: Lowest commit state of blocks to trace or show:
+  `proposed` (executed, may still be abandoned), `voted` (the `safe` tag) or
+  `finalized` [default: `voted`]. `trace` shows every state at or above it,
+  tagging each block; the `show` commands apply the first batch per block at
+  or above it, and a `proposed` view ends with an error if a block it applied
+  gets superseded, as it would be stale then
 - `--exchange <ADDRESS>`: Exchange smart contract address [default: the mainnet or
   testnet deployment]
 - `--block <BLOCK>`: Block number to fetch state at or start tracing from [default:

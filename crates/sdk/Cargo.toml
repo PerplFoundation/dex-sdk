@@ -17,9 +17,15 @@ derive_more.workspace = true
 fastnum.workspace = true
 futures.workspace = true
 itertools.workspace = true
+rustls = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 tabled = { workspace = true, optional = true }
 thiserror.workspace = true
-# Version floors only; see the workspace manifest.
+tokio = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+# Version floors only (webpki-root-certs is also the root store of the `ws`
+# feature); see the workspace manifest.
 rustls-webpki.workspace = true
 webpki-root-certs.workspace = true
 
@@ -41,6 +47,12 @@ display = ["tabled", "colored"]
 # mutation methods in production builds.
 test-utils = []
 testing = ["alloy/node-bindings"]
+# WebSocket subscriptions for `stream::EventSource::with_ws_url`. Off by
+# default: the polling-only event source needs none of it. The subscriptions
+# are read with tokio-tungstenite directly (see `stream/source/ws.rs` for why
+# not alloy's pubsub provider), over rustls with the `ring` provider passed
+# explicitly, so nothing is installed process-wide.
+ws = ["dep:rustls", "dep:serde", "dep:serde_json", "dep:tokio", "dep:tokio-tungstenite"]
 
 [package.metadata.cargo-machete]
 ignored = ["alloy-sol-types", "rustls-webpki", "webpki-root-certs"]

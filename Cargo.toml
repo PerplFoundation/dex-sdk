@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/sdk", "crates/cli"]
 
 [workspace.package]
-version = "0.2.11"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/PerplFoundation/dex-sdk"
@@ -35,15 +35,26 @@ derive_more = { version = "2.1.1", default-features = false, features = [
 fastnum = { version = "0.7.5" }
 futures = { version = "0.3.34" }
 itertools = { version = "0.15.0" }
+rustls = { version = "0.23.46", default-features = false, features = [
+  "ring",
+  "std",
+  "tls12",
+] }
+serde = { version = "1.0.229", default-features = false, features = ["derive"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["std", "raw_value"] }
 tabled = { version = "0.22.0", features = ["ansi"] }
-thiserror = { version = "2.0.20" }
-tokio = { version = "1.53.1", features = [
+thiserror = { version = "2.0.21" }
+tokio = { version = "1.54.1", features = [
   "sync",
   "rt-multi-thread",
   "macros",
   "time",
 ] }
-tokio-util = { version = "0.7.19" }
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = [
+  "connect",
+  "rustls-tls-webpki-roots",
+] }
+tokio-util = { version = "0.7.20" }
 
 # Not used directly: floors for the whole dependency graph. rustls-webpki
 # 0.103.16 is the first release that rejects a certificate path through the
@@ -53,4 +64,4 @@ tokio-util = { version = "0.7.19" }
 # lockfile reaches no consumer -- so without these, a downstream lockfile keeps
 # whatever it resolved first, and only a floor here moves it on upgrade.
 rustls-webpki = { version = "0.103.16", default-features = false }
-webpki-root-certs = { version = "1.0.10" }
+webpki-root-certs = { version = "1.0.11" }

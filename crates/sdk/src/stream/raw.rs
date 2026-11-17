@@ -17,7 +17,13 @@ pub type RawBlockEvents = types::BlockEvents<RawEvent>;
 /// batched per block, starting from the specified block.
 ///
 /// Polls logs via the given [`Provider`] to produce strictly continuous
-/// event sequence, with [`Provider`]-configured interval.
+/// event sequence, with [`Provider`]-configured interval. Every block is
+/// delivered once, after it reached the `safe` tag, and is tagged
+/// [`types::CommitState::Voted`] accordingly.
+///
+/// [`super::EventSource`] is the newer, configurable alternative: it catches
+/// up in block ranges rather than block by block, can deliver `Proposed` and
+/// `Finalized` updates, and can subscribe over websocket.
 ///
 /// It is recommended to setup provider with
 /// [`alloy::transports::layers::FallbackLayer`]
@@ -85,7 +91,9 @@ where
                 Ok(RawBlockEvents::new(
                     types::StateInstant::new(block_num, block_header.timestamp),
                     events,
-                ))
+                )
+                .with_commit_state(types::CommitState::Voted)
+                .with_block_hash(block_header.hash))
             });
             if result.is_ok() {
                 block_num += 1;
