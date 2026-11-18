@@ -192,6 +192,8 @@ struct Source {
     run: Option<RunKey>,
     /// Last header on this connection: a run starts right after its header.
     header: Option<RunKey>,
+    /// A log arrived since `header`.
+    logged: bool,
     headers_seen: u64,
     headers_at_last_tick: u64,
     stale: u32,
@@ -374,7 +376,20 @@ impl Sequencer {
                 if self.sources[src].run.is_some_and(|run| run != key) {
                     self.close_run(src); // R2
                 }
+                // R2 for a block without logs: header followed by header
                 let source = &mut self.sources[src];
+                if let Some((h, hs, _)) = source.header
+                    && source.header != Some(key)
+                    && !source.logged
+                    && let Some(cand) = self.candidates.get_mut(&h).and_then(|c| c.get_mut(&hs))
+                    && cand.logs.is_empty()
+                {
+                    cand.logs_complete = true;
+                }
+                let source = &mut self.sources[src];
+                if source.header != Some(key) {
+                    source.logged = false;
+                }
                 source.header = Some(key);
                 source.headers_seen += 1;
                 source.alive = true;
@@ -404,6 +419,7 @@ impl Sequencer {
                 // A run joined midway (its header went out before the
                 // connection was up) is not one: nothing seals it.
                 let source = &mut self.sources[src];
+                source.logged = true;
                 if source.run.is_none() && source.header == Some(key) {
                     source.run = Some(key);
                 }
@@ -1334,6 +1350,23 @@ mod tests {
     }
 
     #[test]
+    fn bloom_false_positive_is_sealed_by_the_next_header() {
+        for seal in [SealPolicy::Marker, SealPolicy::NextHeader] {
+            let mut seq = Sequencer::new(100, opts(CommitState::Proposed, seal, 1));
+            seq.start();
+            // 100's bloom matches the exchange, but no log follows its header.
+            let (outs, _) = feed(
+                &mut seq,
+                vec![
+                    header(0, 100, A, hash(99), CommitState::Proposed),
+                    header(0, 101, B, A, CommitState::Proposed),
+                ],
+            );
+            assert_eq!(emitted(&outs), vec![(100, CommitState::Proposed, false, 0)], "{seal:?}");
+        }
+    }
+
+    #[test]
     fn competing_proposal_supersedes_and_parent_check_filters_descendants() {
         let mut seq = Sequencer::new(100, opts(CommitState::Proposed, SealPolicy::Marker, 1));
         seq.start();
@@ -1544,7 +1577,11 @@ mod tests {
                 header(0, 101, B, A, CommitState::Voted),
             ],
         );
-        assert_eq!(emitted(&outs), vec![(100, CommitState::Voted, false, 2)]);
+        // 101's header was followed by another header: it has no logs.
+        assert_eq!(
+            emitted(&outs),
+            vec![(100, CommitState::Voted, false, 2), (101, CommitState::Voted, false, 0)]
+        );
     }
 
     #[test]
