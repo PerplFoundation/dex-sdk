@@ -88,11 +88,11 @@ pub enum SealPolicy {
 ///    `h + 1`. A `Finalized` batch whose hash differs from the speculative one
 ///    emitted at its height is marked the same way.
 /// 4. Speculative batches for a height precede its `Finalized` batch.
-/// 5. `Err` items are non-recoverable and end the stream: the polling provider
-///    failed after its own retry and fallback layers gave up, or a log could
-///    not be decoded. Everything transient is retried internally, and
-///    subscription loss degrades to polling, visible through
-///    [`SourceHandle::status`].
+/// 5. `Err` items are non-recoverable and end the stream: a log could not be
+///    decoded, or the polling provider kept failing, past its own retry and
+///    fallback layers, for a minute of retries one poll interval apart.
+///    Everything transient is retried internally, and subscription loss
+///    degrades to polling, visible through [`SourceHandle::status`].
 ///
 /// # Sources
 ///
@@ -462,10 +462,12 @@ fn failed(
     request: PollRequest,
     err: crate::error::ProviderError<crate::abi::errors::Exchange::ExchangeErrors>,
 ) -> Poll {
-    // A block served inconsistently (hash mismatch between header and logs)
-    // or not available yet is retried; anything else is what the provider's
-    // own retry and fallback layers could not recover from.
-    let fatal = !matches!(err, crate::error::ProviderError::InvalidRequest(_));
+    // Only what no retry can fix (an undecodable log) ends the stream at
+    // once. The rest is retried: a block served inconsistently (hash
+    // mismatch between header and logs) or not available yet, and transport
+    // failures the provider's retry layer leaves alone (alloy only retries
+    // 429 and 503, not a 502 or a connection reset).
+    let fatal = matches!(err, crate::error::ProviderError::Fatal(_));
     Poll::Failed { request, error: DexError::Provider(err), fatal }
 }
 
@@ -550,6 +552,16 @@ mod tests {
             }
         }
         assert!(next_final > from, "no finalized block delivered");
+    }
+
+    #[test]
+    fn only_undecodable_data_is_fatal() {
+        use crate::error::ProviderError;
+        let fatal = |err| matches!(failed(PollRequest::Tips(None), err), Poll::Failed { fatal, .. } if fatal);
+        assert!(!fatal(ProviderError::Transport("HTTP error 502".into())));
+        assert!(!fatal(ProviderError::InvalidRequest("hash mismatch".into())));
+        assert!(!fatal(ProviderError::NullResp));
+        assert!(fatal(ProviderError::Fatal("undecodable log".into())));
     }
 
     #[tokio::test]

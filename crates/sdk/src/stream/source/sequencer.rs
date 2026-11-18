@@ -25,6 +25,10 @@ use crate::{
 /// they are due, so memory stays bounded by the lookahead.
 const LOOKAHEAD: u64 = 64;
 
+/// How long the polling provider may keep failing, counted in retries one
+/// poll interval apart, before the stream gives up.
+pub(crate) const POLL_FAILURE_BUDGET: Duration = Duration::from_secs(60);
+
 /// Index of a websocket source in the order the URLs were given.
 pub(crate) type SourceId = usize;
 
@@ -80,7 +84,8 @@ pub(crate) enum Poll {
     },
     /// All blocks of the request were delivered.
     Done(PollRequest),
-    /// The request failed; retried after a poll interval unless fatal.
+    /// The request failed; retried after a poll interval unless fatal or
+    /// the polls keep failing for [`POLL_FAILURE_BUDGET`].
     Failed {
         request: PollRequest,
         error: DexError,
@@ -244,6 +249,8 @@ pub(crate) struct Sequencer {
     actions: Vec<Action>,
     /// Whether anything speculative is wanted at all.
     speculative: bool,
+    /// Polls failed in a row, see [`POLL_FAILURE_BUDGET`].
+    failures: u32,
 }
 
 impl Sequencer {
@@ -267,6 +274,7 @@ impl Sequencer {
             want_tips: false,
             outputs: Vec::new(),
             actions: Vec::new(),
+            failures: 0,
         }
     }
 
@@ -517,6 +525,9 @@ impl Sequencer {
     }
 
     fn on_poll(&mut self, poll: Poll) {
+        if !matches!(poll, Poll::Failed { .. }) {
+            self.failures = 0;
+        }
         match poll {
             Poll::Tips(tips) => {
                 self.in_flight
@@ -583,7 +594,10 @@ impl Sequencer {
                 self.fill_gaps();
             },
             Poll::Failed { request, error, fatal } => {
-                if fatal {
+                self.failures = self.failures.saturating_add(1);
+                if fatal
+                    || self.opts.poll_interval.saturating_mul(self.failures) >= POLL_FAILURE_BUDGET
+                {
                     self.in_flight.remove(&request);
                     self.outputs.push(Output::Error(error));
                 } else {
@@ -1320,6 +1334,32 @@ mod tests {
 
         let (_, acts) = seq.push(Input::Poll(Poll::Unavailable(range)));
         assert!(polls(&acts).iter().all(|r| *r != range), "re-sent at once: {acts:?}");
+    }
+
+    #[test]
+    fn transient_poll_failures_end_the_stream_only_once_the_budget_is_spent() {
+        let mut seq = Sequencer::new(100, opts(CommitState::Finalized, SealPolicy::Marker, 0));
+        seq.start();
+        let failure = || {
+            Input::Poll(Poll::Failed {
+                request: PollRequest::Tips(None),
+                error: DexError::Provider(crate::error::ProviderError::Transport("502".into())),
+                fatal: false,
+            })
+        };
+        let retries = (POLL_FAILURE_BUDGET.as_millis() / 100) as usize;
+        for _ in 0..retries - 1 {
+            let (outs, _) = seq.push(failure());
+            assert!(outs.is_empty());
+        }
+        // Any answer resets the budget.
+        seq.push(tips(99, 99, 99));
+        for _ in 0..retries - 1 {
+            let (outs, _) = seq.push(failure());
+            assert!(outs.is_empty());
+        }
+        let (outs, _) = seq.push(failure());
+        assert!(matches!(outs.as_slice(), [Output::Error(DexError::Provider(_))]), "{outs:?}");
     }
 
     #[test]
