@@ -624,7 +624,10 @@ impl Sequencer {
                 .iter()
                 .any(|r| matches!(r, PollRequest::Range { .. }));
             if needs_poll && !range_in_flight {
-                let to = tips.finalized.number.min(self.next_final + self.chunk - 1);
+                let to = tips
+                    .finalized
+                    .number
+                    .min(self.next_final.saturating_add(self.chunk - 1));
                 // A single missing finalized block right behind the tip is
                 // the common case after a short outage; fetch it directly.
                 if to == self.next_final {
@@ -1125,6 +1128,16 @@ mod tests {
         let (_, acts) = seq.push(Input::Poll(Poll::RangeTooLarge { from: 100, to: 199 }));
         assert_eq!(polls(&acts), vec![PollRequest::Range { from: 100, to: 149 }]);
         assert_eq!(seq.cursors().poll_chunk, 50);
+    }
+
+    #[test]
+    fn huge_poll_chunk_is_capped_by_the_tip() {
+        let mut o = opts(CommitState::Finalized, SealPolicy::Marker, 0);
+        o.poll_chunk = u64::MAX;
+        let mut seq = Sequencer::new(100, o);
+        seq.start();
+        let (_, acts) = seq.push(tips(300, 300, 300));
+        assert_eq!(polls(&acts), vec![PollRequest::Range { from: 100, to: 300 }]);
     }
 
     #[test]
