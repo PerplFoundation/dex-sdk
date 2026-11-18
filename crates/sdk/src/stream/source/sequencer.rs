@@ -20,6 +20,15 @@ use crate::{
     types::{CommitState, StateInstant},
 };
 
+/// Heights above the next finalized one whose subscription data is kept.
+/// Beyond it (catching up from far behind) the polls fetch the blocks once
+/// they are due, so memory stays bounded by the lookahead.
+const LOOKAHEAD: u64 = 64;
+
+/// How long the polling provider may keep failing, counted in retries one
+/// poll interval apart, before the stream gives up.
+pub(crate) const POLL_FAILURE_BUDGET: Duration = Duration::from_secs(60);
+
 /// Index of a websocket source in the order the URLs were given.
 pub(crate) type SourceId = usize;
 
@@ -75,7 +84,8 @@ pub(crate) enum Poll {
     },
     /// All blocks of the request were delivered.
     Done(PollRequest),
-    /// The request failed; retried next tick unless fatal.
+    /// The request failed; retried after a poll interval unless fatal or
+    /// the polls keep failing for [`POLL_FAILURE_BUDGET`].
     Failed {
         request: PollRequest,
         error: DexError,
@@ -87,6 +97,8 @@ pub(crate) enum Poll {
 pub(crate) enum Tick {
     Tip,
     Watchdog,
+    /// A failed or unavailable request may go out again.
+    Retry(PollRequest),
     /// `Quiescent` sealing timer.
     Quiet {
         src: SourceId,
@@ -164,6 +176,11 @@ struct Candidate {
     log_token: u64,
     /// Emitted speculatively and then changed (late log under `Quiescent`).
     dirty: bool,
+    /// The polling provider vouches for `Finalized`: by a tip naming the
+    /// hash, or by a fetch issued once the height was finalized.
+    confirmed: bool,
+    /// Header and logs were fetched from the polling provider.
+    polled: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -185,6 +202,10 @@ type RunKey = (u64, B256, CommitState);
 struct Source {
     /// Run currently streaming on this connection's `monadLogs` channel.
     run: Option<RunKey>,
+    /// Last header on this connection: a run starts right after its header.
+    header: Option<RunKey>,
+    /// A log arrived since `header`.
+    logged: bool,
     headers_seen: u64,
     headers_at_last_tick: u64,
     stale: u32,
@@ -217,7 +238,9 @@ pub(crate) struct Sequencer {
     /// Heights that got a new proposal after being emitted speculatively.
     pending_rewind: HashSet<u64>,
     tips: Option<Tips>,
-    in_flight: HashSet<PollRequest>,
+    /// Requests in flight, each with the tips it was issued under: what a
+    /// response proves about the block's commit state.
+    in_flight: HashMap<PollRequest, Option<Tips>>,
     chunk: u64,
     sources: Vec<Source>,
     seq: u64,
@@ -226,6 +249,8 @@ pub(crate) struct Sequencer {
     actions: Vec<Action>,
     /// Whether anything speculative is wanted at all.
     speculative: bool,
+    /// Polls failed in a row, see [`POLL_FAILURE_BUDGET`].
+    failures: u32,
 }
 
 impl Sequencer {
@@ -243,12 +268,13 @@ impl Sequencer {
             candidates: BTreeMap::new(),
             pending_rewind: HashSet::new(),
             tips: None,
-            in_flight: HashSet::new(),
+            in_flight: HashMap::new(),
             sources,
             seq: 0,
             want_tips: false,
             outputs: Vec::new(),
             actions: Vec::new(),
+            failures: 0,
         }
     }
 
@@ -302,7 +328,7 @@ impl Sequencer {
     fn request_tips(&mut self) {
         if self
             .in_flight
-            .iter()
+            .keys()
             .any(|r| matches!(r, PollRequest::Tips(_)))
         {
             return;
@@ -312,7 +338,8 @@ impl Sequencer {
     }
 
     fn request(&mut self, req: PollRequest) {
-        if self.in_flight.insert(req) {
+        if let std::collections::hash_map::Entry::Vacant(e) = self.in_flight.entry(req) {
+            e.insert(self.tips);
             self.actions.push(Action::Poll(req));
         }
     }
@@ -339,6 +366,8 @@ impl Sequencer {
                     logs_complete: false,
                     log_token: 0,
                     dirty: false,
+                    confirmed: false,
+                    polled: false,
                 }
             })
     }
@@ -362,10 +391,24 @@ impl Sequencer {
                 if self.sources[src].run.is_some_and(|run| run != key) {
                     self.close_run(src); // R2
                 }
+                // R2 for a block without logs: header followed by header
                 let source = &mut self.sources[src];
+                if let Some((h, hs, _)) = source.header
+                    && source.header != Some(key)
+                    && !source.logged
+                    && let Some(cand) = self.candidates.get_mut(&h).and_then(|c| c.get_mut(&hs))
+                    && cand.logs.is_empty()
+                {
+                    cand.logs_complete = true;
+                }
+                let source = &mut self.sources[src];
+                if source.header != Some(key) {
+                    source.logged = false;
+                }
+                source.header = Some(key);
                 source.headers_seen += 1;
                 source.alive = true;
-                if height < self.next_final {
+                if !self.buffers(height) {
                     return;
                 }
                 let seal = self.opts.seal;
@@ -388,8 +431,14 @@ impl Sequencer {
                 if self.sources[src].run.is_some_and(|run| run != key) {
                     self.close_run(src); // R1
                 }
-                self.sources[src].run = Some(key);
-                if height < self.next_final {
+                // A run joined midway (its header went out before the
+                // connection was up) is not one: nothing seals it.
+                let source = &mut self.sources[src];
+                source.logged = true;
+                if source.run.is_none() && source.header == Some(key) {
+                    source.run = Some(key);
+                }
+                if !self.buffers(height) {
                     return;
                 }
                 let seal = self.opts.seal;
@@ -415,20 +464,12 @@ impl Sequencer {
                 }
             },
             Ws::Marker { src, height, hash } => {
-                // R3
-                if let Some(cand) = self
-                    .candidates
-                    .get_mut(&height)
-                    .and_then(|c| c.get_mut(&hash))
-                    && !cand.logs.is_empty()
-                {
-                    cand.logs_complete = true;
-                }
+                // R3: only a run seen from its header on is sealed
                 if self.sources[src]
                     .run
                     .is_some_and(|(h, hs, _)| (h, hs) == (height, hash))
                 {
-                    self.sources[src].run = None;
+                    self.close_run(src);
                 }
             },
             Ws::Undecodable { src } => {
@@ -450,6 +491,11 @@ impl Sequencer {
         }
     }
 
+    /// Whether subscription data at `height` is kept.
+    fn buffers(&self, height: u64) -> bool {
+        (self.next_final..=self.next_final.saturating_add(LOOKAHEAD)).contains(&height)
+    }
+
     /// The run streaming on `src` ended regularly: its block has all its
     /// logs.
     fn close_run(&mut self, src: SourceId) {
@@ -464,30 +510,53 @@ impl Sequencer {
     }
 
     /// The run streaming on `src` was cut: its block stays incomplete unless
-    /// another source or a poll completes it.
-    fn abort_run(&mut self, src: SourceId) { self.sources[src].run = None; }
+    /// another source or a poll completes it. Its pending `Quiescent` timers
+    /// are voided, as a cut run is no more quiet than complete.
+    fn abort_run(&mut self, src: SourceId) {
+        self.sources[src].header = None;
+        if let Some((height, hash, _)) = self.sources[src].run.take()
+            && let Some(cand) = self
+                .candidates
+                .get_mut(&height)
+                .and_then(|c| c.get_mut(&hash))
+        {
+            cand.log_token += 1;
+        }
+    }
 
     fn on_poll(&mut self, poll: Poll) {
+        if !matches!(poll, Poll::Failed { .. }) {
+            self.failures = 0;
+        }
         match poll {
             Poll::Tips(tips) => {
                 self.in_flight
-                    .retain(|r| !matches!(r, PollRequest::Tips(_)));
+                    .retain(|r, _| !matches!(r, PollRequest::Tips(_)));
                 self.tips = Some(tips);
                 self.confirm_named(&tips);
                 self.fill_gaps();
             },
             Poll::Block(block) => {
                 let height = block.header.number;
-                self.in_flight.remove(&PollRequest::Block(height));
+                let issued = self
+                    .in_flight
+                    .remove(&PollRequest::Block(height))
+                    .or_else(|| {
+                        self.in_flight.iter().find_map(|(r, tips)| match r {
+                            PollRequest::Range { from, to } if (*from..=*to).contains(&height) => {
+                                Some(*tips)
+                            },
+                            _ => None,
+                        })
+                    });
                 if height < self.next_final {
                     return;
                 }
-                let state = self
-                    .tips
-                    .map(|t| t.state_of(height))
-                    .unwrap_or(CommitState::Proposed);
+                let state = self.polled_state(height, block.header.hash, issued.flatten());
                 let cand = self.candidate(height, block.header.hash);
                 cand.state = cand.state.max(state);
+                cand.confirmed |= state >= CommitState::Finalized;
+                cand.polled = true;
                 cand.header = Some(Header {
                     timestamp: block.header.timestamp,
                     parent: Some(block.header.parent),
@@ -500,24 +569,20 @@ impl Sequencer {
                 cand.logs_complete = true;
             },
             Poll::Header(header) => {
-                self.in_flight.remove(&PollRequest::Header(header.number));
+                let issued = self.in_flight.remove(&PollRequest::Header(header.number));
                 if header.number < self.next_final {
                     return;
                 }
-                let state = self
-                    .tips
-                    .map(|t| t.state_of(header.number))
-                    .unwrap_or(CommitState::Proposed);
+                let state = self.polled_state(header.number, header.hash, issued.flatten());
                 let cand = self.candidate(header.number, header.hash);
                 cand.state = cand.state.max(state);
+                cand.confirmed |= state >= CommitState::Finalized;
                 cand.header.get_or_insert(Header {
                     timestamp: header.timestamp,
                     parent: Some(header.parent),
                 });
             },
-            Poll::Unavailable(req) => {
-                self.in_flight.remove(&req);
-            },
+            Poll::Unavailable(req) => self.retry_later(req),
             Poll::RangeTooLarge { from, to } => {
                 self.in_flight.remove(&PollRequest::Range { from, to });
                 let span = to - from + 1;
@@ -529,14 +594,36 @@ impl Sequencer {
                 self.fill_gaps();
             },
             Poll::Failed { request, error, fatal } => {
-                self.in_flight.remove(&request);
-                if fatal {
+                self.failures = self.failures.saturating_add(1);
+                if fatal
+                    || self.opts.poll_interval.saturating_mul(self.failures) >= POLL_FAILURE_BUDGET
+                {
+                    self.in_flight.remove(&request);
                     self.outputs.push(Output::Error(error));
                 } else {
-                    self.want_tips = true;
+                    self.retry_later(request);
                 }
             },
         }
+    }
+
+    /// Keeps a request that got no usable answer in flight, so nothing sends
+    /// it again, until a poll interval has passed.
+    fn retry_later(&mut self, request: PollRequest) {
+        self.actions
+            .push(Action::Timer(self.opts.poll_interval, Tick::Retry(request)));
+    }
+
+    /// Commit state a polled block is known to have: what the tips said
+    /// about its height when the request went out (a block fetched while
+    /// only proposed may be a proposal abandoned since), or what the current
+    /// tips say about its hash.
+    fn polled_state(&self, height: u64, hash: B256, issued: Option<Tips>) -> CommitState {
+        let by_height = issued.map_or(CommitState::Proposed, |t| t.state_of(height));
+        let Some(tips) = self.tips else { return by_height };
+        tips.named()
+            .filter_map(|(h, hs, state)| (h == height && hs == hash).then_some(state))
+            .fold(by_height, CommitState::max)
     }
 
     fn on_tick(&mut self, tick: Tick) {
@@ -558,7 +645,6 @@ impl Sequencer {
                         if source.stale >= self.opts.stale_periods {
                             source.stale = 0;
                             source.alive = false;
-                            source.run = None;
                             self.actions.push(Action::Reconnect(src));
                         }
                     } else {
@@ -566,11 +652,30 @@ impl Sequencer {
                     }
                     source.headers_at_last_tick = source.headers_seen;
                 }
+                let rebuilt: Vec<SourceId> = self
+                    .actions
+                    .iter()
+                    .filter_map(|a| match a {
+                        Action::Reconnect(src) => Some(*src),
+                        _ => None,
+                    })
+                    .collect();
+                for src in rebuilt {
+                    self.abort_run(src);
+                }
                 if any_stale {
                     self.want_tips = true;
                 }
                 self.actions
                     .push(Action::Timer(self.opts.watchdog, Tick::Watchdog));
+            },
+            Tick::Retry(request) => {
+                self.in_flight.remove(&request);
+                if matches!(request, PollRequest::Tips(_)) {
+                    self.request_tips();
+                } else {
+                    self.fill_gaps();
+                }
             },
             Tick::Quiet { src, height, hash, token } => {
                 // R6
@@ -607,6 +712,7 @@ impl Sequencer {
                 .and_then(|c| c.get_mut(&hash))
             {
                 cand.state = cand.state.max(state);
+                cand.confirmed |= state >= CommitState::Finalized;
             }
         }
     }
@@ -621,10 +727,13 @@ impl Sequencer {
             let needs_poll = !self.has_complete_at(self.next_final, CommitState::Finalized);
             let range_in_flight = self
                 .in_flight
-                .iter()
+                .keys()
                 .any(|r| matches!(r, PollRequest::Range { .. }));
             if needs_poll && !range_in_flight {
-                let to = tips.finalized.number.min(self.next_final + self.chunk - 1);
+                let to = tips
+                    .finalized
+                    .number
+                    .min(self.next_final.saturating_add(self.chunk - 1));
                 // A single missing finalized block right behind the tip is
                 // the common case after a short outage; fetch it directly.
                 if to == self.next_final {
@@ -778,12 +887,29 @@ impl Sequencer {
                 self.poll_finalized_if_due(h);
                 break;
             };
+            // Only a block building on the last finalized one is emitted; the
+            // polling provider's word beats a subscription's, a complete
+            // candidate an incomplete one
+            let builds_on_final = |c: &Candidate| match (self.final_hash, c.header) {
+                (Some(p), Some(Header { parent: Some(cp), .. })) => p == cp,
+                _ => true,
+            };
             let finalized = cands
                 .iter()
-                .find(|(_, c)| c.state >= CommitState::Finalized)
-                .map(|(hash, c)| (*hash, c.complete()));
+                .filter(|(_, c)| c.state >= CommitState::Finalized)
+                .max_by_key(|(_, c)| (builds_on_final(c), c.confirmed, c.complete(), c.seq))
+                .map(|(hash, c)| {
+                    (*hash, builds_on_final(c) && c.complete(), builds_on_final(c), c.polled)
+                });
             match finalized {
-                Some((hash, true)) => {
+                Some((_, false, false, true)) => {
+                    // The polling provider's own finalized block does not
+                    // build on the one emitted below it
+                    self.outputs
+                        .push(Output::Error(DexError::BlockSuperseded(h.saturating_sub(1))));
+                    break;
+                },
+                Some((hash, true, _, _)) => {
                     let cand = self
                         .candidates
                         .get_mut(&h)
@@ -806,7 +932,7 @@ impl Sequencer {
                         self.spec_next = h + 1;
                     }
                 },
-                Some((_, false)) => {
+                Some(_) => {
                     self.request(PollRequest::Block(h));
                     break;
                 },
@@ -831,7 +957,7 @@ impl Sequencer {
         if self.tips.is_some_and(|t| t.finalized.number >= h)
             && !self
                 .in_flight
-                .iter()
+                .keys()
                 .any(|r| matches!(r, PollRequest::Range { .. } | PollRequest::Block(_)))
         {
             self.fill_gaps();
@@ -1117,6 +1243,34 @@ mod tests {
     }
 
     #[test]
+    fn stale_prefetch_is_not_finalized_by_newer_tips() {
+        let x = hash(1006);
+        let mut seq = Sequencer::new(106, opts(CommitState::Voted, SealPolicy::Marker, 0));
+        seq.start();
+        // 106 is prefetched while the tips name proposal X there.
+        let proposed = Tips {
+            latest: Tip { number: 106, hash: Some(x), parent: Some(hash(105)) },
+            safe: Tip::at(105),
+            finalized: Tip::at(105),
+        };
+        let (_, acts) = seq.push(Input::Poll(Poll::Tips(proposed)));
+        assert_eq!(polls(&acts), vec![PollRequest::Block(106)]);
+        // X is replaced by Y = hash(106), which finalizes before the
+        // prefetch returns.
+        seq.push(named_tips(107, 106, 106));
+        let (outs, acts) = seq.push(polled(106, x, 1));
+        assert!(outs.is_empty(), "stale prefetch emitted: {:?}", emitted(&outs));
+        assert!(
+            polls(&acts)
+                .iter()
+                .any(|r| matches!(r, PollRequest::Block(106) | PollRequest::Header(106))),
+            "{acts:?}"
+        );
+        let (outs, _) = seq.push(polled(106, hash(106), 2));
+        assert_eq!(emitted(&outs), vec![(106, CommitState::Finalized, false, 2)]);
+    }
+
+    #[test]
     fn range_too_large_clamps_the_chunk() {
         let mut seq = Sequencer::new(100, opts(CommitState::Finalized, SealPolicy::Marker, 0));
         seq.start();
@@ -1125,6 +1279,87 @@ mod tests {
         let (_, acts) = seq.push(Input::Poll(Poll::RangeTooLarge { from: 100, to: 199 }));
         assert_eq!(polls(&acts), vec![PollRequest::Range { from: 100, to: 149 }]);
         assert_eq!(seq.cursors().poll_chunk, 50);
+    }
+
+    #[test]
+    fn huge_poll_chunk_is_capped_by_the_tip() {
+        let mut o = opts(CommitState::Finalized, SealPolicy::Marker, 0);
+        o.poll_chunk = u64::MAX;
+        let mut seq = Sequencer::new(100, o);
+        seq.start();
+        let (_, acts) = seq.push(tips(300, 300, 300));
+        assert_eq!(polls(&acts), vec![PollRequest::Range { from: 100, to: 300 }]);
+    }
+
+    #[test]
+    fn subscription_data_far_above_the_finalized_layer_is_not_buffered() {
+        let mut seq = Sequencer::new(100, opts(CommitState::Proposed, SealPolicy::Marker, 1));
+        seq.start();
+        // Catching up from far behind: the live blocks are polled later.
+        for h in 10_000..10_100 {
+            feed(
+                &mut seq,
+                vec![
+                    header(0, h, hash(h), hash(h - 1), CommitState::Proposed),
+                    log(0, h, hash(h), CommitState::Proposed, 0),
+                    marker(0, h, hash(h)),
+                ],
+            );
+        }
+        assert!(seq.candidates.is_empty(), "{} heights buffered", seq.candidates.len());
+    }
+
+    #[test]
+    fn failed_and_unavailable_polls_are_retried_after_the_poll_interval() {
+        let mut seq = Sequencer::new(100, opts(CommitState::Finalized, SealPolicy::Marker, 0));
+        seq.start();
+        seq.push(tips(300, 300, 300));
+        let range = PollRequest::Range { from: 100, to: 199 };
+        let error = DexError::Provider(crate::error::ProviderError::InvalidRequest("x".into()));
+        let (_, acts) = seq.push(Input::Poll(Poll::Failed { request: range, error, fatal: false }));
+        assert!(polls(&acts).iter().all(|r| *r != range), "re-sent at once: {acts:?}");
+        let retry = acts
+            .iter()
+            .find_map(|a| match a {
+                Action::Timer(d, t @ Tick::Retry(_)) => Some((*d, *t)),
+                _ => None,
+            })
+            .expect("retry timer");
+        assert_eq!(retry.0, Duration::from_millis(100));
+        // Tips coming in meanwhile do not re-send it either.
+        let (_, acts) = seq.push(tips(300, 300, 300));
+        assert!(polls(&acts).iter().all(|r| *r != range), "{acts:?}");
+        let (_, acts) = seq.push(Input::Tick(retry.1));
+        assert_eq!(polls(&acts), vec![range]);
+
+        let (_, acts) = seq.push(Input::Poll(Poll::Unavailable(range)));
+        assert!(polls(&acts).iter().all(|r| *r != range), "re-sent at once: {acts:?}");
+    }
+
+    #[test]
+    fn transient_poll_failures_end_the_stream_only_once_the_budget_is_spent() {
+        let mut seq = Sequencer::new(100, opts(CommitState::Finalized, SealPolicy::Marker, 0));
+        seq.start();
+        let failure = || {
+            Input::Poll(Poll::Failed {
+                request: PollRequest::Tips(None),
+                error: DexError::Provider(crate::error::ProviderError::Transport("502".into())),
+                fatal: false,
+            })
+        };
+        let retries = (POLL_FAILURE_BUDGET.as_millis() / 100) as usize;
+        for _ in 0..retries - 1 {
+            let (outs, _) = seq.push(failure());
+            assert!(outs.is_empty());
+        }
+        // Any answer resets the budget.
+        seq.push(tips(99, 99, 99));
+        for _ in 0..retries - 1 {
+            let (outs, _) = seq.push(failure());
+            assert!(outs.is_empty());
+        }
+        let (outs, _) = seq.push(failure());
+        assert!(matches!(outs.as_slice(), [Output::Error(DexError::Provider(_))]), "{outs:?}");
     }
 
     #[test]
@@ -1222,6 +1457,23 @@ mod tests {
             may_have_logs: false,
         }));
         assert_eq!(emitted(&outs), vec![(100, CommitState::Proposed, false, 0)]);
+    }
+
+    #[test]
+    fn bloom_false_positive_is_sealed_by_the_next_header() {
+        for seal in [SealPolicy::Marker, SealPolicy::NextHeader] {
+            let mut seq = Sequencer::new(100, opts(CommitState::Proposed, seal, 1));
+            seq.start();
+            // 100's bloom matches the exchange, but no log follows its header.
+            let (outs, _) = feed(
+                &mut seq,
+                vec![
+                    header(0, 100, A, hash(99), CommitState::Proposed),
+                    header(0, 101, B, A, CommitState::Proposed),
+                ],
+            );
+            assert_eq!(emitted(&outs), vec![(100, CommitState::Proposed, false, 0)], "{seal:?}");
+        }
     }
 
     #[test]
@@ -1332,6 +1584,128 @@ mod tests {
         assert_eq!(polls(&acts), vec![PollRequest::Block(100)]);
         let (outs, _) = seq.push(polled(100, A, 3));
         assert_eq!(emitted(&outs), vec![(100, CommitState::Finalized, false, 3)]);
+    }
+
+    #[test]
+    fn quiescent_does_not_seal_a_run_cut_by_a_disconnect() {
+        let quiet = Duration::from_millis(10);
+        let mut seq =
+            Sequencer::new(100, opts(CommitState::Voted, SealPolicy::Quiescent { quiet }, 1));
+        seq.start();
+        let (_, acts) = feed(
+            &mut seq,
+            vec![
+                header(0, 100, A, hash(99), CommitState::Proposed),
+                log(0, 100, A, CommitState::Proposed, 0),
+                Input::Ws(Ws::Closed { src: 0 }),
+            ],
+        );
+        let tick = acts
+            .iter()
+            .filter_map(|a| match a {
+                Action::Timer(_, t @ Tick::Quiet { .. }) => Some(*t),
+                _ => None,
+            })
+            .next_back()
+            .unwrap();
+        let (outs, _) = seq.push(Input::Tick(tick));
+        assert!(outs.is_empty());
+        // The tips name the block: it is fetched, not emitted half-complete.
+        let named = Tips { latest: Tip::at(100), safe: Tip::at(100), finalized: tip(100) };
+        let named = Tips { finalized: Tip { hash: Some(A), ..named.finalized }, ..named };
+        let (outs, acts) = seq.push(Input::Poll(Poll::Tips(named)));
+        assert!(outs.is_empty(), "{:?}", emitted(&outs));
+        assert_eq!(polls(&acts), vec![PollRequest::Block(100)]);
+    }
+
+    #[test]
+    fn finalized_header_off_the_finalized_chain_is_not_emitted() {
+        let mut seq = Sequencer::new(100, opts(CommitState::Voted, SealPolicy::Marker, 1));
+        seq.start();
+        let (outs, _) = seq.push(polled(100, hash(100), 1));
+        assert!(outs.is_empty());
+        let (outs, _) = seq.push(named_tips(100, 100, 100));
+        assert_eq!(emitted(&outs), vec![(100, CommitState::Finalized, false, 1)]);
+        // A Finalized header at 101 that does not build on 100, with a bloom
+        // that needs no logs: polled instead of emitted.
+        let (outs, acts) = seq.push(Input::Ws(Ws::Header {
+            src: 0,
+            height: 101,
+            hash: A,
+            parent: B,
+            id: A,
+            state: CommitState::Finalized,
+            timestamp: 1,
+            may_have_logs: false,
+        }));
+        assert!(outs.is_empty(), "{:?}", emitted(&outs));
+        assert!(polls(&acts).contains(&PollRequest::Block(101)), "{acts:?}");
+        let (outs, _) = seq.push(polled(101, hash(101), 2));
+        assert!(outs.is_empty(), "fetched before 101 was known final");
+        let (outs, _) = seq.push(named_tips(101, 101, 101));
+        assert_eq!(emitted(&outs), vec![(101, CommitState::Finalized, false, 2)]);
+
+        // The polling provider itself serving a finalized block off the
+        // emitted chain cannot be repaired: the stream ends.
+        let (_, _) = seq.push(named_tips(102, 102, 102));
+        let off_chain = Input::Poll(Poll::Block(PolledBlock {
+            header: BlockHeader { number: 102, hash: hash(102), parent: C, timestamp: 1020 },
+            events: vec![],
+        }));
+        let (outs, _) = seq.push(off_chain);
+        assert!(
+            matches!(outs.as_slice(), [Output::Error(DexError::BlockSuperseded(101))]),
+            "{outs:?}"
+        );
+    }
+
+    #[test]
+    fn logs_of_a_run_joined_midway_never_seal_it() {
+        let mut seq = Sequencer::new(100, opts(CommitState::Proposed, SealPolicy::Marker, 1));
+        seq.start();
+        // Subscribed in the middle of 100's run: its header and first log
+        // went out before.
+        let (outs, _) = feed(
+            &mut seq,
+            vec![
+                log(0, 100, A, CommitState::Proposed, 1),
+                marker(0, 100, A),
+                header(0, 101, B, A, CommitState::Proposed),
+            ],
+        );
+        assert!(outs.is_empty(), "{:?}", emitted(&outs));
+        // 100's Voted header supplies the header the Proposed run lacked,
+        // but not the log that went out before the subscription.
+        let (outs, _) = seq.push(header(0, 100, A, hash(99), CommitState::Voted));
+        assert!(outs.is_empty(), "{:?}", emitted(&outs));
+        // The Voted run is whole and seals it.
+        let (outs, _) = feed(
+            &mut seq,
+            vec![
+                log(0, 100, A, CommitState::Voted, 0),
+                log(0, 100, A, CommitState::Voted, 1),
+                header(0, 101, B, A, CommitState::Voted),
+            ],
+        );
+        // 101's header was followed by another header: it has no logs.
+        assert_eq!(
+            emitted(&outs),
+            vec![(100, CommitState::Voted, false, 2), (101, CommitState::Voted, false, 0)]
+        );
+    }
+
+    #[test]
+    fn finalized_pick_prefers_the_complete_tip_named_candidate() {
+        for _ in 0..16 {
+            let mut seq = Sequencer::new(100, opts(CommitState::Voted, SealPolicy::Marker, 1));
+            seq.start();
+            // An incomplete subscribed Finalized candidate, and the polled
+            // block the tips name.
+            seq.push(header(0, 100, A, hash(99), CommitState::Finalized));
+            seq.push(polled(100, hash(100), 2));
+            let (outs, _) = seq.push(named_tips(100, 100, 100));
+            assert_eq!(emitted(&outs), vec![(100, CommitState::Finalized, false, 2)]);
+        }
     }
 
     #[test]

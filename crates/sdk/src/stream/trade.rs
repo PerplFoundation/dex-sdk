@@ -181,12 +181,15 @@ pub struct TradeProcessor {
     maker_orders: HashMap<(types::PerpetualId, types::OrderId), PlacedOrder>,
     pending_maker_fills: Vec<PendingMakerFill>,
     prev_tx_index: Option<u64>,
-    /// Undo log of `maker_orders` writes made by `Proposed` blocks, oldest
-    /// first: a superseded proposal must not attribute later fills of a
-    /// reused order ID to an order that never existed. Promoted (dropped)
-    /// when the block arrives again at `Voted` or above.
+    /// Blocks processed below `Finalized`, oldest first, each with its undo
+    /// log of `maker_orders` writes and its trades: a superseded block must
+    /// not attribute later fills of a reused order ID to an order that never
+    /// existed, and a re-send of a block yields the trades it yielded before
+    /// rather than replaying it against later blocks' placements. Dropped
+    /// once a `Finalized` batch reaches their height.
     journal: VecDeque<JournalEntry>,
-    /// Index into `journal` of the block being processed, if `Proposed`.
+    /// Index into `journal` of the block being processed, if below
+    /// `Finalized`.
     journaling: Option<usize>,
 }
 
@@ -194,7 +197,14 @@ struct JournalEntry {
     height: u64,
     hash: Option<B256>,
     undo: Vec<((types::PerpetualId, types::OrderId), Option<PlacedOrder>)>,
+    trades: Vec<TradeEvent>,
 }
+
+/// Blocks kept in the journal. Pruning relies on a `Finalized` batch
+/// arriving for each height, which never happens behind [`super::once`].
+/// shortcut: a rewind deeper than this many blocks is not undone; Monad
+/// finalizes within about two blocks, raise it if that ever changes.
+const JOURNAL_DEPTH: usize = 32;
 
 /// Attribution of an order observed being placed, recovered at fill time.
 #[derive(Clone, Copy)]
@@ -226,7 +236,9 @@ impl TradeProcessor {
         self.order_context = None;
         self.pending_maker_fills.clear();
         self.prev_tx_index = None;
-        self.reconcile_journal(events);
+        if let Some(trades) = self.reconcile_journal(events) {
+            return events.map_events(|_| trades);
+        }
 
         let mut trades = Vec::new();
 
@@ -244,13 +256,18 @@ impl TradeProcessor {
             self.prev_tx_index = Some(event.tx_index());
         }
 
-        self.journaling = None;
+        if let Some(index) = self.journaling.take()
+            && let Some(entry) = self.journal.get_mut(index)
+        {
+            entry.trades = trades.clone();
+        }
         events.map_events(|_| trades)
     }
 
-    /// Undoes or promotes journaled `maker_orders` writes for the block about
-    /// to be processed, and opens a journal entry for it if it is `Proposed`.
-    fn reconcile_journal(&mut self, events: &super::RawBlockEvents) {
+    /// Undoes or promotes journaled blocks for the block about to be
+    /// processed, and opens a journal entry for it if it is below
+    /// `Finalized`. Returns the trades of a block processed before.
+    fn reconcile_journal(&mut self, events: &super::RawBlockEvents) -> Option<Vec<TradeEvent>> {
         let height = events.block_number();
         let hash = events.block_hash();
         let state = events.commit_state();
@@ -273,24 +290,27 @@ impl TradeProcessor {
             }
         }
 
-        if state >= types::CommitState::Voted {
-            // Committed: the proposal's writes stand
+        let resent = self
+            .journal
+            .iter()
+            .find(|e| e.height == height && e.hash == hash && hash.is_some())
+            .map(|e| e.trades.clone());
+        if state >= types::CommitState::Finalized {
+            // Final: nothing up to here can be undone any more
             self.journal.retain(|e| e.height > height);
-            self.journaling = None;
-        } else {
-            let same = self
-                .journal
-                .iter()
-                .position(|e| e.height == height && e.hash == hash && hash.is_some());
-            self.journaling = Some(match same {
-                Some(index) => index,
-                None => {
-                    self.journal
-                        .push_back(JournalEntry { height, hash, undo: Vec::new() });
-                    self.journal.len() - 1
-                },
+        } else if resent.is_none() {
+            self.journal.push_back(JournalEntry {
+                height,
+                hash,
+                undo: Vec::new(),
+                trades: Vec::new(),
             });
+            if self.journal.len() > JOURNAL_DEPTH {
+                self.journal.pop_front();
+            }
+            self.journaling = Some(self.journal.len() - 1);
         }
+        resent
     }
 
     /// Process a single event, potentially emitting a trade.
@@ -908,7 +928,7 @@ mod journal_tests {
             false,
             vec![request(2, 22), placed(7)],
         ));
-        assert_eq!(p.journal.len(), 1);
+        assert!(p.journal.iter().any(|e| e.height == 2));
         // ... and is abandoned in favour of a proposal that does not.
         p.process_block(&block(2, 9, CommitState::Proposed, true, vec![]));
         let trades = p.process_block(&fill_block(3, 3, CommitState::Proposed));
@@ -937,11 +957,61 @@ mod journal_tests {
     }
 
     #[test]
-    fn legacy_voted_input_never_journals_and_scratch_resets_per_block() {
+    fn finalized_resend_does_not_overwrite_a_reused_order_id() {
+        let mut p = processor();
+        // The default `EventSource` (min Voted): V(3) goes out before F(2).
+        p.process_block(&block(2, 2, CommitState::Voted, false, vec![request(1, 11), placed(7)]));
+        p.process_block(&block(3, 3, CommitState::Voted, false, vec![request(2, 22), placed(7)]));
+        p.process_block(&block(
+            2,
+            2,
+            CommitState::Finalized,
+            false,
+            vec![request(1, 11), placed(7)],
+        ));
+        let trades = p.process_block(&fill_block(4, 4, CommitState::Voted));
+        assert_eq!(trades.events()[0].event().maker_fills[0].maker_client_order_id, Some(22));
+    }
+
+    #[test]
+    fn resend_of_a_block_reusing_an_order_id_yields_the_same_trades() {
+        let mut p = processor();
+        p.process_block(&block(1, 1, CommitState::Voted, false, vec![request(1, 11), placed(7)]));
+        // Order 7 is filled, then its id is reused, within one block.
+        let events =
+            vec![request(3, 33), maker_fill(1, 7), taker_fill(), request(4, 44), placed(7)];
+        let voted = p.process_block(&block(2, 2, CommitState::Voted, false, events.clone()));
+        let finalized = p.process_block(&block(2, 2, CommitState::Finalized, false, events));
+        for trades in [voted, finalized] {
+            assert_eq!(trades.events()[0].event().maker_fills[0].maker_client_order_id, Some(11));
+        }
+    }
+
+    #[test]
+    fn voted_block_superseded_by_another_finalized_one_is_undone() {
+        let mut p = processor();
+        p.process_block(&block(1, 1, CommitState::Voted, false, vec![request(1, 11), placed(7)]));
+        p.process_block(&block(2, 2, CommitState::Voted, false, vec![request(2, 22), placed(7)]));
+        p.process_block(&block(2, 9, CommitState::Finalized, true, vec![]));
+        let trades = p.process_block(&fill_block(3, 3, CommitState::Voted));
+        assert_eq!(trades.events()[0].event().maker_fills[0].maker_client_order_id, Some(11));
+    }
+
+    #[test]
+    fn journal_stays_bounded_without_finalized_batches() {
+        // Behind `once`, re-sends are dropped: nothing ever promotes.
+        let mut p = processor();
+        for h in 1..1000 {
+            p.process_block(&block(h, h as u8, CommitState::Proposed, false, vec![]));
+        }
+        assert!(p.journal.len() <= JOURNAL_DEPTH, "{} entries", p.journal.len());
+    }
+
+    #[test]
+    fn scratch_resets_per_block() {
         let mut p = processor();
         // A block ending mid-request: the context must not leak into the next.
         p.process_block(&block(1, 1, CommitState::Voted, false, vec![request(1, 11)]));
-        assert!(p.journal.is_empty());
         let trades = p.process_block(&block(
             2,
             2,
@@ -950,6 +1020,5 @@ mod journal_tests {
             vec![maker_fill(1, 7), taker_fill()],
         ));
         assert!(trades.events().is_empty(), "no request context in this block");
-        assert!(p.journal.is_empty());
     }
 }

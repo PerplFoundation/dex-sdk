@@ -107,8 +107,12 @@ pub async fn run(cli: Cli) -> anyhow::Result<()> {
     } else {
         vec![]
     };
-    let streaming =
-        Streaming { ws_urls, min: cli.commit_state.unwrap_or(types::CommitState::Voted) };
+    // `verified` is accepted as an alias: the stream tops out at Finalized
+    let min = cli
+        .commit_state
+        .unwrap_or(types::CommitState::Voted)
+        .min(types::CommitState::Finalized);
+    let streaming = Streaming { ws_urls, min };
     let client = if default || cli.rpc_throttle.is_some() {
         // Apply throttling with default RPC
         RpcClient::builder()

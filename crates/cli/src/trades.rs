@@ -36,10 +36,12 @@ pub(crate) async fn render<P: Provider + Clone + 'static>(
 
     let mut blocks_left = num_blocks;
 
-    while let Some(Ok(trades)) = trades_stream.next().await {
+    while let Some(res) = trades_stream.next().await {
         if cancellation_token.is_cancelled() || blocks_left.is_some_and(|count| count == 0) {
             break;
         }
+
+        let trades = res?;
 
         if !trades.events().is_empty() {
             println!(

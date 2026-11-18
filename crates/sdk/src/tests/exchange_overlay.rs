@@ -102,8 +102,11 @@ fn committing_keeps_speculative_blocks_above_and_rebuilds_overlay() {
     assert_eq!(ex.instant().block_number(), 11);
     assert!(ex.accounts().contains_key(&1));
     assert!(!ex.accounts().contains_key(&2));
-    // Overlay rebuilt lazily on the next speculative block.
-    assert!(ex.speculative().is_none());
+    // The overlay still holds 12 on top of the newly committed 11.
+    let overlay = ex.speculative().expect("overlay kept");
+    assert_eq!(overlay.instant().block_number(), 12);
+    assert!(overlay.accounts().contains_key(&2));
+    assert_eq!(ex.latest_instant().block_number(), 12);
     ex.apply_events_at(&block(13, 3, CommitState::Proposed, 3), CommitState::Finalized)
         .unwrap();
     let overlay = ex.speculative().unwrap();
@@ -179,4 +182,45 @@ fn legacy_apply_events_commits_everything() {
     // Hand-built batches default to Finalized with no hash: no mismatch.
     let plain = RawBlockEvents::new(StateInstant::new(11, 11), vec![]);
     assert!(ex.apply_events(&plain).unwrap().is_none());
+}
+
+#[test]
+fn verified_min_commits_finalized_blocks() {
+    // The streams normalize Verified to Finalized, so `min = Verified` has to
+    // commit Finalized batches rather than leave them in the overlay forever.
+    let mut ex = exchange();
+    ex.apply_events_at(&block(11, 1, CommitState::Finalized, 1), CommitState::Verified)
+        .unwrap();
+    assert_eq!(ex.instant().block_number(), 11);
+    assert!(ex.accounts().contains_key(&1));
+    assert!(ex.speculative().is_none());
+}
+
+#[test]
+fn committing_a_block_commits_the_speculative_ones_it_builds_on() {
+    // The source tags a block with the first state it saw: a Voted block can
+    // follow blocks only seen Proposed, which are then Voted as well.
+    let mut ex = exchange();
+    ex.apply_events_at(&block(11, 1, CommitState::Proposed, 1), CommitState::Voted)
+        .unwrap();
+    ex.apply_events_at(&block(12, 2, CommitState::Proposed, 2), CommitState::Voted)
+        .unwrap();
+    let out = ex
+        .apply_events_at(&block(13, 3, CommitState::Voted, 3), CommitState::Voted)
+        .unwrap()
+        .expect("state events");
+    assert_eq!(out.block_number(), 13);
+    assert_eq!(ex.instant().block_number(), 13);
+    assert_eq!(ex.block_hash(), Some(B256::repeat_byte(3)));
+    assert!([1, 2, 3].iter().all(|id| ex.accounts().contains_key(id)));
+    assert!(ex.speculative().is_none());
+    ex.apply_events_at(&block(14, 4, CommitState::Proposed, 4), CommitState::Voted)
+        .unwrap();
+    assert_eq!(ex.latest_instant().block_number(), 14);
+
+    // A gap is still out of order.
+    assert!(matches!(
+        ex.apply_events_at(&block(16, 6, CommitState::Voted, 6), CommitState::Voted),
+        Err(DexError::BlockOutOfOrder(14, 16))
+    ));
 }

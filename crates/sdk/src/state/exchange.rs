@@ -280,7 +280,9 @@ impl Exchange {
     /// their height up before being applied, so a consumer that keeps its own
     /// derived state should treat such a batch as a rewind.
     ///
-    /// Within each layer, blocks are expected strictly in order; a re-send of
+    /// Within each layer, blocks are expected strictly in order, except that
+    /// a block to commit above speculative ones commits those first (its
+    /// ancestors have reached its commit state too); a re-send of
     /// an already applied block (the same height and hash at a higher commit
     /// state) is ignored and returns `None`, and committing a block whose
     /// hash differs from the one the committed snapshot was built with fails
@@ -296,6 +298,8 @@ impl Exchange {
         events: &stream::RawBlockEvents,
         min: types::CommitState,
     ) -> Result<Option<StateBlockEvents>, DexError> {
+        // The streams never tag a batch Verified, so `Verified` means Finalized
+        let min = min.normalized();
         let height = events.block_number();
         if events.supersedes() {
             self.spec_applied.retain(|b| b.block_number() < height);
@@ -329,13 +333,7 @@ impl Exchange {
             self.spec_state = None;
         }
         if self.spec_state.is_none() {
-            let mut base = self.clone();
-            base.spec_applied = VecDeque::new();
-            base.spec_state = None;
-            for block in &self.spec_applied {
-                base.apply_block(block)?;
-            }
-            self.spec_state = Some(Box::new(base));
+            self.build_overlay()?;
         }
         let overlay = self.spec_state.as_mut().expect("overlay built above");
         let expected = overlay.instant.block_number() + 1;
@@ -365,8 +363,26 @@ impl Exchange {
             return Ok(None);
         }
         if committed + 1 < height {
-            // Block arrived out of order
-            return Err(DexError::BlockOutOfOrder(committed + 1, height));
+            // A block's ancestors have reached its commit state too: commit
+            // the speculative blocks it builds on, if they fill the gap
+            let below: Vec<_> = self
+                .spec_applied
+                .iter()
+                .take_while(|b| b.block_number() < height)
+                .cloned()
+                .collect();
+            if !below
+                .iter()
+                .map(|b| b.block_number())
+                .eq(committed + 1..height)
+            {
+                // Block arrived out of order
+                return Err(DexError::BlockOutOfOrder(committed + 1, height));
+            }
+            for block in &below {
+                self.apply_block(block)?;
+                self.block_hash = block.block_hash();
+            }
         }
         let state_events = self.apply_block(events)?;
         self.block_hash = events.block_hash();
@@ -382,7 +398,24 @@ impl Exchange {
             self.spec_applied.retain(|b| b.block_number() > height);
         }
         self.spec_state = None;
+        if !self.spec_applied.is_empty() {
+            self.build_overlay()?;
+        }
         Ok(Some(state_events.with_tags_of(events)))
+    }
+
+    /// Rebuilds the speculative overlay: the committed state plus
+    /// `spec_applied`.
+    fn build_overlay(&mut self) -> Result<(), DexError> {
+        let mut base = self.clone();
+        base.spec_applied = VecDeque::new();
+        base.spec_state = None;
+        for block in &self.spec_applied {
+            base.apply_block(block)?;
+            base.block_hash = block.block_hash();
+        }
+        self.spec_state = Some(Box::new(base));
+        Ok(())
     }
 
     /// Applies a block to this state unconditionally; the caller checks order

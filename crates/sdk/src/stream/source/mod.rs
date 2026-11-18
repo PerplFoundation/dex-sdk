@@ -88,11 +88,11 @@ pub enum SealPolicy {
 ///    `h + 1`. A `Finalized` batch whose hash differs from the speculative one
 ///    emitted at its height is marked the same way.
 /// 4. Speculative batches for a height precede its `Finalized` batch.
-/// 5. `Err` items are non-recoverable and end the stream: the polling provider
-///    failed after its own retry and fallback layers gave up, or a log could
-///    not be decoded. Everything transient is retried internally, and
-///    subscription loss degrades to polling, visible through
-///    [`SourceHandle::status`].
+/// 5. `Err` items are non-recoverable and end the stream: a log could not be
+///    decoded, or the polling provider kept failing, past its own retry and
+///    fallback layers, for a minute of retries one poll interval apart.
+///    Everything transient is retried internally, and subscription loss
+///    degrades to polling, visible through [`SourceHandle::status`].
 ///
 /// # Sources
 ///
@@ -113,9 +113,13 @@ pub enum SealPolicy {
 ///   endpoint; the CLI uses 100 ms): a straight replacement for [`super::raw`]
 ///   that also catches up in ranges rather than block by block.
 ///
-/// Subscriptions are only ever a latency optimisation: finality progress is
-/// driven by periodic `finalized` tip polls, so a websocket that lags, lies,
-/// or dies silently can delay the stream but never corrupt it. While no
+/// Subscriptions are mostly a latency optimisation: finality progress is
+/// driven by periodic `finalized` tip polls, a block only finalizes on top of
+/// the last finalized one, and a run joined midway is never taken as whole,
+/// so a websocket that lags, dies silently, or serves a block off the chain
+/// delays the stream rather than corrupting it. One case is not detected: a
+/// block whose logs the node itself drops mid-run, on a connection that stays
+/// up, goes out short of those logs, `Finalized` included. While no
 /// subscription is alive (before the first connects, or after all died)
 /// polling takes over fully: the tips, up to `latest`, are polled at the
 /// provider's poll interval rather than [`Self::tip_interval`], proposed
@@ -443,7 +447,7 @@ where
                     Err(err) => vec![failed(request, err)],
                 },
                 PollRequest::Header(height) => match poll::header(&provider, height).await {
-                    Ok(Some(header)) => vec![Poll::Header(header)],
+                    Ok(Some((header, _))) => vec![Poll::Header(header)],
                     Ok(None) => vec![Poll::Unavailable(request)],
                     Err(err) => vec![failed(request, err)],
                 },
@@ -462,10 +466,12 @@ fn failed(
     request: PollRequest,
     err: crate::error::ProviderError<crate::abi::errors::Exchange::ExchangeErrors>,
 ) -> Poll {
-    // A block served inconsistently (hash mismatch between header and logs)
-    // or not available yet is retried; anything else is what the provider's
-    // own retry and fallback layers could not recover from.
-    let fatal = !matches!(err, crate::error::ProviderError::InvalidRequest(_));
+    // Only what no retry can fix (an undecodable log) ends the stream at
+    // once. The rest is retried: a block served inconsistently (hash
+    // mismatch between header and logs) or not available yet, and transport
+    // failures the provider's retry layer leaves alone (alloy only retries
+    // 429 and 503, not a 502 or a connection reset).
+    let fatal = matches!(err, crate::error::ProviderError::Fatal(_));
     Poll::Failed { request, error: DexError::Provider(err), fatal }
 }
 
@@ -490,15 +496,25 @@ async fn range_job<P: Provider>(
     let mut collected = Vec::with_capacity(headers.len());
     for header in headers {
         match header {
-            Ok(Some(header)) => collected.push(header),
+            Ok(Some((header, bloom))) => {
+                collected.push((header, poll::may_have_logs(&bloom, chain.exchange())))
+            },
             Ok(None) => return vec![Poll::Unavailable(request)],
             Err(err) => return vec![failed(request, err)],
         }
     }
+    let expected = collected.len();
     match poll::split_range(&logs, collected) {
         Ok(blocks) => {
+            // Short when the logs may not cover every block: the rest is
+            // fetched again a poll interval later
+            let done = if blocks.len() == expected {
+                Poll::Done(request)
+            } else {
+                Poll::Unavailable(request)
+            };
             let mut inputs: Vec<Poll> = blocks.into_iter().map(Poll::Block).collect();
-            inputs.push(Poll::Done(request));
+            inputs.push(done);
             inputs
         },
         Err(err) => vec![failed(request, err)],
@@ -550,6 +566,16 @@ mod tests {
             }
         }
         assert!(next_final > from, "no finalized block delivered");
+    }
+
+    #[test]
+    fn only_undecodable_data_is_fatal() {
+        use crate::error::ProviderError;
+        let fatal = |err| matches!(failed(PollRequest::Tips(None), err), Poll::Failed { fatal, .. } if fatal);
+        assert!(!fatal(ProviderError::Transport("HTTP error 502".into())));
+        assert!(!fatal(ProviderError::InvalidRequest("hash mismatch".into())));
+        assert!(!fatal(ProviderError::NullResp));
+        assert!(fatal(ProviderError::Fatal("undecodable log".into())));
     }
 
     #[tokio::test]

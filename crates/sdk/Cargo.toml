@@ -50,8 +50,9 @@ testing = ["alloy/node-bindings"]
 # WebSocket subscriptions for `stream::EventSource::with_ws_url`. Off by
 # default: the polling-only event source needs none of it. The subscriptions
 # are read with tokio-tungstenite directly (see `stream/source/ws.rs` for why
-# not alloy's pubsub provider), over rustls with the `ring` provider passed
-# explicitly, so nothing is installed process-wide.
+# not alloy's pubsub provider), over rustls with the `aws-lc-rs` provider (the one
+# alloy's reqwest already uses) passed explicitly, so nothing is installed
+# process-wide and no second provider makes rustls's default ambiguous.
 ws = ["dep:rustls", "dep:serde", "dep:serde_json", "dep:tokio", "dep:tokio-tungstenite"]
 
 [package.metadata.cargo-machete]
