@@ -113,9 +113,13 @@ pub enum SealPolicy {
 ///   endpoint; the CLI uses 100 ms): a straight replacement for [`super::raw`]
 ///   that also catches up in ranges rather than block by block.
 ///
-/// Subscriptions are only ever a latency optimisation: finality progress is
-/// driven by periodic `finalized` tip polls, so a websocket that lags, lies,
-/// or dies silently can delay the stream but never corrupt it. While no
+/// Subscriptions are mostly a latency optimisation: finality progress is
+/// driven by periodic `finalized` tip polls, a block only finalizes on top of
+/// the last finalized one, and a run joined midway is never taken as whole,
+/// so a websocket that lags, dies silently, or serves a block off the chain
+/// delays the stream rather than corrupting it. One case is not detected: a
+/// block whose logs the node itself drops mid-run, on a connection that stays
+/// up, goes out short of those logs, `Finalized` included. While no
 /// subscription is alive (before the first connects, or after all died)
 /// polling takes over fully: the tips, up to `latest`, are polled at the
 /// provider's poll interval rather than [`Self::tip_interval`], proposed
