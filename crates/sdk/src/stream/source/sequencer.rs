@@ -217,7 +217,9 @@ pub(crate) struct Sequencer {
     /// Heights that got a new proposal after being emitted speculatively.
     pending_rewind: HashSet<u64>,
     tips: Option<Tips>,
-    in_flight: HashSet<PollRequest>,
+    /// Requests in flight, each with the tips it was issued under: what a
+    /// response proves about the block's commit state.
+    in_flight: HashMap<PollRequest, Option<Tips>>,
     chunk: u64,
     sources: Vec<Source>,
     seq: u64,
@@ -243,7 +245,7 @@ impl Sequencer {
             candidates: BTreeMap::new(),
             pending_rewind: HashSet::new(),
             tips: None,
-            in_flight: HashSet::new(),
+            in_flight: HashMap::new(),
             sources,
             seq: 0,
             want_tips: false,
@@ -302,7 +304,7 @@ impl Sequencer {
     fn request_tips(&mut self) {
         if self
             .in_flight
-            .iter()
+            .keys()
             .any(|r| matches!(r, PollRequest::Tips(_)))
         {
             return;
@@ -312,7 +314,8 @@ impl Sequencer {
     }
 
     fn request(&mut self, req: PollRequest) {
-        if self.in_flight.insert(req) {
+        if let std::collections::hash_map::Entry::Vacant(e) = self.in_flight.entry(req) {
+            e.insert(self.tips);
             self.actions.push(Action::Poll(req));
         }
     }
@@ -481,21 +484,28 @@ impl Sequencer {
         match poll {
             Poll::Tips(tips) => {
                 self.in_flight
-                    .retain(|r| !matches!(r, PollRequest::Tips(_)));
+                    .retain(|r, _| !matches!(r, PollRequest::Tips(_)));
                 self.tips = Some(tips);
                 self.confirm_named(&tips);
                 self.fill_gaps();
             },
             Poll::Block(block) => {
                 let height = block.header.number;
-                self.in_flight.remove(&PollRequest::Block(height));
+                let issued = self
+                    .in_flight
+                    .remove(&PollRequest::Block(height))
+                    .or_else(|| {
+                        self.in_flight.iter().find_map(|(r, tips)| match r {
+                            PollRequest::Range { from, to } if (*from..=*to).contains(&height) => {
+                                Some(*tips)
+                            },
+                            _ => None,
+                        })
+                    });
                 if height < self.next_final {
                     return;
                 }
-                let state = self
-                    .tips
-                    .map(|t| t.state_of(height))
-                    .unwrap_or(CommitState::Proposed);
+                let state = self.polled_state(height, block.header.hash, issued.flatten());
                 let cand = self.candidate(height, block.header.hash);
                 cand.state = cand.state.max(state);
                 cand.header = Some(Header {
@@ -510,14 +520,11 @@ impl Sequencer {
                 cand.logs_complete = true;
             },
             Poll::Header(header) => {
-                self.in_flight.remove(&PollRequest::Header(header.number));
+                let issued = self.in_flight.remove(&PollRequest::Header(header.number));
                 if header.number < self.next_final {
                     return;
                 }
-                let state = self
-                    .tips
-                    .map(|t| t.state_of(header.number))
-                    .unwrap_or(CommitState::Proposed);
+                let state = self.polled_state(header.number, header.hash, issued.flatten());
                 let cand = self.candidate(header.number, header.hash);
                 cand.state = cand.state.max(state);
                 cand.header.get_or_insert(Header {
@@ -547,6 +554,18 @@ impl Sequencer {
                 }
             },
         }
+    }
+
+    /// Commit state a polled block is known to have: what the tips said
+    /// about its height when the request went out (a block fetched while
+    /// only proposed may be a proposal abandoned since), or what the current
+    /// tips say about its hash.
+    fn polled_state(&self, height: u64, hash: B256, issued: Option<Tips>) -> CommitState {
+        let by_height = issued.map_or(CommitState::Proposed, |t| t.state_of(height));
+        let Some(tips) = self.tips else { return by_height };
+        tips.named()
+            .filter_map(|(h, hs, state)| (h == height && hs == hash).then_some(state))
+            .fold(by_height, CommitState::max)
     }
 
     fn on_tick(&mut self, tick: Tick) {
@@ -641,7 +660,7 @@ impl Sequencer {
             let needs_poll = !self.has_complete_at(self.next_final, CommitState::Finalized);
             let range_in_flight = self
                 .in_flight
-                .iter()
+                .keys()
                 .any(|r| matches!(r, PollRequest::Range { .. }));
             if needs_poll && !range_in_flight {
                 let to = tips
@@ -854,7 +873,7 @@ impl Sequencer {
         if self.tips.is_some_and(|t| t.finalized.number >= h)
             && !self
                 .in_flight
-                .iter()
+                .keys()
                 .any(|r| matches!(r, PollRequest::Range { .. } | PollRequest::Block(_)))
         {
             self.fill_gaps();
@@ -1137,6 +1156,34 @@ mod tests {
         assert_eq!(emitted(&outs), vec![(108, CommitState::Voted, false, 3)]);
         assert_eq!(polls(&acts), vec![PollRequest::Block(109)]);
         assert_eq!(seq.cursors().next_speculative, 109);
+    }
+
+    #[test]
+    fn stale_prefetch_is_not_finalized_by_newer_tips() {
+        let x = hash(1006);
+        let mut seq = Sequencer::new(106, opts(CommitState::Voted, SealPolicy::Marker, 0));
+        seq.start();
+        // 106 is prefetched while the tips name proposal X there.
+        let proposed = Tips {
+            latest: Tip { number: 106, hash: Some(x), parent: Some(hash(105)) },
+            safe: Tip::at(105),
+            finalized: Tip::at(105),
+        };
+        let (_, acts) = seq.push(Input::Poll(Poll::Tips(proposed)));
+        assert_eq!(polls(&acts), vec![PollRequest::Block(106)]);
+        // X is replaced by Y = hash(106), which finalizes before the
+        // prefetch returns.
+        seq.push(named_tips(107, 106, 106));
+        let (outs, acts) = seq.push(polled(106, x, 1));
+        assert!(outs.is_empty(), "stale prefetch emitted: {:?}", emitted(&outs));
+        assert!(
+            polls(&acts)
+                .iter()
+                .any(|r| matches!(r, PollRequest::Block(106) | PollRequest::Header(106))),
+            "{acts:?}"
+        );
+        let (outs, _) = seq.push(polled(106, hash(106), 2));
+        assert_eq!(emitted(&outs), vec![(106, CommitState::Finalized, false, 2)]);
     }
 
     #[test]
