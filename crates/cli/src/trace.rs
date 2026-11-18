@@ -28,6 +28,8 @@ pub(crate) async fn render<P: Provider + Clone + 'static>(
     let mut stream = pin!(stream);
 
     let mut blocks_left = num_blocks;
+    // A block shows once per commit state; `--num-blocks` counts heights
+    let mut last_height = None;
 
     while let Some(res) = stream.next().await {
         if cancellation_token.is_cancelled() || blocks_left.is_some_and(|count| count == 0) {
@@ -117,8 +119,12 @@ pub(crate) async fn render<P: Provider + Clone + 'static>(
             }
         }
 
-        if let Some(ref mut count) = blocks_left {
-            *count -= 1;
+        let height = block_events.block_number();
+        if last_height.is_none_or(|last| height > last) {
+            last_height = Some(height);
+            if let Some(ref mut count) = blocks_left {
+                *count -= 1;
+            }
         }
     }
 
