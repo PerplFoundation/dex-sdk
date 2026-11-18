@@ -102,8 +102,11 @@ fn committing_keeps_speculative_blocks_above_and_rebuilds_overlay() {
     assert_eq!(ex.instant().block_number(), 11);
     assert!(ex.accounts().contains_key(&1));
     assert!(!ex.accounts().contains_key(&2));
-    // Overlay rebuilt lazily on the next speculative block.
-    assert!(ex.speculative().is_none());
+    // The overlay still holds 12 on top of the newly committed 11.
+    let overlay = ex.speculative().expect("overlay kept");
+    assert_eq!(overlay.instant().block_number(), 12);
+    assert!(overlay.accounts().contains_key(&2));
+    assert_eq!(ex.latest_instant().block_number(), 12);
     ex.apply_events_at(&block(13, 3, CommitState::Proposed, 3), CommitState::Finalized)
         .unwrap();
     let overlay = ex.speculative().unwrap();

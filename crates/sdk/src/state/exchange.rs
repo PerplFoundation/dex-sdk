@@ -331,13 +331,7 @@ impl Exchange {
             self.spec_state = None;
         }
         if self.spec_state.is_none() {
-            let mut base = self.clone();
-            base.spec_applied = VecDeque::new();
-            base.spec_state = None;
-            for block in &self.spec_applied {
-                base.apply_block(block)?;
-            }
-            self.spec_state = Some(Box::new(base));
+            self.build_overlay()?;
         }
         let overlay = self.spec_state.as_mut().expect("overlay built above");
         let expected = overlay.instant.block_number() + 1;
@@ -384,7 +378,24 @@ impl Exchange {
             self.spec_applied.retain(|b| b.block_number() > height);
         }
         self.spec_state = None;
+        if !self.spec_applied.is_empty() {
+            self.build_overlay()?;
+        }
         Ok(Some(state_events.with_tags_of(events)))
+    }
+
+    /// Rebuilds the speculative overlay: the committed state plus
+    /// `spec_applied`.
+    fn build_overlay(&mut self) -> Result<(), DexError> {
+        let mut base = self.clone();
+        base.spec_applied = VecDeque::new();
+        base.spec_state = None;
+        for block in &self.spec_applied {
+            base.apply_block(block)?;
+            base.block_hash = block.block_hash();
+        }
+        self.spec_state = Some(Box::new(base));
+        Ok(())
     }
 
     /// Applies a block to this state unconditionally; the caller checks order
