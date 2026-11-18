@@ -129,16 +129,16 @@ struct Connection {
 }
 
 /// TLS client configuration for `wss://` URLs: the bundled roots and the
-/// `ring` provider, chosen explicitly so that nothing is installed
+/// `aws-lc-rs` provider, chosen explicitly so that nothing is installed
 /// process-wide (which could change the HTTP provider's TLS behaviour).
 fn tls_config() -> Arc<rustls::ClientConfig> {
     let mut roots = rustls::RootCertStore::empty();
     roots.add_parsable_certificates(webpki_root_certs::TLS_SERVER_ROOT_CERTS.iter().cloned());
     let config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
+        rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_safe_default_protocol_versions()
-    .expect("ring supports the default TLS versions")
+    .expect("aws-lc-rs supports the default TLS versions")
     .with_root_certificates(roots)
     .with_no_client_auth();
     Arc::new(config)
@@ -517,4 +517,12 @@ fn decode<S>(st: &State<S>, kind: Kind, raw: &RawValue) -> (Option<Input>, bool)
             Err(e) => undecodable(st, e.to_string()),
         },
     }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Enabling `ws` must leave rustls able to pick a process-wide provider,
+    /// which it cannot when two providers are compiled in.
+    #[test]
+    fn rustls_default_provider_stays_unambiguous() { let _ = rustls::ClientConfig::builder(); }
 }
