@@ -443,7 +443,7 @@ where
                     Err(err) => vec![failed(request, err)],
                 },
                 PollRequest::Header(height) => match poll::header(&provider, height).await {
-                    Ok(Some(header)) => vec![Poll::Header(header)],
+                    Ok(Some((header, _))) => vec![Poll::Header(header)],
                     Ok(None) => vec![Poll::Unavailable(request)],
                     Err(err) => vec![failed(request, err)],
                 },
@@ -492,15 +492,25 @@ async fn range_job<P: Provider>(
     let mut collected = Vec::with_capacity(headers.len());
     for header in headers {
         match header {
-            Ok(Some(header)) => collected.push(header),
+            Ok(Some((header, bloom))) => {
+                collected.push((header, poll::may_have_logs(&bloom, chain.exchange())))
+            },
             Ok(None) => return vec![Poll::Unavailable(request)],
             Err(err) => return vec![failed(request, err)],
         }
     }
+    let expected = collected.len();
     match poll::split_range(&logs, collected) {
         Ok(blocks) => {
+            // Short when the logs may not cover every block: the rest is
+            // fetched again a poll interval later
+            let done = if blocks.len() == expected {
+                Poll::Done(request)
+            } else {
+                Poll::Unavailable(request)
+            };
             let mut inputs: Vec<Poll> = blocks.into_iter().map(Poll::Block).collect();
-            inputs.push(Poll::Done(request));
+            inputs.push(done);
             inputs
         },
         Err(err) => vec![failed(request, err)],

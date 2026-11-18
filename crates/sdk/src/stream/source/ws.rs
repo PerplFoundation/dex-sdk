@@ -25,7 +25,7 @@ use std::{
 };
 
 use alloy::{
-    primitives::{B256, BloomInput},
+    primitives::B256,
     rpc::types::{Filter, Header, Log},
     sol_types::SolEventInterface,
 };
@@ -477,11 +477,8 @@ fn decode<S>(st: &State<S>, kind: Kind, raw: &RawValue) -> (Option<Input>, bool)
     match kind {
         Kind::Heads => match serde_json::from_str::<MonadHeader>(raw.get()) {
             Ok(h) => {
-                let may_have_logs = h
-                    .header
-                    .inner
-                    .logs_bloom
-                    .contains_input(BloomInput::Raw(st.chain.exchange().as_slice()));
+                let may_have_logs =
+                    super::poll::may_have_logs(&h.header.inner.logs_bloom, st.chain.exchange());
                 (
                     ws(Ws::Header {
                         src,

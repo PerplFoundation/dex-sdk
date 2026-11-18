@@ -10,7 +10,7 @@
 
 use alloy::{
     eips::BlockId,
-    primitives::B256,
+    primitives::{Address, B256, Bloom, BloomInput},
     providers::Provider,
     rpc::types::{Filter, Log},
     sol_types::SolEventInterface,
@@ -123,6 +123,11 @@ impl From<&alloy::rpc::types::Header> for BlockHeader {
     }
 }
 
+/// Whether a block with this logs bloom may hold logs of the exchange.
+pub fn may_have_logs(bloom: &Bloom, exchange: Address) -> bool {
+    bloom.contains_input(BloomInput::Raw(exchange.as_slice()))
+}
+
 /// A block fetched by polling: header plus its decoded exchange events, in
 /// log-index order, verified to belong to the header's hash.
 #[derive(Clone, Debug)]
@@ -167,11 +172,14 @@ pub async fn tips<P: Provider>(
     }
 }
 
-/// Fetches the header of a block by number, `None` when the node does not
-/// have it yet.
-pub async fn header<P: Provider>(provider: &P, number: u64) -> Result<Option<BlockHeader>> {
+/// Fetches the header of a block by number, with its logs bloom, `None`
+/// when the node does not have it yet.
+pub async fn header<P: Provider>(
+    provider: &P,
+    number: u64,
+) -> Result<Option<(BlockHeader, Bloom)>> {
     let block = provider.get_block(BlockId::number(number)).await?;
-    Ok(block.map(|b| BlockHeader::from(&b.header)))
+    Ok(block.map(|b| (BlockHeader::from(&b.header), b.header.logs_bloom)))
 }
 
 /// Decodes exchange logs into events, in log-index order, checking that every
@@ -258,10 +266,15 @@ fn is_range_too_large<E>(err: &alloy::transports::RpcError<E>) -> bool {
 }
 
 /// Splits range logs per block, in log-index order, verified against the
-/// given headers. Blocks without logs get an empty event list.
+/// given headers, each with whether its bloom may hold exchange logs.
+///
+/// A block without logs gets an empty event list if its bloom rules them
+/// out; otherwise the response may just not cover it (a backend behind the
+/// range's end floors `toBlock` to its head without an error), so the blocks
+/// stop before it.
 pub fn split_range(
     logs: &[Log],
-    headers: impl IntoIterator<Item = BlockHeader>,
+    headers: impl IntoIterator<Item = (BlockHeader, bool)>,
 ) -> Result<Vec<PolledBlock>> {
     let mut by_block: std::collections::BTreeMap<u64, Vec<&Log>> = Default::default();
     for log in logs {
@@ -272,7 +285,10 @@ pub fn split_range(
     }
     headers
         .into_iter()
-        .map(|header| {
+        .take_while(|(header, may_have_logs)| {
+            !may_have_logs || by_block.contains_key(&header.number)
+        })
+        .map(|(header, _)| {
             let logs: Vec<Log> = by_block
                 .get(&header.number)
                 .map(|ls| ls.iter().map(|l| (*l).clone()).collect())
@@ -280,4 +296,50 @@ pub fn split_range(
             Ok(PolledBlock { header, events: decode_logs(&logs, header.hash)? })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy::{
+        primitives::{Address, LogData, U256},
+        sol_types::SolEvent,
+    };
+
+    use super::*;
+    use crate::abi::dex::Exchange::AccountCreated;
+
+    fn header(number: u64) -> BlockHeader {
+        BlockHeader {
+            number,
+            hash: B256::from(U256::from(number)),
+            parent: B256::from(U256::from(number - 1)),
+            timestamp: number,
+        }
+    }
+
+    fn log(number: u64) -> Log {
+        let data: LogData =
+            AccountCreated { id: U256::from(number), account: Address::ZERO }.encode_log_data();
+        Log {
+            inner: alloy::primitives::Log { address: Address::ZERO, data },
+            block_hash: Some(header(number).hash),
+            block_number: Some(number),
+            ..Default::default()
+        }
+    }
+
+    /// A backend whose head lags the range floors `toBlock` without an
+    /// error: the heights it did not cover are not known empty unless their
+    /// bloom says so.
+    #[test]
+    fn split_range_stops_at_a_block_whose_logs_may_be_missing() {
+        let logs = [log(100), log(101), log(102)];
+        let headers = (100..=105).map(|n| (header(n), n != 103));
+        let blocks = split_range(&logs, headers).unwrap();
+        let got: Vec<_> = blocks
+            .iter()
+            .map(|b| (b.header.number, b.events.len()))
+            .collect();
+        assert_eq!(got, vec![(100, 1), (101, 1), (102, 1), (103, 0)]);
+    }
 }
