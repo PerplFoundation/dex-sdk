@@ -126,6 +126,11 @@ struct Connection {
     silent: bool,
     /// Number of connections built before this one.
     epoch: u64,
+    /// Connect attempts that failed before this one, carried over to the
+    /// next attempt unless this connection delivers.
+    attempt: u32,
+    /// A header came through: the connection works, the backoff resets.
+    delivered: bool,
 }
 
 /// TLS client configuration for `wss://` URLs: the bundled roots and the
@@ -171,6 +176,8 @@ where
         keepalive: Box::pin(sleep(KEEPALIVE)),
         silent: false,
         epoch,
+        attempt: 0,
+        delivered: false,
     };
     let filter = Filter::new().address(chain.exchange());
     let mut kinds = vec![Kind::Heads, Kind::Logs];
@@ -265,7 +272,9 @@ where
                     let connect =
                         connect(&st.url, &st.chain, st.cfg, st.tls.clone(), st.sleep, epoch);
                     match connect.await {
-                        Ok(conn) => st.phase = Phase::Connected(Box::new(conn)),
+                        Ok(conn) => {
+                            st.phase = Phase::Connected(Box::new(Connection { attempt, ..conn }))
+                        },
                         Err(err) => {
                             st.with_status(|s| s.last_error = Some(err.to_string()));
                             st.phase = Phase::Connect { attempt: attempt.saturating_add(1), epoch };
@@ -287,6 +296,7 @@ where
                     if let Some(input) = input {
                         if let Input::Ws(Ws::Header { height, .. }) = &input {
                             let height = *height;
+                            conn.delivered = true;
                             st.with_status(|s| s.last_header = Some(height));
                         }
                         st.pending.push_back(input);
@@ -294,11 +304,16 @@ where
                     if closed {
                         // Dropping the socket closes the connection; no close
                         // handshake, the peer may be gone already.
+                        // A connection that never delivered (a rejected
+                        // subscription, an undecodable first frame) backs
+                        // off like a failed connect.
                         let epoch = conn.epoch + 1;
+                        let attempt =
+                            if conn.delivered { 0 } else { conn.attempt.saturating_add(1) };
                         drop(conn);
                         st.with_status(|s| s.connected = false);
                         st.pending.push_back(Input::Ws(Ws::Closed { src: st.src }));
-                        st.phase = Phase::Connect { attempt: 0, epoch };
+                        st.phase = Phase::Connect { attempt, epoch };
                     } else {
                         st.phase = Phase::Connected(conn);
                     }
@@ -521,6 +536,81 @@ fn decode<S>(st: &State<S>, kind: Kind, raw: &RawValue) -> (Option<Input>, bool)
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    use super::*;
+
+    static SLEEPS: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
+
+    /// Records reconnect backoffs (keepalives never get to fire here).
+    async fn sleep(d: Duration) {
+        if d < KEEPALIVE {
+            SLEEPS.lock().unwrap().push(d);
+        }
+        tokio::task::yield_now().await;
+    }
+
+    /// A node that rejects every `eth_subscribe` must not be redialled in
+    /// a tight loop: the backoff grows until a connection delivers.
+    #[tokio::test]
+    async fn rejected_subscription_backs_off() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            while let Ok((tcp, _)) = listener.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let Ok(mut ws) = tokio_tungstenite::accept_async(tcp).await else { return };
+                    while let Some(Ok(Message::Text(req))) = ws.next().await {
+                        let id =
+                            serde_json::from_str::<serde_json::Value>(&req).unwrap()["id"].clone();
+                        let reply = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": { "code": -32601, "message": "no monadNewHeads" },
+                        });
+                        let _ = ws.send(Message::Text(reply.to_string().into())).await;
+                    }
+                });
+            }
+        });
+        let status = Arc::new(Mutex::new(super::super::SourceStatus {
+            sources: vec![Default::default()],
+            ..Default::default()
+        }));
+        let (_kick_tx, kick_rx) = futures::channel::mpsc::unbounded();
+        let source = source(
+            0,
+            url,
+            crate::Chain::testnet(),
+            Config { marker: false },
+            sleep,
+            kick_rx,
+            status,
+        );
+        let closed: Vec<_> = source.take(4).collect().await;
+        assert!(
+            closed
+                .iter()
+                .all(|i| matches!(i, Input::Ws(Ws::Closed { .. })))
+        );
+        let sleeps = SLEEPS.lock().unwrap().clone();
+        assert_eq!(
+            sleeps,
+            vec![BACKOFF_BASE, BACKOFF_BASE * 2, BACKOFF_BASE * 4],
+            "{} connections",
+            accepted.load(Ordering::SeqCst)
+        );
+    }
+
     /// Enabling `ws` must leave rustls able to pick a process-wide provider,
     /// which it cannot when two providers are compiled in.
     #[test]
