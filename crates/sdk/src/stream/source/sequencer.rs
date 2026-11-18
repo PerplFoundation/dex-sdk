@@ -80,7 +80,7 @@ pub(crate) enum Poll {
     },
     /// All blocks of the request were delivered.
     Done(PollRequest),
-    /// The request failed; retried next tick unless fatal.
+    /// The request failed; retried after a poll interval unless fatal.
     Failed {
         request: PollRequest,
         error: DexError,
@@ -92,6 +92,8 @@ pub(crate) enum Poll {
 pub(crate) enum Tick {
     Tip,
     Watchdog,
+    /// A failed or unavailable request may go out again.
+    Retry(PollRequest),
     /// `Quiescent` sealing timer.
     Quiet {
         src: SourceId,
@@ -569,9 +571,7 @@ impl Sequencer {
                     parent: Some(header.parent),
                 });
             },
-            Poll::Unavailable(req) => {
-                self.in_flight.remove(&req);
-            },
+            Poll::Unavailable(req) => self.retry_later(req),
             Poll::RangeTooLarge { from, to } => {
                 self.in_flight.remove(&PollRequest::Range { from, to });
                 let span = to - from + 1;
@@ -583,14 +583,21 @@ impl Sequencer {
                 self.fill_gaps();
             },
             Poll::Failed { request, error, fatal } => {
-                self.in_flight.remove(&request);
                 if fatal {
+                    self.in_flight.remove(&request);
                     self.outputs.push(Output::Error(error));
                 } else {
-                    self.want_tips = true;
+                    self.retry_later(request);
                 }
             },
         }
+    }
+
+    /// Keeps a request that got no usable answer in flight, so nothing sends
+    /// it again, until a poll interval has passed.
+    fn retry_later(&mut self, request: PollRequest) {
+        self.actions
+            .push(Action::Timer(self.opts.poll_interval, Tick::Retry(request)));
     }
 
     /// Commit state a polled block is known to have: what the tips said
@@ -647,6 +654,14 @@ impl Sequencer {
                 }
                 self.actions
                     .push(Action::Timer(self.opts.watchdog, Tick::Watchdog));
+            },
+            Tick::Retry(request) => {
+                self.in_flight.remove(&request);
+                if matches!(request, PollRequest::Tips(_)) {
+                    self.request_tips();
+                } else {
+                    self.fill_gaps();
+                }
             },
             Tick::Quiet { src, height, hash, token } => {
                 // R6
@@ -1278,6 +1293,33 @@ mod tests {
             );
         }
         assert!(seq.candidates.is_empty(), "{} heights buffered", seq.candidates.len());
+    }
+
+    #[test]
+    fn failed_and_unavailable_polls_are_retried_after_the_poll_interval() {
+        let mut seq = Sequencer::new(100, opts(CommitState::Finalized, SealPolicy::Marker, 0));
+        seq.start();
+        seq.push(tips(300, 300, 300));
+        let range = PollRequest::Range { from: 100, to: 199 };
+        let error = DexError::Provider(crate::error::ProviderError::InvalidRequest("x".into()));
+        let (_, acts) = seq.push(Input::Poll(Poll::Failed { request: range, error, fatal: false }));
+        assert!(polls(&acts).iter().all(|r| *r != range), "re-sent at once: {acts:?}");
+        let retry = acts
+            .iter()
+            .find_map(|a| match a {
+                Action::Timer(d, t @ Tick::Retry(_)) => Some((*d, *t)),
+                _ => None,
+            })
+            .expect("retry timer");
+        assert_eq!(retry.0, Duration::from_millis(100));
+        // Tips coming in meanwhile do not re-send it either.
+        let (_, acts) = seq.push(tips(300, 300, 300));
+        assert!(polls(&acts).iter().all(|r| *r != range), "{acts:?}");
+        let (_, acts) = seq.push(Input::Tick(retry.1));
+        assert_eq!(polls(&acts), vec![range]);
+
+        let (_, acts) = seq.push(Input::Poll(Poll::Unavailable(range)));
+        assert!(polls(&acts).iter().all(|r| *r != range), "re-sent at once: {acts:?}");
     }
 
     #[test]
