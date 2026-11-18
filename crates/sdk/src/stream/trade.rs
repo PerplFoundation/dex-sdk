@@ -196,6 +196,12 @@ struct JournalEntry {
     undo: Vec<((types::PerpetualId, types::OrderId), Option<PlacedOrder>)>,
 }
 
+/// Blocks kept in the journal. Pruning relies on a batch at `Voted` or above
+/// arriving for each height, which never happens behind [`super::once`].
+/// shortcut: a rewind deeper than this many blocks is not undone; Monad
+/// finalizes within about two blocks, raise it if that ever changes.
+const JOURNAL_DEPTH: usize = 32;
+
 /// Attribution of an order observed being placed, recovered at fill time.
 #[derive(Clone, Copy)]
 struct PlacedOrder {
@@ -287,6 +293,9 @@ impl TradeProcessor {
                 None => {
                     self.journal
                         .push_back(JournalEntry { height, hash, undo: Vec::new() });
+                    if self.journal.len() > JOURNAL_DEPTH {
+                        self.journal.pop_front();
+                    }
                     self.journal.len() - 1
                 },
             });
@@ -934,6 +943,16 @@ mod journal_tests {
         p.process_block(&block(2, 9, CommitState::Finalized, false, vec![]));
         let trades = p.process_block(&fill_block(3, 3, CommitState::Finalized));
         assert_eq!(trades.events()[0].event().maker_fills[0].maker_client_order_id, Some(11));
+    }
+
+    #[test]
+    fn journal_stays_bounded_without_finalized_batches() {
+        // Behind `once`, re-sends are dropped: nothing ever promotes.
+        let mut p = processor();
+        for h in 1..1000 {
+            p.process_block(&block(h, h as u8, CommitState::Proposed, false, vec![]));
+        }
+        assert!(p.journal.len() <= JOURNAL_DEPTH, "{} entries", p.journal.len());
     }
 
     #[test]
