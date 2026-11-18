@@ -20,6 +20,11 @@ use crate::{
     types::{CommitState, StateInstant},
 };
 
+/// Heights above the next finalized one whose subscription data is kept.
+/// Beyond it (catching up from far behind) the polls fetch the blocks once
+/// they are due, so memory stays bounded by the lookahead.
+const LOOKAHEAD: u64 = 64;
+
 /// Index of a websocket source in the order the URLs were given.
 pub(crate) type SourceId = usize;
 
@@ -393,7 +398,7 @@ impl Sequencer {
                 source.header = Some(key);
                 source.headers_seen += 1;
                 source.alive = true;
-                if height < self.next_final {
+                if !self.buffers(height) {
                     return;
                 }
                 let seal = self.opts.seal;
@@ -423,7 +428,7 @@ impl Sequencer {
                 if source.run.is_none() && source.header == Some(key) {
                     source.run = Some(key);
                 }
-                if height < self.next_final {
+                if !self.buffers(height) {
                     return;
                 }
                 let seal = self.opts.seal;
@@ -474,6 +479,11 @@ impl Sequencer {
                 self.want_tips = true;
             },
         }
+    }
+
+    /// Whether subscription data at `height` is kept.
+    fn buffers(&self, height: u64) -> bool {
+        (self.next_final..=self.next_final.saturating_add(LOOKAHEAD)).contains(&height)
     }
 
     /// The run streaming on `src` ended regularly: its block has all its
@@ -1250,6 +1260,24 @@ mod tests {
         seq.start();
         let (_, acts) = seq.push(tips(300, 300, 300));
         assert_eq!(polls(&acts), vec![PollRequest::Range { from: 100, to: 300 }]);
+    }
+
+    #[test]
+    fn subscription_data_far_above_the_finalized_layer_is_not_buffered() {
+        let mut seq = Sequencer::new(100, opts(CommitState::Proposed, SealPolicy::Marker, 1));
+        seq.start();
+        // Catching up from far behind: the live blocks are polled later.
+        for h in 10_000..10_100 {
+            feed(
+                &mut seq,
+                vec![
+                    header(0, h, hash(h), hash(h - 1), CommitState::Proposed),
+                    log(0, h, hash(h), CommitState::Proposed, 0),
+                    marker(0, h, hash(h)),
+                ],
+            );
+        }
+        assert!(seq.candidates.is_empty(), "{} heights buffered", seq.candidates.len());
     }
 
     #[test]
