@@ -464,8 +464,18 @@ impl Sequencer {
     }
 
     /// The run streaming on `src` was cut: its block stays incomplete unless
-    /// another source or a poll completes it.
-    fn abort_run(&mut self, src: SourceId) { self.sources[src].run = None; }
+    /// another source or a poll completes it. Its pending `Quiescent` timers
+    /// are voided, as a cut run is no more quiet than complete.
+    fn abort_run(&mut self, src: SourceId) {
+        if let Some((height, hash, _)) = self.sources[src].run.take()
+            && let Some(cand) = self
+                .candidates
+                .get_mut(&height)
+                .and_then(|c| c.get_mut(&hash))
+        {
+            cand.log_token += 1;
+        }
+    }
 
     fn on_poll(&mut self, poll: Poll) {
         match poll {
@@ -558,13 +568,23 @@ impl Sequencer {
                         if source.stale >= self.opts.stale_periods {
                             source.stale = 0;
                             source.alive = false;
-                            source.run = None;
                             self.actions.push(Action::Reconnect(src));
                         }
                     } else {
                         source.stale = 0;
                     }
                     source.headers_at_last_tick = source.headers_seen;
+                }
+                let rebuilt: Vec<SourceId> = self
+                    .actions
+                    .iter()
+                    .filter_map(|a| match a {
+                        Action::Reconnect(src) => Some(*src),
+                        _ => None,
+                    })
+                    .collect();
+                for src in rebuilt {
+                    self.abort_run(src);
                 }
                 if any_stale {
                     self.want_tips = true;
@@ -1345,6 +1365,38 @@ mod tests {
         assert_eq!(polls(&acts), vec![PollRequest::Block(100)]);
         let (outs, _) = seq.push(polled(100, A, 3));
         assert_eq!(emitted(&outs), vec![(100, CommitState::Finalized, false, 3)]);
+    }
+
+    #[test]
+    fn quiescent_does_not_seal_a_run_cut_by_a_disconnect() {
+        let quiet = Duration::from_millis(10);
+        let mut seq =
+            Sequencer::new(100, opts(CommitState::Voted, SealPolicy::Quiescent { quiet }, 1));
+        seq.start();
+        let (_, acts) = feed(
+            &mut seq,
+            vec![
+                header(0, 100, A, hash(99), CommitState::Proposed),
+                log(0, 100, A, CommitState::Proposed, 0),
+                Input::Ws(Ws::Closed { src: 0 }),
+            ],
+        );
+        let tick = acts
+            .iter()
+            .filter_map(|a| match a {
+                Action::Timer(_, t @ Tick::Quiet { .. }) => Some(*t),
+                _ => None,
+            })
+            .next_back()
+            .unwrap();
+        let (outs, _) = seq.push(Input::Tick(tick));
+        assert!(outs.is_empty());
+        // The tips name the block: it is fetched, not emitted half-complete.
+        let named = Tips { latest: Tip::at(100), safe: Tip::at(100), finalized: tip(100) };
+        let named = Tips { finalized: Tip { hash: Some(A), ..named.finalized }, ..named };
+        let (outs, acts) = seq.push(Input::Poll(Poll::Tips(named)));
+        assert!(outs.is_empty(), "{:?}", emitted(&outs));
+        assert_eq!(polls(&acts), vec![PollRequest::Block(100)]);
     }
 
     #[test]
