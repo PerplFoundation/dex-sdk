@@ -296,6 +296,8 @@ impl Exchange {
         events: &stream::RawBlockEvents,
         min: types::CommitState,
     ) -> Result<Option<StateBlockEvents>, DexError> {
+        // The streams never tag a batch Verified, so `Verified` means Finalized
+        let min = min.normalized();
         let height = events.block_number();
         if events.supersedes() {
             self.spec_applied.retain(|b| b.block_number() < height);

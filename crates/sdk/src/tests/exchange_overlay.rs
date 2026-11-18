@@ -180,3 +180,15 @@ fn legacy_apply_events_commits_everything() {
     let plain = RawBlockEvents::new(StateInstant::new(11, 11), vec![]);
     assert!(ex.apply_events(&plain).unwrap().is_none());
 }
+
+#[test]
+fn verified_min_commits_finalized_blocks() {
+    // The streams normalize Verified to Finalized, so `min = Verified` has to
+    // commit Finalized batches rather than leave them in the overlay forever.
+    let mut ex = exchange();
+    ex.apply_events_at(&block(11, 1, CommitState::Finalized, 1), CommitState::Verified)
+        .unwrap();
+    assert_eq!(ex.instant().block_number(), 11);
+    assert!(ex.accounts().contains_key(&1));
+    assert!(ex.speculative().is_none());
+}
