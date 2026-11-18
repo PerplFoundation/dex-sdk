@@ -280,7 +280,9 @@ impl Exchange {
     /// their height up before being applied, so a consumer that keeps its own
     /// derived state should treat such a batch as a rewind.
     ///
-    /// Within each layer, blocks are expected strictly in order; a re-send of
+    /// Within each layer, blocks are expected strictly in order, except that
+    /// a block to commit above speculative ones commits those first (its
+    /// ancestors have reached its commit state too); a re-send of
     /// an already applied block (the same height and hash at a higher commit
     /// state) is ignored and returns `None`, and committing a block whose
     /// hash differs from the one the committed snapshot was built with fails
@@ -361,8 +363,26 @@ impl Exchange {
             return Ok(None);
         }
         if committed + 1 < height {
-            // Block arrived out of order
-            return Err(DexError::BlockOutOfOrder(committed + 1, height));
+            // A block's ancestors have reached its commit state too: commit
+            // the speculative blocks it builds on, if they fill the gap
+            let below: Vec<_> = self
+                .spec_applied
+                .iter()
+                .take_while(|b| b.block_number() < height)
+                .cloned()
+                .collect();
+            if !below
+                .iter()
+                .map(|b| b.block_number())
+                .eq(committed + 1..height)
+            {
+                // Block arrived out of order
+                return Err(DexError::BlockOutOfOrder(committed + 1, height));
+            }
+            for block in &below {
+                self.apply_block(block)?;
+                self.block_hash = block.block_hash();
+            }
         }
         let state_events = self.apply_block(events)?;
         self.block_hash = events.block_hash();
