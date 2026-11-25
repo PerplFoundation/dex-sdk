@@ -838,7 +838,7 @@ impl Exchange {
             ExchangeEvents::ExchangeInitialized(_) => vec![],
             ExchangeEvents::FastLaneFilterUpdated(e) => {
                 vec![StateEvents::Exchange(ExchangeEvent::FastLaneFilterUpdated {
-                    handler: e.handler,
+                    handlers: e.handlers.clone(),
                     enabled: e.enabled,
                 })]
             },

@@ -245,11 +245,13 @@ pub enum ExchangeEvent {
 
     /// The FastLane taker filter was pointed at a handler, or switched on or
     /// off (contract v1.1.7.6+). While on, a taking order sent directly from
-    /// inside a bid on `handler` is refused with
-    /// [`OrderErrorType::TakerOrderInFastLaneBid`]. Any administrator key can
-    /// switch it, so every one of these is worth matching to an approved
-    /// change.
-    FastLaneFilterUpdated { handler: Address, enabled: bool },
+    /// inside a bid on one of `handlers` is refused with
+    /// [`OrderErrorType::TakerOrderInFastLaneBid`]. The contract stores one
+    /// handler and reports it as a list - empty while none is set - so that a
+    /// later release can serve several without changing the event. Any
+    /// administrator key can switch the filter, so every one of these is
+    /// worth matching to an approved change.
+    FastLaneFilterUpdated { handlers: Vec<Address>, enabled: bool },
 
     /// Exchange halted/unhalted.
     Halted(bool),

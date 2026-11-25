@@ -399,16 +399,16 @@ impl From<RequestType> for OrderType {
 /// is valid, and stricter: it lets the exchange draw nothing.
 pub const DEFAULT_MAX_NEG_PNL_COLLAT_BPS: u16 = 1000;
 
-/// Most resting orders the matching engine will walk for a single order
-/// (`C._MAX_MATCHES`).
+/// Most resting orders the matching walk of one order may visit, filled or
+/// cleared (`C._MAX_MATCHES`).
 ///
 /// A loop bound the contract applies for gas safety, not a market parameter:
 /// it does not revert above it, it silently substitutes its own maximum, and
 /// it does the same for zero. An order that asked to match at most one resting
-/// order and got a thousand is the opposite of what was asked, so
-/// [`OrderRequestBuilder::build`] rejects anything outside `1..=1000` rather
+/// order and got 125 is the opposite of what was asked, so
+/// [`OrderRequestBuilder::build`] rejects anything outside `1..=125` rather
 /// than let the substitution happen.
-pub const MAX_MATCHES: u32 = 1000;
+pub const MAX_MATCHES: u32 = 125;
 
 /// Field of an order request a fault refers to.
 ///
@@ -461,7 +461,7 @@ pub enum OrderRequestBuilderError {
     #[error("leverage {requested} exceeds the maximum of {max} on perpetual {perp}")]
     LeverageTooHigh { perp: PerpetualId, requested: UD64, max: UD64 },
 
-    #[error("max matches {requested} is outside the exchange's range of 1 to {max}")]
+    #[error("max matches {requested} is outside the range of 1 to {max}")]
     MaxMatchesOutOfRange { requested: u32, max: u32 },
 
     #[error("a {0:?} request requires {1}")]
@@ -1358,7 +1358,7 @@ mod tests {
     fn rejects_max_matches_the_exchange_would_substitute_its_own_for() {
         // The contract does not revert on either bound - it swaps in
         // C._MAX_MATCHES - so an order that asked to walk one resting order
-        // would quietly walk a thousand
+        // would quietly walk 125
         for requested in [0, MAX_MATCHES + 1] {
             let err = builder()
                 .max_matches(requested)
