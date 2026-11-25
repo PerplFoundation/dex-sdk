@@ -26,10 +26,10 @@ use std::{
 pub use account::*;
 use alloy::{
     hex::ToHexExt,
-    network::TransactionBuilder,
+    network::{Ethereum, TransactionBuilder},
     node_bindings::{Anvil, AnvilInstance},
     primitives::{Address, Bytes, U256, address, hex},
-    providers::{DynProvider, Provider, ProviderBuilder, ext::AnvilApi},
+    providers::{DynProvider, PendingTransactionBuilder, Provider, ProviderBuilder, ext::AnvilApi},
     rpc::{client::RpcClient, types::TransactionRequest},
 };
 use dashmap::{DashMap, DashSet};
@@ -39,7 +39,9 @@ pub use perp::*;
 
 use crate::{
     Chain,
-    abi::{dex::Exchange, erc1967_proxy::ERC1967Proxy, testing::TestToken},
+    abi::{
+        dex::Exchange, dex_legacy::LegacyExchange, erc1967_proxy::ERC1967Proxy, testing::TestToken,
+    },
     error::DexError,
     num, state, types,
 };
@@ -50,15 +52,43 @@ const POLL_INTERVAL_MS: u64 = 50;
 
 const USD_DECIMALS: u8 = 6;
 
-/// Creation bytecode of the previous exchange implementation
-/// (`rc_v1.1.7-99-g3afdb99`, contract generation v1.1.7.3b), deployed by
-/// [`TestExchange::new_at_previous_version`].
+/// Creation bytecode of the v1.1.7.3b exchange implementation
+/// (`rc_v1.1.7-99-g3afdb99`), deployed by
+/// [`TestExchange::new_at`]`(`[`Generation::V1173`]`)`.
 ///
 /// Only the bytecode is kept: every function the pre-upgrade path calls has an
 /// unchanged signature, so the current bindings drive it, and the current
 /// `ExchangeEvents` still decodes its events - the V1 event signatures are
-/// retained in the ABI for exactly this reason.
-const PREVIOUS_IMPLEMENTATION: &str = include_str!("../../abi/dex/legacy/Exchange.v1.1.7.3.bin");
+/// retained in the ABI for exactly this reason. The handful of selectors that
+/// release alone carries are in [`crate::abi::dex_legacy`].
+const IMPLEMENTATION_V1173: &str = include_str!("../../abi/dex/legacy/Exchange.v1.1.7.3.bin");
+
+/// Creation bytecode of the v1.1.7.5 exchange implementation
+/// (`rc_v1.1.7-203-g0e5902dd`), deployed by
+/// [`TestExchange::new_at`]`(`[`Generation::V1175`]`)` and as the target of
+/// [`TestExchange::upgrade`].
+///
+/// The last build carrying the v1.1.7.4 / v1.1.7.5 reinitializers, which the
+/// v1.1.7.6 build dropped as spent, so the hop from v1.1.7.3b has to land on
+/// it - and `initializeV5` requires exactly v1.1.7.5 underneath, so the hop
+/// to the current build has to start from it.
+const IMPLEMENTATION_V1175: &str = include_str!("../../abi/dex/legacy/Exchange.v1.1.7.5.bin");
+
+/// Earlier contract generations the harness can deploy, to exercise the SDK
+/// against a contract that lags behind the revision it targets, and across
+/// the upgrades between them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Generation {
+    /// v1.1.7.3b: V2 information getters, but no version getter, keyed fee
+    /// schedules, builder attribution or existence bitmap - the generation on
+    /// mainnet before the v1.1.7.4 upgrade.
+    V1173,
+
+    /// v1.1.7.5: everything up to fees on exit, but no client order IDs,
+    /// decrease-collateral order types or operating maintenance margin - the
+    /// generation on mainnet before the v1.1.7.6 upgrade.
+    V1175,
+}
 
 #[derive(Debug)]
 pub struct TestExchange {
@@ -77,9 +107,9 @@ pub struct TestExchange {
     perpetual_ids: Arc<DashSet<types::PerpetualId>>,
     account_address: Arc<DashMap<types::AccountId, Address>>,
     // True while the deployed generation predates v1.1.7.4 (set by
-    // `new_at_previous_version`, cleared by `upgrade`). That generation's
+    // `new_at(Generation::V1173)`, cleared by `upgrade`). That generation's
     // `addContract` carries two extra genesis-fee args, so `perp` must reach it
-    // through the legacy interface; a v1.1.7.4 deployment uses the current one.
+    // through the legacy interface; a v1.1.7.4+ deployment uses the current one.
     legacy: AtomicBool,
     anvil: AnvilInstance,
 }
@@ -90,35 +120,37 @@ impl TestExchange {
     pub async fn new() -> Self { Self::deploy(None).await }
 
     /// Spins up the environment running the *previous* contract generation
-    /// (v1.1.7.3b: V2 information getters, but no version getter, keyed fee
-    /// schedules, builder attribution or existence bitmap) - the generation
-    /// deployed on mainnet before the v1.1.7.4 upgrade.
+    /// ([`Generation::V1175`]) - the generation deployed on mainnet before
+    /// the v1.1.7.6 upgrade.
     ///
-    /// Use with [`Self::upgrade`] to exercise the SDK across the upgrade
-    /// itself.
-    pub async fn new_at_previous_version() -> Self {
-        Self::deploy(Some(PREVIOUS_IMPLEMENTATION)).await
-    }
+    /// Use with [`Self::upgrade_client_order_ids`] to exercise the SDK across
+    /// the upgrade itself.
+    pub async fn new_at_previous_version() -> Self { Self::new_at(Generation::V1175).await }
 
-    /// Upgrades the proxy to the implementation the SDK targets, seeding the
-    /// exchange-wide fee schedules and repointing every listed perpetual
-    /// contract at the default one.
+    /// Spins up the environment running an earlier contract generation. See
+    /// [`Self::upgrade`], [`Self::upgrade_fee_unit`] and
+    /// [`Self::upgrade_client_order_ids`] for the hops from one to the next,
+    /// each the transaction mainnet took.
+    pub async fn new_at(generation: Generation) -> Self { Self::deploy(Some(generation)).await }
+
+    /// Upgrades the proxy from [`Generation::V1173`] to the v1.1.7.5
+    /// implementation, seeding the exchange-wide fee schedules and repointing
+    /// every listed perpetual contract at the default one.
     ///
     /// Runs `initializeV3` in the upgrade transaction, exactly as the real
-    /// upgrade does, so the log sequence a live indexer observes is the real
-    /// one.
+    /// v1.1.7.4 upgrade did, so the log sequence a live indexer observes is
+    /// the real one. The implementation landed on is the v1.1.7.5 build, the
+    /// last one carrying that reinitializer, so the version it stamps is
+    /// v1.1.7.4 until [`Self::upgrade_fee_unit`] follows.
     pub async fn upgrade(
         &self,
         taker_fees: [UD64; state::FEE_TIERS],
         maker_fees: [UD64; state::FEE_TIERS],
     ) {
-        let implementation = Exchange::deploy(self.provider.clone())
-            .await
-            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
-            .unwrap();
+        let implementation = deploy_bytecode(&self.provider, IMPLEMENTATION_V1175).await;
         let fee_converter = num::fee_converter();
         let initialize = self
-            .exchange
+            .legacy_exchange()
             .initializeV3(
                 taker_fees.map(|fee| fee_converter.to_unsigned(fee)),
                 maker_fees.map(|fee| fee_converter.to_unsigned(fee)),
@@ -132,7 +164,7 @@ impl TestExchange {
             .calldata()
             .clone();
         self.exchange
-            .upgradeToAndCall(*implementation.address(), initialize)
+            .upgradeToAndCall(implementation, initialize)
             .gas(30_000_000)
             .send()
             .await
@@ -141,14 +173,15 @@ impl TestExchange {
             .get_receipt()
             .await
             .unwrap();
-        // The proxy now runs the v1.1.7.4 implementation, whose `addContract`
+        // The proxy now runs a v1.1.7.4+ implementation, whose `addContract`
         // dropped the two genesis-fee args, so subsequent listings use it.
         self.legacy.store(false, Ordering::Relaxed);
     }
 
     /// Runs the v1.1.7.5 fee-unit migration (`initializeV4`) on the proxy,
     /// completing the two-hop upgrade that mainnet took: v1.1.7.3b ->
-    /// v1.1.7.4 ([`Self::upgrade`]) -> v1.1.7.5.
+    /// v1.1.7.4 ([`Self::upgrade`]) -> v1.1.7.5. Follow with
+    /// [`Self::upgrade_client_order_ids`] for the hop to the current build.
     ///
     /// A separate transaction because the two are separate reinitializers and
     /// `upgradeToAndCall` runs one; the live upgrade is likewise a second
@@ -172,7 +205,7 @@ impl TestExchange {
         maker_fees: [UD64; state::FEE_TIERS],
     ) {
         let fee_converter = num::fee_converter();
-        self.exchange
+        self.legacy_exchange()
             .initializeV4(
                 taker_fees.map(|fee| fee_converter.to_unsigned(fee)),
                 maker_fees.map(|fee| fee_converter.to_unsigned(fee)),
@@ -191,11 +224,47 @@ impl TestExchange {
             .unwrap();
     }
 
-    async fn deploy(implementation: Option<&str>) -> Self {
+    /// Upgrades the proxy from v1.1.7.5 to the implementation the SDK targets
+    /// (v1.1.7.6: client order IDs, `OrderRequestV3`, the decrease-collateral
+    /// order types, the operating maintenance margin), from
+    /// [`Self::new_at_previous_version`] or after [`Self::upgrade_fee_unit`].
+    ///
+    /// Runs `initializeV5` in the upgrade transaction, as the real upgrade
+    /// does. It migrates nothing and only stamps the version - and requires
+    /// exactly v1.1.7.5 underneath, reverting with `PrerequisiteUpgradeMissing`
+    /// otherwise.
+    pub async fn upgrade_client_order_ids(&self) {
+        let implementation = Exchange::deploy(self.provider.clone())
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap();
+        let initialize = self.exchange.initializeV5().calldata().clone();
+        self.exchange
+            .upgradeToAndCall(*implementation.address(), initialize)
+            .gas(30_000_000)
+            .send()
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
+    }
+
+    /// The proxy through the selectors the current ABI no longer carries.
+    fn legacy_exchange(&self) -> LegacyExchange::LegacyExchangeInstance<DynProvider> {
+        LegacyExchange::new(*self.exchange.address(), self.provider.clone())
+    }
+
+    async fn deploy(generation: Option<Generation>) -> Self {
         let anvil = Anvil::new()
             .block_time_f64(BLOCK_TIME_SEC)
             .chain_id(CHAIN_ID)
             .args(vec!["--code-size-limit", "131072"])
+            // Three role keys plus the exchange accounts a full book takes:
+            // from v1.1.7.6 an account rests at most 150 orders per perpetual,
+            // so 65535 of them need 437 accounts (see `Self::accounts`)
+            .args(vec!["--accounts", "448"])
             .args(vec!["--gas-limit", "200000000"])
             .args(vec!["--base-fee", "100000000000"])
             .args(vec!["--order", "fifo"])
@@ -247,13 +316,14 @@ impl TestExchange {
         // Exchange implementation and upgradeable proxy. `initialize` is
         // unchanged across the generations, so its calldata can be built from the
         // current bindings whichever implementation is deployed.
-        let exchange_impl = match implementation {
+        let exchange_impl = match generation {
             None => *Exchange::deploy(provider.clone())
                 .await
                 .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
                 .unwrap()
                 .address(),
-            Some(bytecode) => deploy_bytecode(&provider, bytecode).await,
+            Some(Generation::V1173) => deploy_bytecode(&provider, IMPLEMENTATION_V1173).await,
+            Some(Generation::V1175) => deploy_bytecode(&provider, IMPLEMENTATION_V1175).await,
         };
         let init_calldata = Exchange::new(exchange_impl, provider.clone())
             .initialize(*token.address())
@@ -311,9 +381,9 @@ impl TestExchange {
             collateral_converter: num::Converter::new(USD_DECIMALS),
             perpetual_ids: Arc::new(DashSet::new()),
             account_address: Arc::new(DashMap::new()),
-            // A specific implementation is only ever requested by
-            // `new_at_previous_version`, so this marks the pre-upgrade generation.
-            legacy: AtomicBool::new(implementation.is_some()),
+            // The one generation whose `addContract` still carries the
+            // genesis-fee args
+            legacy: AtomicBool::new(generation == Some(Generation::V1173)),
             anvil,
         }
     }
@@ -331,6 +401,77 @@ impl TestExchange {
     /// Same chain with no perpetual contracts configured, so clients discover
     /// every listed contract on-chain instead.
     pub fn chain_with_perpetual_discovery(&self) -> Chain { self.chain().with_perpetuals(vec![]) }
+
+    /// Opens the accounts at `idxs` with `usd_balance` each, as
+    /// [`Self::account`] does one at a time - but with the three transactions
+    /// of every account in flight together, so that opening hundreds of them
+    /// takes a few blocks rather than three blocks each.
+    pub async fn accounts(
+        &self,
+        idxs: std::ops::Range<usize>,
+        usd_balance: u64,
+    ) -> Vec<TestAccount<'_>> {
+        let addresses: Vec<Address> = idxs
+            .clone()
+            .map(|idx| self.anvil.addresses()[idx + 3])
+            .collect();
+        let balance = usd(usd_balance);
+        async fn receipts(
+            pending: Vec<PendingTransactionBuilder<Ethereum>>,
+        ) -> Vec<alloy::rpc::types::TransactionReceipt> {
+            futures::future::join_all(pending.into_iter().map(|p| p.get_receipt()))
+                .await
+                .into_iter()
+                .map(|r| r.unwrap())
+                .collect()
+        }
+        let unwrap = |sent: Result<PendingTransactionBuilder<Ethereum>, alloy::contract::Error>| {
+            sent.map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+                .unwrap()
+        };
+        // Every mint is the owner's, so they go out one after another to keep
+        // their nonces in order; the approvals and openings are each from
+        // their own account
+        let mut pending = Vec::with_capacity(addresses.len());
+        for address in &addresses {
+            pending.push(unwrap(self.token.mint(*address, balance).send().await));
+        }
+        receipts(pending).await;
+        let mut pending = Vec::with_capacity(addresses.len());
+        for address in &addresses {
+            pending.push(unwrap(
+                self.token
+                    .approve(*self.exchange.address(), balance)
+                    .from(*address)
+                    .send()
+                    .await,
+            ));
+        }
+        receipts(pending).await;
+        let mut pending = Vec::with_capacity(addresses.len());
+        for address in &addresses {
+            pending.push(unwrap(
+                self.exchange
+                    .createAccount(balance)
+                    .from(*address)
+                    .send()
+                    .await,
+            ));
+        }
+        let opened = receipts(pending).await;
+        idxs.zip(opened)
+            .map(|(idx, receipt)| {
+                let log = receipt.decoded_log::<Exchange::AccountCreated>().unwrap();
+                self.account_address.insert(log.id.to(), log.account);
+                TestAccount {
+                    id: log.id.to(),
+                    address: log.account,
+                    pk: self.anvil.nth_key(idx + 3).unwrap().to_bytes().encode_hex(),
+                    exchange: self,
+                }
+            })
+            .collect()
+    }
 
     pub async fn account(&self, idx: usize, usd_balance: u64) -> TestAccount<'_> {
         let address = self.anvil.addresses()[idx + 3]; // skipping owner, admin and price admin
@@ -476,29 +617,26 @@ impl TestExchange {
             // interface so the selector matches the deployed contract. Genesis
             // fees are seeded to zero and set separately via
             // `TestPerp::with_legacy_fees`.
-            crate::abi::dex_legacy::LegacyExchange::new(
-                *self.exchange.address(),
-                self.provider.clone(),
-            )
-            .addContract(
-                name.to_string(),
-                name.to_string(),
-                U256::from(perp_id),
-                price_converter.to_unsigned(base_price),
-                U256::from(price_decimals),
-                U256::from(size_decimals),
-                U256::ZERO,
-                U256::ZERO,
-                leverage_converter.to_unsigned(initial_margin),
-                leverage_converter.to_unsigned(maintenance_margin),
-            )
-            .send()
-            .await
-            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
-            .unwrap()
-            .get_receipt()
-            .await
-            .unwrap();
+            self.legacy_exchange()
+                .addContract(
+                    name.to_string(),
+                    name.to_string(),
+                    U256::from(perp_id),
+                    price_converter.to_unsigned(base_price),
+                    U256::from(price_decimals),
+                    U256::from(size_decimals),
+                    U256::ZERO,
+                    U256::ZERO,
+                    leverage_converter.to_unsigned(initial_margin),
+                    leverage_converter.to_unsigned(maintenance_margin),
+                )
+                .send()
+                .await
+                .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+                .unwrap()
+                .get_receipt()
+                .await
+                .unwrap();
         } else {
             self.exchange
                 .addContract(

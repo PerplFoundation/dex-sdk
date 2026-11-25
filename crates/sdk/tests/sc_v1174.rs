@@ -109,7 +109,7 @@ async fn test_sc_v1174() {
     // from it without further probing. A fresh deployment reports the CURRENT
     // version, which is well past the one this suite covers - the features are
     // what is being asserted, not the number.
-    assert_eq!(discovered.contract_version(), Some(state::ContractVersion::PPM_FEE_UNIT));
+    assert_eq!(discovered.contract_version(), Some(state::ContractVersion::CLIENT_ORDER_IDS));
     let features = discovered.features();
     assert!(features.v2_state_getters());
     assert!(features.keyed_fee_schedules());
@@ -500,7 +500,7 @@ async fn test_order_extension_rejected() {
             .ask_orders()
             .next()
             .unwrap()
-            .client_order_id(),
+            .placed_request_id(),
         Some(1),
         "the skipped order must not be in the book",
     );

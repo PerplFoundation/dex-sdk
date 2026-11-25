@@ -78,6 +78,44 @@ impl<'e> TestPerp<'e> {
         self
     }
 
+    /// Seeds the funding-sum scaling exponent, which the contract accepts only
+    /// before the perpetual is activated - so before [`Self::unpause`].
+    pub async fn with_funding_sum_scaling_exp(self, exp: u8) -> Self {
+        self.exchange
+            .exchange
+            .setFundingSumScalingExp(U256::from(self.id), U256::from(exp))
+            .gas(500000)
+            .send()
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap()
+            .get_receipt()
+            .await
+            .unwrap();
+        self
+    }
+
+    /// Sets the operating maintenance margin fraction (contract v1.1.7.6+),
+    /// zero unsetting it. Rejected - with
+    /// `OperatingMaintMarginFractionRejected` rather than a revert - below
+    /// the contractual maintenance margin.
+    pub async fn set_operating_maintenance_margin(
+        &self,
+        fraction: UD64,
+    ) -> PendingTransactionBuilder<Ethereum> {
+        self.exchange
+            .exchange
+            .setOperatingMaintMarginFraction(
+                U256::from(self.id),
+                self.leverage_converter.to_unsigned(fraction),
+            )
+            .gas(500000)
+            .send()
+            .await
+            .map_err::<DexError, _>(|err| DexError::Provider(err.into()))
+            .unwrap()
+    }
+
     pub async fn set_maintenance_margin(
         &self,
         maintenance_margin: UD64,
@@ -253,7 +291,7 @@ impl<'e> TestPerp<'e> {
     }
 
     /// Posts an order via the V2 entrypoint, carrying the request's builder
-    /// attribution if any.
+    /// attribution and client order IDs if any.
     pub async fn order_v2(
         &self,
         account_id: types::AccountId,

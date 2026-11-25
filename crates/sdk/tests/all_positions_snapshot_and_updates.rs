@@ -17,6 +17,13 @@ use perpl_sdk::{
 /// Blocks of events applied on top of the snapshot.
 const STREAM_BLOCKS: usize = 100;
 
+/// Public mainnet RPC the test runs against unless `PERPL_MAINNET_RPC` names
+/// another - a node of one's own, where the public one rate-limits.
+fn mainnet_rpc() -> String {
+    std::env::var("PERPL_MAINNET_RPC")
+        .unwrap_or_else(|_| "https://rpc-mainnet.monadinfra.com".to_string())
+}
+
 /// Tests all-positions snapshot creation with updates applied on top of it,
 /// against the contract **currently deployed on mainnet**.
 ///
@@ -45,7 +52,7 @@ async fn test_all_positions_snapshot_and_updates() {
     let client = RpcClient::builder()
         .layer(ThrottleLayer::new(15))
         .layer(RetryBackoffLayer::new(10, 100, 200))
-        .connect("https://rpc-mainnet.monadinfra.com")
+        .connect(&mainnet_rpc())
         .await
         .unwrap();
     client.set_poll_interval(Duration::from_millis(100));
@@ -100,22 +107,30 @@ async fn test_all_positions_snapshot_and_updates() {
             perp.funding_sum_converter().decimals() >= perp.price_converter().decimals(),
             "perp {perp_id} funding_sum_converter scale below price scale",
         );
-        // A real keyed schedule, not the flat per-contract pair standing in for
-        // one: every mainnet perpetual still resolves to the exchange-wide
-        // default rather than a custom key, and its eight tiers genuinely
-        // differ - which is what the tier comparisons below, and not the
-        // `base_taker_fee` check, are there to catch
+        // A keyed schedule, not the flat per-contract pair standing in for
+        // one: every mainnet perpetual resolves to the exchange-wide default
+        // rather than a custom key, and carries the rates registered under it.
+        // Mainnet trades fee-free as of 2026-11 - every tier of the default
+        // schedule is zero - so the tiers cannot be required to differ, only
+        // to descend, which is what the registry resolves them from
         let schedule = perp.fee_schedule();
         assert_eq!(schedule.key(), state::FeeScheduleKey::Default);
-        assert!(schedule.base_taker_fee() > UD64::ZERO, "perp {perp_id} has zero taker fee");
-        assert!(
-            schedule.taker_fee(7) < schedule.taker_fee(1),
-            "perp {perp_id} has no taker tiers to differ by",
+        assert_eq!(
+            schedule.taker_fees(),
+            exchange.default_fee_schedule().taker_fees(),
+            "perp {perp_id} is not on the registered default schedule",
         );
-        assert!(
-            schedule.maker_fee(7) < schedule.maker_fee(1),
-            "perp {perp_id} has no maker tiers to differ by",
-        );
+        assert_eq!(schedule.maker_fees(), exchange.default_fee_schedule().maker_fees());
+        for tier in 1..state::FEE_TIERS {
+            assert!(
+                schedule.taker_fee(tier as u8) <= schedule.taker_fee(tier as u8 - 1),
+                "perp {perp_id} taker tier {tier} above the one before it",
+            );
+            assert!(
+                schedule.maker_fee(tier as u8) <= schedule.maker_fee(tier as u8 - 1),
+                "perp {perp_id} maker tier {tier} above the one before it",
+            );
+        }
     }
 
     // `with_all_positions()` must have populated at least one account with at

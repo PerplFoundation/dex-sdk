@@ -127,10 +127,16 @@ impl Position {
     /// Unrealized PnL of the position.
     pub fn pnl(&self) -> D256 { self.delta_pnl + self.premium_pnl }
 
-    /// Maintenance margin requirement of the position.
+    /// Maintenance margin requirement of the position: its notional at entry
+    /// over the fraction it is held to - the perpetual's operating
+    /// maintenance margin fraction where set, the contractual one otherwise
+    /// ([`super::Perpetual::effective_maintenance_margin`]).
     pub fn maintenance_margin_requirement(&self) -> UD128 { self.maintenance_margin_requirement }
 
-    /// Liquidation price of the position.
+    /// Price at which the position's value falls to its
+    /// [`Self::maintenance_margin_requirement`], so where the exchange's
+    /// liquidation is expected to act: the contract's own floor where no
+    /// operating fraction is set, the bot's threshold where one is.
     pub fn liquidation_price(&self) -> UD64 {
         let side = if self.r#type.is_long() { D256::ONE } else { D256::ONE.neg() };
         let liquidation_price = self.entry_price.to_signed()

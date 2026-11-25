@@ -2,7 +2,7 @@
 //! `PerpetualInfoV2`) flow correctly through both the `SnapshotBuilder` V2
 //! path and the live event stream:
 //!
-//! - `fundingSumScalingExp` seeded via the `initializeV2` upgrade hook and read
+//! - `fundingSumScalingExp` seeded before the listing is activated and read
 //!   back via `PerpetualInfoV2` on the snapshot path; the funding converter is
 //!   rescaled correspondingly. Persistence through subsequent event-stream
 //!   updates is also asserted.
@@ -12,49 +12,11 @@
 
 use std::time::Duration;
 
-use alloy::primitives::U256;
 use fastnum::udec64;
 use perpl_sdk::{
-    error::DexError,
     state, testing,
     types::{self, RequestType::*},
 };
-
-/// One-time V2 upgrade hook: seeds per-perp `fundingSumScalingExp` for every
-/// configured perpetual. `setFundingSumScalingExp` rejects writes after a
-/// perpetual is first activated; `initializeV2` is the documented path for
-/// configuring the V2 scaling state.
-async fn initialize_v2_scaling(
-    exchange: &testing::TestExchange,
-    configs: Vec<(types::PerpetualId, u8)>,
-) {
-    use perpl_sdk::abi::dex::Exchange::{PerpScalingConfig, ResidueTransfer};
-    let configs = configs
-        .into_iter()
-        .map(|(perp_id, exp)| PerpScalingConfig {
-            perpId: U256::from(perp_id),
-            fundingSumScalingExp: U256::from(exp),
-        })
-        .collect::<Vec<_>>();
-    let call = exchange
-        .exchange
-        .initializeV2(configs, Vec::<ResidueTransfer>::new())
-        .gas(2_000_000);
-    call.clone()
-        .call()
-        .await
-        .map_err::<DexError, _>(|e| DexError::Provider(e.into()))
-        .expect("initializeV2 simulated revert");
-    let receipt = call
-        .send()
-        .await
-        .map_err::<DexError, _>(|e| DexError::Provider(e.into()))
-        .unwrap()
-        .get_receipt()
-        .await
-        .unwrap();
-    assert!(receipt.status(), "initializeV2 on-chain revert");
-}
 
 /// Tests that `fundingSumScalingExp` and `priceResiduePNSQ16` (V2 fields
 /// added in smart-contract v1.1.7.3b) are captured correctly by both the
@@ -66,12 +28,19 @@ async fn test_sc_v1173() {
     let taker = exchange.account(1, 100_000).await;
 
     let initial_funding_exp: u8 = 3;
-    let btc_perp = exchange.btc_perp().await;
-    // `initializeV2` is the one-time V2 upgrade hook that seeds per-perp
-    // `fundingSumScalingExp`. `setFundingSumScalingExp` rejects post-activation
-    // writes, so the only path to a non-default scaling exp in a test is via
-    // this hook.
-    initialize_v2_scaling(&exchange, vec![(btc_perp.id, initial_funding_exp)]).await;
+    // `setFundingSumScalingExp` rejects post-activation writes, and the one-time
+    // `initializeV2` hook that seeded it on mainnet was dropped from the build
+    // as spent in v1.1.7.6 - so the exponent goes in before the listing is
+    // activated by its unpause.
+    let btc_perp = exchange
+        .perp("BTC", 0x10, udec64!(5000), 1, 5, udec64!(10), udec64!(20))
+        .await
+        .with_funding_sum_scaling_exp(initial_funding_exp)
+        .await
+        .with_mark_price(udec64!(100000))
+        .await
+        .unpause()
+        .await;
 
     let o = async |acc, r, oid, ot, p, s, exp| {
         _ = btc_perp

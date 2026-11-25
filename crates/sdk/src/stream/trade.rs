@@ -125,6 +125,7 @@ struct OrderContext {
     request_id: types::RequestId,
     side: types::OrderSide,
     builder: Option<types::BuilderAttribution>,
+    client_order_id: Option<types::ClientOrderId>,
 }
 
 /// Pending maker fill waiting for taker match.
@@ -134,7 +135,8 @@ struct PendingMakerFill {
     perpetual_id: types::PerpetualId,
     maker_account_id: types::AccountId,
     maker_order_id: types::OrderId,
-    maker_client_order_id: Option<types::RequestId>,
+    maker_placed_request_id: Option<types::RequestId>,
+    maker_client_order_id: Option<types::ClientOrderId>,
     maker_builder: Option<types::BuilderAttribution>,
     price: fastnum::UD64,
     size: fastnum::UD64,
@@ -167,7 +169,8 @@ pub struct TradeProcessor {
 /// Attribution of an order observed being placed, recovered at fill time.
 #[derive(Clone, Copy)]
 struct PlacedOrder {
-    client_order_id: types::RequestId,
+    placed_request_id: types::RequestId,
+    client_order_id: Option<types::ClientOrderId>,
     builder: Option<types::BuilderAttribution>,
 }
 
@@ -212,18 +215,37 @@ impl TradeProcessor {
             // V1 order/fill events are never emitted by contract v1.1.7.4+, but
             // stay handled to keep historical replay working
             ExchangeEvents::OrderRequest(e) => {
-                self.track_order_request(e.perpId, e.accountId, e.orderDescId, e.orderType, None);
+                self.track_order_request(
+                    e.perpId,
+                    e.accountId,
+                    e.orderDescId,
+                    e.orderType,
+                    types::OrderExtension::default(),
+                );
                 None
             },
+            // Both V2 (v1.1.7.4 to v1.1.7.5) and V3 (v1.1.7.6+, adding the
+            // caller) carry the raw envelope. Decoded under the current rules:
+            // a version-2 envelope on a pre-upgrade block was skipped by the
+            // contract, and the fills this stream is after never follow a
+            // skipped order
             ExchangeEvents::OrderRequestV2(e) => {
                 self.track_order_request(
                     e.perpId,
                     e.accountId,
                     e.orderDescId,
                     e.orderType,
-                    types::BuilderAttribution::decode(&e.extension)
-                        .ok()
-                        .flatten(),
+                    types::OrderExtension::decode(&e.extension).unwrap_or_default(),
+                );
+                None
+            },
+            ExchangeEvents::OrderRequestV3(e) => {
+                self.track_order_request(
+                    e.perpId,
+                    e.accountId,
+                    e.orderDescId,
+                    e.orderType,
+                    types::OrderExtension::decode(&e.extension).unwrap_or_default(),
                 );
                 None
             },
@@ -240,7 +262,8 @@ impl TradeProcessor {
                     self.maker_orders.insert(
                         (context.perpetual_id, order_id),
                         PlacedOrder {
-                            client_order_id: context.request_id,
+                            placed_request_id: context.request_id,
+                            client_order_id: context.client_order_id,
                             builder: context.builder,
                         },
                     );
@@ -293,7 +316,7 @@ impl TradeProcessor {
         account_id: U256,
         request_id: U256,
         order_type: u8,
-        builder: Option<types::BuilderAttribution>,
+        extension: types::OrderExtension,
     ) {
         let request_type: types::RequestType = order_type.into();
         // Only track context for order types that can have fills
@@ -306,7 +329,8 @@ impl TradeProcessor {
                 account_id: types::narrow(account_id),
                 request_id: types::narrow(request_id),
                 side,
-                builder,
+                builder: extension.builder(),
+                client_order_id: extension.client_order_id(),
             });
         }
     }
@@ -322,7 +346,8 @@ impl TradeProcessor {
                 perpetual_id: perp_id,
                 maker_account_id: fill.account_id.to(),
                 maker_order_id,
-                maker_client_order_id: maker_order.map(|o| o.client_order_id),
+                maker_placed_request_id: maker_order.map(|o| o.placed_request_id),
+                maker_client_order_id: maker_order.and_then(|o| o.client_order_id),
                 maker_builder: maker_order.and_then(|o| o.builder),
                 price: converters.price_converter.from_unsigned(fill.price_pns),
                 size: converters.size_converter.from_unsigned(fill.lot_lns),
@@ -378,6 +403,7 @@ impl TradeProcessor {
                         log_index: m.log_index,
                         maker_account_id: m.maker_account_id,
                         maker_order_id: m.maker_order_id,
+                        maker_placed_request_id: m.maker_placed_request_id,
                         maker_client_order_id: m.maker_client_order_id,
                         price: m.price,
                         size: m.size,
@@ -527,6 +553,7 @@ mod tests {
             request_id: 42,
             side: types::OrderSide::Ask,
             builder: None,
+            client_order_id: None,
         });
         let event = RawEvent::empty(ExchangeEvents::OrderPlaced(OrderPlaced {
             orderId: U256::from(9),
@@ -618,7 +645,8 @@ mod tests {
         let trade = one_match_trade(None, 0, None, 0);
         let maker_fill = trade.maker_fills.first().expect("maker fill exists");
 
-        assert_eq!(maker_fill.maker_client_order_id, Some(42));
+        assert_eq!(maker_fill.maker_placed_request_id, Some(42));
+        assert_eq!(maker_fill.maker_client_order_id, None, "the placement named no ID");
         assert_eq!(maker_fill.builder, None);
         assert_eq!(trade.total_builder_fees(), udec64!(0));
     }
@@ -649,24 +677,30 @@ mod tests {
     #[tokio::test]
     async fn test_stream_recent_blocks() {
         let client = RpcClient::builder()
-            .layer(ThrottleLayer::new(15))
+            // Well under the public RPC's per-address rate limit, on a host
+            // `stream::raw`'s own live test does not share; `PERPL_MAINNET_RPC`
+            // names a node of one's own instead
+            .layer(ThrottleLayer::new(6))
             .layer(RetryBackoffLayer::new(10, 100, 200))
-            .connect("https://testnet-rpc.monad.xyz")
+            .connect(
+                &std::env::var("PERPL_MAINNET_RPC")
+                    .unwrap_or_else(|_| "https://rpc-mainnet.monadinfra.com".to_string()),
+            )
             .await
             .unwrap();
         client.set_poll_interval(Duration::from_millis(100));
         let provider = ProviderBuilder::new().connect_client(client);
 
-        let testnet = Chain::testnet();
+        let mainnet = Chain::mainnet();
         let block_num = provider.get_block_number().await.unwrap() + 1;
         let raw_stream = crate::stream::raw(
-            &testnet,
+            &mainnet,
             provider.clone(),
             types::StateInstant::new(block_num, 0),
             tokio::time::sleep,
         );
 
-        let trade_stream = trade(&testnet, provider, raw_stream).await.unwrap();
+        let trade_stream = trade(&mainnet, provider, raw_stream).await.unwrap();
         let block_trades = trade_stream.take(10).collect::<Vec<_>>().await;
 
         for bt in &block_trades {

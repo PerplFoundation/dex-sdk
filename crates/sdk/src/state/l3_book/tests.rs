@@ -92,12 +92,26 @@ macro_rules! assert_order {
     };
 }
 
-/// Assert order exists in book with expected properties by client order id.
-macro_rules! assert_order_by_client_id {
+/// Assert order exists in book with expected properties by the request that
+/// placed it.
+macro_rules! assert_order_by_request_id {
+    ($book:expr, $aid:expr, $request_id:expr => { price: $price:expr, size: $size:expr }) => {
+        let order = $book
+            .get_order_by_request_id($aid, $request_id)
+            .expect(&format!("order placed by request {} exists", $request_id));
+        assert_eq!(order.price(), udec64!($price), "order {} price", $request_id);
+        assert_eq!(order.size(), udec64!($size), "order {} size", $request_id);
+        assert_eq!(order.account_id(), $aid, "order {} account_id", $request_id);
+    };
+}
+
+/// Assert order exists in book with expected properties by the client order
+/// ID it stores.
+macro_rules! assert_order_by_client_order_id {
     ($book:expr, $aid:expr, $client_order_id:expr => { price: $price:expr, size: $size:expr }) => {
         let order = $book
-            .get_order_by_client_id($aid, $client_order_id)
-            .expect(&format!("order with client ID {} exists", $client_order_id));
+            .get_order_by_client_order_id($aid, coid($client_order_id))
+            .expect(&format!("order with client order ID {} exists", $client_order_id));
         assert_eq!(order.price(), udec64!($price), "order {} price", $client_order_id);
         assert_eq!(order.size(), udec64!($size), "order {} size", $client_order_id);
         assert_eq!(order.account_id(), $aid, "order {} account_id", $client_order_id);
@@ -234,17 +248,89 @@ fn l3_book_get_order_by_id() {
     assert_order!(book, 42 => { price: 100, size: 1.0, account_id: 7 });
 }
 
+fn coid(id: u32) -> types::ClientOrderId {
+    types::ClientOrderId::new(id).expect("non-zero client order id")
+}
+
 #[test]
-fn l3_book_get_order_by_client_order_id() {
-    // O(1) lookup by order_id via reverse index.
+fn l3_book_get_order_by_request_id() {
+    // O(1) lookup by the placing request via reverse index, per account.
     let mut book = OrderBook::new();
-    book.add_order(&ask!(110, 1.0, 1, 42, 7).with_client_order_id(123))
+    book.add_order(&ask!(110, 1.0, 1, 42, 7).with_placed_request_id(123))
         .unwrap();
-    book.add_order(&bid!(90, 1.0, 2, 43, 8).with_client_order_id(123))
+    book.add_order(&bid!(90, 1.0, 2, 43, 8).with_placed_request_id(123))
         .unwrap();
 
-    assert_order_by_client_id!(book, 7, 123 => { price: 110, size: 1.0 });
-    assert_order_by_client_id!(book, 8, 123 => { price: 90, size: 1.0 });
+    assert_order_by_request_id!(book, 7, 123 => { price: 110, size: 1.0 });
+    assert_order_by_request_id!(book, 8, 123 => { price: 90, size: 1.0 });
+    assert!(book.get_order_by_request_id(9, 123).is_none());
+}
+
+#[test]
+fn l3_book_get_order_by_client_order_id() {
+    // O(1) lookup by the stored client order ID via reverse index, per
+    // account: the exchange does not keep these unique, so two accounts can
+    // share one.
+    let mut book = OrderBook::new();
+    book.add_order(&ask!(110, 1.0, 1, 42, 7).with_client_order_id(coid(123)))
+        .unwrap();
+    book.add_order(&bid!(90, 1.0, 2, 43, 8).with_client_order_id(coid(123)))
+        .unwrap();
+    book.add_order(&bid!(80, 1.0, 3, 44, 8)).unwrap();
+
+    assert_order_by_client_order_id!(book, 7, 123 => { price: 110, size: 1.0 });
+    assert_order_by_client_order_id!(book, 8, 123 => { price: 90, size: 1.0 });
+    assert!(book.get_order_by_client_order_id(8, coid(124)).is_none());
+    // ...and the ID leaves the book with the order
+    book.remove_order(&book.get_order(oid(42)).cloned().unwrap())
+        .unwrap();
+    assert!(book.get_order_by_client_order_id(7, coid(123)).is_none());
+}
+
+#[test]
+fn l3_book_client_order_id_index_follows_the_latest_order() {
+    // One account reusing an ID: the index means the order most recently
+    // seen with it, and forgets the ID when that order goes, even though an
+    // older one still carries it
+    let mut book = OrderBook::new();
+    book.add_order(&ask!(110, 1.0, 1, 42, 7).with_client_order_id(coid(5)))
+        .unwrap();
+    book.add_order(&ask!(111, 1.0, 2, 43, 7).with_client_order_id(coid(5)))
+        .unwrap();
+    assert_order_by_client_order_id!(book, 7, 5 => { price: 111, size: 1.0 });
+    // Removing the older one leaves the entry to the newer
+    book.remove_order(&book.get_order(oid(42)).cloned().unwrap())
+        .unwrap();
+    assert_order_by_client_order_id!(book, 7, 5 => { price: 111, size: 1.0 });
+    book.remove_order(&book.get_order(oid(43)).cloned().unwrap())
+        .unwrap();
+    assert!(book.get_order_by_client_order_id(7, coid(5)).is_none());
+
+    // A change giving the order a new ID moves the entry, whether it keeps
+    // its queue place or goes to the back
+    book.add_order(&ask!(110, 1.0, 3, 44, 7).with_client_order_id(coid(6)))
+        .unwrap();
+    let prev = book.get_order(oid(44)).cloned().unwrap();
+    book.update_order(&prev.with_client_order_id(coid(7)), &prev)
+        .unwrap();
+    assert!(book.get_order_by_client_order_id(7, coid(6)).is_none());
+    assert_order_by_client_order_id!(book, 7, 7 => { price: 110, size: 1.0 });
+    let prev = book.get_order(oid(44)).cloned().unwrap();
+    book.move_to_back(&prev.with_size(udec64!(2.0)).with_client_order_id(coid(8)), &prev)
+        .unwrap();
+    assert!(book.get_order_by_client_order_id(7, coid(7)).is_none());
+    assert_order_by_client_order_id!(book, 7, 8 => { price: 110, size: 2.0 });
+
+    // ...and the snapshot path indexes what it loads, then what it learns
+    let mut book = OrderBook::new();
+    book.add_orders_from_snapshot(&[ask!(110, 1.0, 1, 42, 7).with_client_order_id(coid(9))])
+        .unwrap();
+    assert_order_by_client_order_id!(book, 7, 9 => { price: 110, size: 1.0 });
+    let prev = book.get_order(oid(42)).cloned().unwrap();
+    book.update_order(&prev.with_client_order_id(coid(10)), &prev)
+        .unwrap();
+    assert!(book.get_order_by_client_order_id(7, coid(9)).is_none());
+    assert_order_by_client_order_id!(book, 7, 10 => { price: 110, size: 1.0 });
 }
 
 #[test]

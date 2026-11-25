@@ -580,6 +580,24 @@ impl Exchange {
                 },
             )
             .collect(),
+            // Contract v1.1.7.6: a cancel or change named a client order ID the
+            // order does not carry. Nothing changed; only the refusal is
+            // reported, inside the request's own context
+            ExchangeEvents::ClientOrderIdMismatch(e) => self
+                .err_ctx(ctx, event)?
+                .map(|ctx| {
+                    StateEvents::order_error(
+                        ctx,
+                        OrderErrorType::ClientOrderIdMismatch {
+                            expected: types::ClientOrderId::new(types::narrow(
+                                e.expectedClientOrderId,
+                            )),
+                            stored: types::ClientOrderId::new(types::narrow(e.storedClientOrderId)),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::CloseOrderExceedsPosition(_) => self
                 .err_ctx(ctx, event)?
                 .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::CloseOrderExceedsPosition))
@@ -593,9 +611,53 @@ impl Exchange {
                 .into_iter()
                 .collect(),
             ExchangeEvents::CollateralDecreaseDeclined(_) => vec![],
-            ExchangeEvents::CollateralDecreaseRequestCancelled(_) => vec![],
-            ExchangeEvents::CollateralDecreaseRequested(_) => vec![],
-            ExchangeEvents::CollateralDecreaseRequestExpired(_) => vec![],
+            // The request lifecycle is reported on the position it is for,
+            // whether filed directly or - since contract v1.1.7.6 - by an order
+            // of the `RequestDecreasePositionCollateral` /
+            // `CancelDecreaseCollateralRequest` types, which is then the
+            // request's outcome and carries its id. A request outlives the
+            // position it was made for until it expires, so a cancellation or
+            // expiry may find no position to report on
+            ExchangeEvents::CollateralDecreaseRequestCancelled(e) => self
+                .position_if_any(e.accountId, e.perpId)
+                .map(|(pos, _)| {
+                    StateEvents::position(
+                        pos,
+                        ctx,
+                        PositionEventType::CollateralDecreaseRequestCancelled,
+                    )
+                })
+                .into_iter()
+                .collect(),
+            ExchangeEvents::CollateralDecreaseRequested(e) => self
+                .position_if_any(e.accountId, e.perpId)
+                .map(|(pos, _)| {
+                    StateEvents::position(
+                        pos,
+                        ctx,
+                        PositionEventType::CollateralDecreaseRequested {
+                            // Zero requests the maximum withdrawable
+                            amount: (!e.amountCNS.is_zero()).then(|| cc.from_unsigned(e.amountCNS)),
+                            clamp_to_maximum: e.clampToMaximum,
+                            expiry_timestamp: types::narrow(e.expiryTS),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
+            ExchangeEvents::CollateralDecreaseRequestExpired(e) => self
+                .position_if_any(e.accountId, e.perpId)
+                .map(|(pos, _)| {
+                    StateEvents::position(
+                        pos,
+                        ctx,
+                        PositionEventType::CollateralDecreaseRequestExpired {
+                            expiry_timestamp: types::narrow(e.expiryTS),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::CollateralDeposit(e) => self
                 .account(e.accountId)
                 .map(|acc| {
@@ -726,6 +788,21 @@ impl Exchange {
                 .collect(),
             ExchangeEvents::DcpBorrowThreshUpdated(_) => vec![],
             ExchangeEvents::DecreaseCollateralBeyondMarkPrice(_) => vec![],
+            // Contract v1.1.7.6: a decrease-collateral request refused because
+            // one is already pending on the position. Only the emit-and-skip
+            // path produces it, so it is always inside the request's context
+            ExchangeEvents::DecreaseCollateralRequestPending(e) => self
+                .err_ctx(ctx, event)?
+                .map(|ctx| {
+                    StateEvents::order_error(
+                        ctx,
+                        OrderErrorType::DecreaseCollateralRequestPending {
+                            expiry_timestamp: types::narrow(e.expiryTS),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
             // The unit these rates arrive in follows the deployed version, and the
             // contract publishes `ContractVersionSet` BEFORE any schedule event in the
             // upgrade transaction itself -- so reading `self.features` as the event is
@@ -759,6 +836,12 @@ impl Exchange {
                 vec![StateEvents::Exchange(ExchangeEvent::Halted(self.is_halted))]
             },
             ExchangeEvents::ExchangeInitialized(_) => vec![],
+            ExchangeEvents::FastLaneFilterUpdated(e) => {
+                vec![StateEvents::Exchange(ExchangeEvent::FastLaneFilterUpdated {
+                    handler: e.handler,
+                    enabled: e.enabled,
+                })]
+            },
             ExchangeEvents::FeeParamsUpdated(_) => vec![],
             ExchangeEvents::FeeScheduleSet(e) => {
                 // `setFeeSchedValues(id, …)` rewrites the rates of the schedule
@@ -906,6 +989,29 @@ impl Exchange {
                 })
                 .into_iter()
                 .collect(),
+            // Contract v1.1.7.6: a forced close left the account's orders in
+            // that perpetual resting, because it holds more than the cap a
+            // liquidation cancels. No cancellation follows, so the book here is
+            // already right; reported on the position the forced close was of,
+            // which may already be gone by now - so by ids, for a tracked
+            // account
+            ExchangeEvents::LiquidationAdlOrderCancelSkipped(e) => {
+                let account_id = types::narrow(e.accountId);
+                (self.accounts.contains_key(&account_id)
+                    && self.perpetuals.contains_key(&types::narrow(e.perpId)))
+                .then(|| {
+                    StateEvents::Position(PositionEvent {
+                        perpetual_id: types::narrow(e.perpId),
+                        account_id,
+                        request_id: ctx.as_ref().map(|c| c.request_id),
+                        r#type: PositionEventType::LiquidationOrderCancelSkipped {
+                            num_orders: types::narrow(e.numOrders),
+                        },
+                    })
+                })
+                .into_iter()
+                .collect()
+            },
             ExchangeEvents::LiquidationBuyerUpdated(_) => vec![],
             ExchangeEvents::LiquidationParamsUpdated(_) => vec![],
             ExchangeEvents::LotOutOfRange(_) => self
@@ -1079,6 +1185,33 @@ impl Exchange {
             },
             ExchangeEvents::MonitorAdministratorUpdated(_) => vec![],
             ExchangeEvents::MonitorPauseAttempted(_) => vec![],
+            // Contract v1.1.7.6: a decrease-collateral request refused on the
+            // perpetual's open interest; emit-and-skip path only, so always
+            // inside the request's context
+            ExchangeEvents::OpenInterestTooHighForDcp(_) => self
+                .err_ctx(ctx, event)?
+                .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::OpenInterestTooHighForDcp))
+                .into_iter()
+                .collect(),
+            ExchangeEvents::OperatingMaintMarginFractionRejected(_) => vec![],
+            ExchangeEvents::OperatingMaintMarginFractionUpdated(e) => self
+                .perpetual(e.perpId)
+                .map(|perp| {
+                    // Zero is the contract's "unset"
+                    let fraction = (!e.operMaintMarginFracHdths.is_zero()).then(|| {
+                        perp.leverage_converter()
+                            .from_unsigned(e.operMaintMarginFracHdths)
+                    });
+                    perp.update_operating_maintenance_margin(instant, fraction);
+                    StateEvents::perpetual(
+                        perp,
+                        PerpetualEventType::OperatingMaintenanceMarginFractionUpdated(
+                            perp.operating_maintenance_margin(),
+                        ),
+                    )
+                })
+                .into_iter()
+                .collect(),
             ExchangeEvents::OracleAgeExceedsMax(_) => vec![],
             ExchangeEvents::OracleDisabled(_) => vec![],
             ExchangeEvents::OrderBatchCompleted(_) => {
@@ -1168,6 +1301,10 @@ impl Exchange {
                         } else {
                             None
                         };
+                        // A change applied with a new ID stores it; the event
+                        // reports nothing of it, so it is taken from the request.
+                        // One that named none keeps the order's own
+                        let client_order_id_update = c.new_client_order_id;
                         let updated = order.updated(
                             instant,
                             ctx,
@@ -1175,16 +1312,18 @@ impl Exchange {
                             size_update,
                             size_update,
                             expiry_block_update,
+                            client_order_id_update,
                         );
                         perp.update_order(updated)?;
                         Some(StateEvents::order(
                             perp,
-                            &order,
+                            &updated,
                             ctx,
                             OrderEventType::Updated {
                                 price: price_update,
                                 size: size_update,
                                 expiry_block: expiry_block_update,
+                                client_order_id: client_order_id_update,
                             },
                         ))
                     } else {
@@ -1289,8 +1428,18 @@ impl Exchange {
                 ctx.replace(OrderContext::from(e));
                 vec![]
             },
+            // Both carry the raw envelope, read the way the contract that
+            // emitted the event read it - which the event version tells: a
+            // version-2 envelope was an unknown version to every contract
+            // emitting V2, which skipped the order with no builder and no IDs,
+            // and replaying that block must report neither
             ExchangeEvents::OrderRequestV2(e) => {
-                ctx.replace(OrderContext::from(e));
+                ctx.replace(OrderContext::from_v2(e));
+                vec![]
+            },
+            // Supersedes `OrderRequestV2` in v1.1.7.6, adding the caller
+            ExchangeEvents::OrderRequestV3(e) => {
+                ctx.replace(OrderContext::from_v3(e));
                 vec![]
             },
             ExchangeEvents::OrderSettlementImpliesInsolvent(_) => self
@@ -1387,7 +1536,7 @@ impl Exchange {
                     pos.update_entry_price(instant, e.endEntryPricePNS, 0, perp.price_converter());
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.apply_mark_price(instant, perp.mark_price());
-                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    pos.apply_maintenance_margin(instant, perp.effective_maintenance_margin());
                     vec![StateEvents::position(
                         pos,
                         ctx,
@@ -1411,7 +1560,7 @@ impl Exchange {
                         instant,
                         pos.premium_pnl().sub(cc.from_signed(e.fundingCNS)),
                     );
-                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    pos.apply_maintenance_margin(instant, perp.effective_maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
                             pos,
@@ -1449,7 +1598,7 @@ impl Exchange {
                         instant,
                         pos.premium_pnl().sub(cc.from_signed(e.fundingCNS)),
                     );
-                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    pos.apply_maintenance_margin(instant, perp.effective_maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
                             pos,
@@ -1502,7 +1651,7 @@ impl Exchange {
                         instant,
                         pos.premium_pnl().sub(cc.from_signed(e.fundingCNS)),
                     );
-                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    pos.apply_maintenance_margin(instant, perp.effective_maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
                             pos,
@@ -1545,7 +1694,14 @@ impl Exchange {
                 }),
             )
             .collect(),
-            ExchangeEvents::PositionDoesNotExist(_) => vec![],
+            // Emitted in several contexts. Inside an order - a collateral
+            // increase or, since contract v1.1.7.6, a decrease-collateral
+            // request - it is also the order's outcome
+            ExchangeEvents::PositionDoesNotExist(_) => self
+                .err_ctx_if_any(ctx)
+                .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::PositionDoesNotExist))
+                .into_iter()
+                .collect(),
             ExchangeEvents::PositionIncreased(e) => {
                 if let Some((pos, perp)) = self.position(e.accountId, e.perpId)? {
                     let prev_size = pos.size();
@@ -1554,7 +1710,7 @@ impl Exchange {
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.apply_mark_price(instant, perp.mark_price());
                     pos.update_premium_pnl(instant, D256::ZERO);
-                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    pos.apply_maintenance_margin(instant, perp.effective_maintenance_margin());
 
                     chain!(
                         Some(StateEvents::position(
@@ -1595,7 +1751,7 @@ impl Exchange {
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.apply_mark_price(instant, perp.mark_price());
                     pos.update_premium_pnl(instant, D256::ZERO);
-                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    pos.apply_maintenance_margin(instant, perp.effective_maintenance_margin());
 
                     chain!(
                         Some(StateEvents::position(
@@ -1634,7 +1790,7 @@ impl Exchange {
                     pos.update_deposit(instant, cc.from_unsigned(e.endDepositCNS));
                     pos.apply_mark_price(instant, perp.mark_price());
                     pos.update_premium_pnl(instant, D256::ZERO);
-                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    pos.apply_maintenance_margin(instant, perp.effective_maintenance_margin());
                     if pos.r#type() == PositionType::Long {
                         perp.update_open_interest(instant, UD64::ZERO, pos.size());
                     } else {
@@ -1685,7 +1841,7 @@ impl Exchange {
                         instant,
                         pos.premium_pnl().sub(cc.from_signed(e.fundingCNS)),
                     );
-                    pos.apply_maintenance_margin(instant, perp.maintenance_margin());
+                    pos.apply_maintenance_margin(instant, perp.effective_maintenance_margin());
                     chain!(
                         Some(StateEvents::position(
                             pos,
@@ -1750,7 +1906,7 @@ impl Exchange {
                         perp.price_converter(),
                         perp.size_converter().from_unsigned(e.lotLNS),
                         cc.from_unsigned(e.depositCNS),
-                        perp.maintenance_margin(),
+                        perp.effective_maintenance_margin(),
                     );
                     let events = chain!(
                         Some(StateEvents::position(
@@ -1792,7 +1948,7 @@ impl Exchange {
                         perp.price_converter(),
                         perp.size_converter().from_unsigned(e.lotLNS),
                         cc.from_unsigned(e.depositCNS),
-                        perp.maintenance_margin(),
+                        perp.effective_maintenance_margin(),
                     );
                     let events = chain!(
                         Some(StateEvents::position(
@@ -2025,6 +2181,13 @@ impl Exchange {
                 .collect(),
             // Superseded by `TakerOrderFilledV2` in v1.1.7.4, replayed from
             // earlier history only, hence no builder fee
+            // Contract v1.1.7.6: a direct taking order refused by the FastLane
+            // filter in a batch sent without `revertOnFail`
+            ExchangeEvents::TakerOrderInFastLaneBid(_) => self
+                .err_ctx(ctx, event)?
+                .map(|ctx| StateEvents::order_error(ctx, OrderErrorType::TakerOrderInFastLaneBid))
+                .into_iter()
+                .collect(),
             ExchangeEvents::TakerOrderFilled(e) => self.apply_taker_order_filled(
                 instant,
                 event,
@@ -2157,6 +2320,7 @@ impl Exchange {
                         log_index: event.log_index(),
                         maker_account_id: order.account_id(),
                         maker_order_id: order.order_id(),
+                        maker_placed_request_id: order.placed_request_id(),
                         maker_client_order_id: order.client_order_id(),
                         price: fill_price,
                         size: fill_size,
@@ -2193,6 +2357,7 @@ impl Exchange {
                             Some(new_size),
                             None,
                             None,
+                            None,
                         ))
                         .expect("order exists");
                         StateEvents::order(
@@ -2203,6 +2368,7 @@ impl Exchange {
                                 price: None,
                                 size: Some(new_size),
                                 expiry_block: None,
+                                client_order_id: None,
                             },
                         )
                     } else {
@@ -2267,9 +2433,14 @@ impl Exchange {
                     perpetual_id: perp.id(),
                     account_id: c.account_id,
                     request_id: Some(c.request_id),
-                    client_order_id: Some(c.request_id),
+                    placed_request_id: Some(c.request_id),
+                    // A taker that fills in full never rests, so the ID it
+                    // named is never stored; what it named is still what it
+                    // named
+                    client_order_id: c.client_order_id,
                     order_id: None,
                     builder: c.builder,
+                    sender: c.sender,
                     r#type: OrderEventType::Filled {
                         fill_price: perp.price_converter().from_unsigned(fill.collat_price_pns),
                         fill_size: perp.size_converter().from_unsigned(fill.lot_lns),
@@ -2319,28 +2490,42 @@ impl Exchange {
         event: &StateEvents,
     ) -> Result<Vec<StateEvents>, DexError> {
         Ok(match event {
-            StateEvents::Perpetual(pe) => {
-                match pe.r#type {
-                    PerpetualEventType::MaintenanceMarginFractionUpdated(maintenance_margin) => {
-                        // Applying new maintenance margin to all tracked positions
-                        self.accounts
-                            .values_mut()
-                            .filter_map(|acc| {
-                                acc.positions_mut().get_mut(&pe.perpetual_id).map(|pos| {
-                                    pos.apply_maintenance_margin(instant, maintenance_margin);
-                                    StateEvents::position(
-                                        pos,
-                                        &None,
-                                        PositionEventType::MaintenanceMarginUpdated(
-                                            pos.maintenance_margin_requirement(),
-                                        ),
-                                    )
-                                })
-                            })
-                            .collect()
-                    },
-                    _ => vec![],
-                }
+            // Either fraction moving can move the one positions are held to -
+            // the operating fraction where set, the contractual one otherwise -
+            // so both re-apply it to every tracked position on the perpetual,
+            // reporting the ones whose requirement actually changed: a
+            // contractual change under a still-higher operating fraction
+            // changes nothing
+            StateEvents::Perpetual(PerpetualEvent {
+                perpetual_id,
+                r#type:
+                    PerpetualEventType::MaintenanceMarginFractionUpdated(_)
+                    | PerpetualEventType::OperatingMaintenanceMarginFractionUpdated(_),
+            }) => {
+                let Some(effective) = self
+                    .perpetuals
+                    .get(perpetual_id)
+                    .map(|perp| perp.effective_maintenance_margin())
+                else {
+                    return Ok(vec![]);
+                };
+                self.accounts
+                    .values_mut()
+                    .filter_map(|acc| {
+                        let pos = acc.positions_mut().get_mut(perpetual_id)?;
+                        let before = pos.maintenance_margin_requirement();
+                        pos.apply_maintenance_margin(instant, effective);
+                        (pos.maintenance_margin_requirement() != before).then(|| {
+                            StateEvents::position(
+                                pos,
+                                &None,
+                                PositionEventType::MaintenanceMarginUpdated(
+                                    pos.maintenance_margin_requirement(),
+                                ),
+                            )
+                        })
+                    })
+                    .collect()
             },
             _ => vec![],
         })
@@ -2355,6 +2540,13 @@ impl Exchange {
             .as_ref()
             .ok_or(DexError::OrderContextExpected(event.tx_index(), event.log_index()))?;
         Ok(self.accounts.contains_key(&c.account_id).then_some(c))
+    }
+
+    /// As [`Self::err_ctx`] for an event that is only SOMETIMES an order's
+    /// outcome: the context when an order is open, nothing otherwise.
+    fn err_ctx_if_any<'c>(&self, ctx: &'c mut Option<OrderContext>) -> Option<&'c OrderContext> {
+        ctx.as_ref()
+            .filter(|c| self.accounts.contains_key(&c.account_id))
     }
 
     fn ensure_account(&mut self, id: U256) {
@@ -2420,6 +2612,22 @@ impl Exchange {
         self.accounts
             .get_mut(&acc_id.to::<types::AccountId>())
             .zip(self.perpetuals.get_mut(&perp_id.to::<types::PerpetualId>()))
+    }
+
+    /// As [`Self::position`] for an event that may legitimately find no
+    /// position behind a tracked account - a decrease-collateral request
+    /// outlives the position it was made for until it expires.
+    fn position_if_any(
+        &mut self,
+        acc_id: U256,
+        perp_id: U256,
+    ) -> Option<(&mut Position, &mut Perpetual)> {
+        self.ensure_account(acc_id);
+        let acc_id = acc_id.to::<types::AccountId>();
+        let perp_id = perp_id.to::<types::PerpetualId>();
+        let acc = self.accounts.get_mut(&acc_id)?;
+        let perp = self.perpetuals.get_mut(&perp_id)?;
+        acc.positions_mut().get_mut(&perp_id).map(|pos| (pos, perp))
     }
 
     fn position(

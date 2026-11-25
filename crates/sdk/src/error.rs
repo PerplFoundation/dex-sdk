@@ -136,6 +136,12 @@ impl<E: Display, R: SolInterface> From<transports::RpcError<E>> for ProviderErro
                     && (msg.contains("invalid") || msg.contains("not found")))
                     || (resp.code == -32603
                         && (msg.contains("block by number") || msg.contains("getting block")))
+                    // Anvil 1.8+ rejects a block number past its head outright
+                    // (`BlockOutOfRangeError: block height is N but requested
+                    // was N+1`) where earlier releases answered with nothing,
+                    // and the raw stream polls exactly that block until it is
+                    // mined
+                    || (resp.code == -32602 && msg.contains("blockoutofrange"))
                 {
                     Self::InvalidRequest(msg)
                 } else if (resp.code == 3 || resp.code == -32603) && msg.contains("reverted") {

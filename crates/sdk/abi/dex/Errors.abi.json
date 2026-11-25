@@ -528,6 +528,37 @@
   },
   {
     "type": "error",
+    "name": "ClientOrderIdMismatch",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "orderId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "accountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "expectedClientOrderId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "storedClientOrderId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "CloseOrderExceedsPosition",
     "inputs": [
       {
@@ -797,6 +828,27 @@
       },
       {
         "name": "accountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DecreaseCollateralRequestPending",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "accountId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "expiryTS",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1231,6 +1283,11 @@
   },
   {
     "type": "error",
+    "name": "InsufficientGasForFastLaneProbe",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "InsuficientFundsForRecycleFee",
     "inputs": [
       {
@@ -1356,6 +1413,17 @@
         "name": "blockNumber",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidFastLaneHandler",
+    "inputs": [
+      {
+        "name": "handler",
+        "type": "address",
+        "internalType": "address"
       }
     ]
   },
@@ -2307,6 +2375,42 @@
   },
   {
     "type": "error",
+    "name": "PrerequisiteUpgradeMissing",
+    "inputs": [
+      {
+        "name": "observedMajor",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "observedMinor",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "observedPatch",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "requiredMajor",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "requiredMinor",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "requiredPatch",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "PriceLotDecimalSumExceedsCollateralSevere",
     "inputs": [
       {
@@ -2592,6 +2696,22 @@
       },
       {
         "name": "maximum",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TakerOrderInFastLaneBid",
+    "inputs": [
+      {
+        "name": "perpId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "accountId",
         "type": "uint256",
         "internalType": "uint256"
       }

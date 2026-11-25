@@ -203,12 +203,12 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         // perpetual contracts' own parameters, state and active orders. Both
         // are keyed off the perpetual ids resolved above and pinned to the same
         // block, so they are independent of each other.
-        let (fee_schedules, perpetuals) =
+        let (fee_schedules, mut perpetuals) =
             futures::try_join!(self.fee_schedules(features), self.perpetuals(instant, features))?;
 
         let accounts = if !self.accounts.is_empty() {
             // Accounts parameters, state and open positions if specific accounts requested
-            self.accounts(instant, &perpetuals, collateral_converter, features)
+            self.accounts(instant, &mut perpetuals, collateral_converter, features)
                 .await?
         } else if self.all_positions {
             // All positions with corresponding accounts without parameters and balance
@@ -362,6 +362,23 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
         }
     }
 
+    /// Fetches the operating maintenance margin fraction, zero (unset) on
+    /// contracts that keep none - the getter only exists from v1.1.7.6.
+    async fn fetch_operating_maintenance_margin(
+        &self,
+        perp_id: U256,
+        features: ContractFeatures,
+    ) -> Result<U256, alloy::contract::Error> {
+        if !features.operating_maintenance_margin() {
+            return Ok(U256::ZERO);
+        }
+        self.instance
+            .getOperatingMaintMarginFraction(perp_id)
+            .block(self.block_id)
+            .call()
+            .await
+    }
+
     /// Fetches `PerpetualInfoV2`, falling back to the V0 ABI when the contract
     /// has not been upgraded yet (the V0 layout omits `fundingSumScalingExp`,
     /// which is defaulted to zero on the V0 path).
@@ -479,15 +496,18 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                 self.fetch_perpetual_info(pid, features),
                 self.fetch_fee_schedule(pid, features),
                 margins_call.call().into_future(),
+                self.fetch_operating_maintenance_margin(pid, features),
             )
-            .map(|(perp_info, fee_schedule, margins)| (*perp_id, perp_info, fee_schedule, margins))
+            .map(|(perp_info, fee_schedule, margins, operating_margin)| {
+                (*perp_id, perp_info, fee_schedule, margins, operating_margin)
+            })
         });
 
         let mut perpetuals = futures::future::try_join_all(perpetual_futs)
             .await
             .map_err(|err| DexError::Provider(err.into()))?
             .into_iter()
-            .map(|(perp_id, perp_info, fee_schedule, margins)| {
+            .map(|(perp_id, perp_info, fee_schedule, margins, operating_margin)| {
                 let perp = Perpetual::new(
                     instant,
                     perp_id,
@@ -495,6 +515,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                     fee_schedule,
                     margins.perpInitMarginFracHdths,
                     margins.perpMaintMarginFracHdths,
+                    operating_margin,
                 );
                 (perp_id, perp)
             })
@@ -619,7 +640,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
     async fn accounts(
         &self,
         instant: types::StateInstant,
-        perpetuals: &HashMap<types::PerpetualId, perpetual::Perpetual>,
+        perpetuals: &mut HashMap<types::PerpetualId, perpetual::Perpetual>,
         collateral_converter: num::Converter,
         features: ContractFeatures,
     ) -> Result<HashMap<types::AccountId, Account>, DexError> {
@@ -651,13 +672,26 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                     .map_err(|err| DexError::Provider(err.into()))
             });
             let positions = futures::future::try_join_all(position_futs).await?;
-            Ok::<_, DexError>((acc_info.accountId, acc_info, fee_tier, positions))
+            let client_order_ids = self
+                .fetch_client_order_ids(acc_info.accountId, features)
+                .await?;
+            Ok::<_, DexError>((acc_info.accountId, acc_info, fee_tier, positions, client_order_ids))
         });
 
         Ok(futures::future::try_join_all(account_futs)
             .await?
             .into_iter()
-            .map(|(acc_id, acc_info, fee_tier, positions)| {
+            .map(|(acc_id, acc_info, fee_tier, positions, client_order_ids)| {
+                // The IDs live with the account's order locks, not with the
+                // orders, so they reach the book only for a tracked account
+                for (perp_id, order_id, client_order_id) in client_order_ids {
+                    if let Some(perp) = perpetuals.get_mut(&perp_id)
+                        && let Some(order) = perp.get_order(order_id)
+                    {
+                        let order = order.with_client_order_id(client_order_id);
+                        perp.update_order(order).expect("order found a moment ago");
+                    }
+                }
                 (
                     acc_id.to(),
                     Account::new(
@@ -678,7 +712,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                                             collateral_converter,
                                             perp.price_converter(),
                                             perp.size_converter(),
-                                            perp.maintenance_margin(),
+                                            perp.effective_maintenance_margin(),
                                         ),
                                     )
                                 })
@@ -687,6 +721,39 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                         collateral_converter,
                     ),
                 )
+            })
+            .collect())
+    }
+
+    /// Fetches the client order IDs an account's resting orders store, as
+    /// `(perpetual, order, id)` for each order that stores one - empty on
+    /// contracts that store none (before v1.1.7.6).
+    ///
+    /// Read from the account's order locks (`getOrderLocksV2`): `getOrderV2`
+    /// does not report the ID, and the locks are the one view that does. The
+    /// lock id packs the perpetual and the order (`perpId * 65536 + orderId`).
+    async fn fetch_client_order_ids(
+        &self,
+        account_id: U256,
+        features: ContractFeatures,
+    ) -> Result<Vec<(types::PerpetualId, types::OrderId, types::ClientOrderId)>, DexError> {
+        if !features.client_order_ids() {
+            return Ok(vec![]);
+        }
+        let locks = self
+            .instance
+            .getOrderLocksV2(account_id)
+            .block(self.block_id)
+            .call()
+            .await
+            .map_err(|err| DexError::Provider(err.into()))?;
+        Ok(locks
+            .into_iter()
+            .filter_map(|lock| {
+                let perp_id = lock.orderLockId >> u16::BITS;
+                let order_id = types::OrderId::new((lock.orderLockId & u16::MAX as u32) as u16)?;
+                let client_order_id = types::ClientOrderId::new(lock.clientOrderId)?;
+                Some((perp_id, order_id, client_order_id))
             })
             .collect())
     }
@@ -735,7 +802,7 @@ impl<P: Provider + Clone> SnapshotBuilder<P> {
                     collateral_converter,
                     perp.price_converter(),
                     perp.size_converter(),
-                    perp.maintenance_margin(),
+                    perp.effective_maintenance_margin(),
                 );
                 match accounts.entry(info.accountId.to()) {
                     hash_map::Entry::Occupied(mut e) => {

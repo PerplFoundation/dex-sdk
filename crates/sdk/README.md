@@ -157,10 +157,82 @@ perpetual - getting out is not the same as getting in.
 Both need a snapshot that tracks the perpetual's book, which
 `SnapshotBuilder` does by default.
 
+### Client order IDs
+
+The exchange reuses an order ID as soon as its order leaves the book, so a
+cancel that arrives late can reach a different order of the same account. From
+contract v1.1.7.6 an order can be placed with a 32-bit `ClientOrderId` of the
+caller's choosing, which the exchange stores with the order and checks against
+a later cancel or change naming it - refusing the request with
+`ClientOrderIdMismatch` rather than applying it to whatever took the slot:
+
+```rust
+// Stored with the order
+OrderRequest::builder(perp_id, RequestType::OpenLong, price, size)
+    .client_order_id(ClientOrderId::new(0xA001))
+    .build(&exchange)?;
+
+// Applied only if the slot still holds that order
+OrderRequest::cancel(perp_id, order_id)
+    .client_order_id(ClientOrderId::new(0xA001))
+    .build(&exchange)?;
+
+// Give the changed order a new ID, so a cancel sent for it as it was
+// cannot reach it as it is now
+OrderRequest::change(perp_id, order_id)
+    .price(new_price)
+    .client_order_id(ClientOrderId::new(0xA001))
+    .new_client_order_id(ClientOrderId::new(0xA002))
+    .build(&exchange)?;
+```
+
+The stored ID is `state::Order::client_order_id`, recovered from the order's
+placement in the event stream and, for a *tracked* account, from its order
+locks at snapshot time - which is also what lets `build` refuse a cancel the
+exchange would. The builder carries an ID once the deployed contract stores
+them (v1.1.7.6+) and leaves it out until then, so a client can name IDs ahead
+of the upgrade and have them take effect from its first block. It is distinct
+from the request ID
+(`OrderRequestBuilder::request_id`), the caller's correlation key for one
+request, which stays `state::Order::placed_request_id` on the order it placed.
+
+### Decrease-collateral requests
+
+The same contract version lets an account file, and withdraw, a request to
+take collateral out of a position as order types, for the position
+administrator to execute within its own checks:
+
+```rust
+// Ask for 100 back, or whatever less is withdrawable
+OrderRequest::request_decrease_collateral(perp_id)
+    .amount(udec128!(100))
+    .clamp_to_maximum(true)
+    .build(&exchange)?;
+
+OrderRequest::cancel_decrease_collateral_request(perp_id).build(&exchange)?;
+```
+
+The request's lifecycle is reported on the position
+(`PositionEventType::CollateralDecreaseRequested` and its cancellation or
+expiry), and its refusals - one live request per position, no position - as
+order errors carrying the request's ID.
+
+### Contract versions
+
+The deployed contract may lag behind the revision the SDK targets, and the SDK
+follows it through an upgrade in flight: the snapshot probes
+`state::ContractFeatures`, the stream updates them from the version the upgrade
+transaction stamps, and `build` refuses what the deployed contract cannot take
+(`UnsupportedByContract`) - a decrease-collateral request type before
+v1.1.7.6, builder attribution before v1.1.7.4 - since the contract would
+revert the whole batch, or skip the order, rather than say so. A client order
+ID is the exception: it is simply left out until the contract stores them.
+
 For lower-level control, `prepare_v2` still returns the order descriptor and
 its extension envelope for a hand-built
 `abi::dex::Exchange::ExchangeInstance::execOrdersV2` call, and `prepare`
-targets the V1 entrypoints, which cannot carry builder attribution.
+targets the V1 entrypoints, which can carry neither builder attribution nor
+client order IDs.
 
 ## Features
 
