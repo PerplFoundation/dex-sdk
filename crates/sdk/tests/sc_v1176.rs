@@ -17,9 +17,10 @@
 
 use alloy::primitives::Address;
 use fastnum::{udec64, udec128};
+use futures::FutureExt;
 use perpl_sdk::{
     state::{self, SnapshotBuilder},
-    testing,
+    stream, testing,
     types::{
         self, ClientOrderId, OrderRequest, OrderRequestBuilderError,
         RequestType::{self, Cancel, Change, OpenLong, OpenShort},
@@ -287,6 +288,27 @@ async fn test_sc_v1176() {
         let snapshot = state.snapshot().clone();
         let perp = snapshot.perpetuals().get(&btc_perp.id).unwrap();
         assert_eq!(perp.total_orders(), 0, "filled in full");
+    }
+    // The trade stream, replaying the same blocks, reports the maker order by
+    // the ID the change gave it, which the placement did not carry
+    {
+        let config = stream::NormalizationConfig::fetch(&exchange.chain(), &exchange.provider)
+            .await
+            .unwrap();
+        let mut processor = stream::TradeProcessor::new(config);
+        let mut fills = vec![];
+        while let Some(Some(batch)) = state.next_raw_events().now_or_never() {
+            fills.extend(
+                processor
+                    .process_block(&batch)
+                    .events()
+                    .iter()
+                    .flat_map(|e| e.event().maker_fills.clone()),
+            );
+        }
+        let [fill] = fills.as_slice() else { panic!("one maker fill, got {fills:?}") };
+        assert_eq!(fill.maker_placed_request_id, Some(6));
+        assert_eq!(fill.maker_client_order_id, Some(coid(C)), "as the change gave it");
     }
 
     // ── decrease-collateral requests as orders ──────────────────────────────

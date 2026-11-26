@@ -186,6 +186,12 @@ OrderRequest::change(perp_id, order_id)
     .build(&exchange)?;
 ```
 
+An order has an ID only when its sender names one: there is no default, and
+the request ID is never used as one. The exchange does not require IDs to be
+unique - it compares an ID only with the order in the slot a request names -
+so a per-account counter is enough: the next number for every order placed and
+for every change that gives a new ID.
+
 The stored ID is `state::Order::client_order_id`, recovered from the order's
 placement in the event stream and, for a *tracked* account, from its order
 locks at snapshot time - which is also what lets `build` refuse a cancel the

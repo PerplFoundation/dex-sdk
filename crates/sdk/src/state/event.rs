@@ -94,10 +94,12 @@ pub struct OrderError {
 
     /// Address that called the exchange with the request (contract v1.1.7.6+,
     /// from `OrderRequestV3`): the account's own address when it sent the
-    /// request itself, or the administrator that forwarded the request for
-    /// it. An account that is a contract - a delegated account whose operator
-    /// sends through it - reports the contract's address, never the
-    /// operator's key, so the operator is not told apart here.
+    /// request itself, the administrator that forwarded the request for it,
+    /// or the position administrator for a frozen account's close and for a
+    /// liquidation's close order. An account that is a contract - a delegated
+    /// account whose operator sends through it - reports the contract's
+    /// address, never the operator's key, so the operator is not told apart
+    /// here.
     pub sender: Option<Address>,
 
     /// Failure reason with corresponding details.
@@ -170,7 +172,11 @@ pub enum OrderErrorType {
     /// Failed to settle maker order.
     MakerOrderSettlementFailed,
 
-    /// Maximum number of matches reached for the taker order.
+    /// The taker order made the last visit to a resting order it was allowed
+    /// ([`types::MAX_MATCHES`]). Not by itself a failure: the exchange reports
+    /// it also when the order filled in full on that visit, and when its rest
+    /// was then posted. What became of the rest is in the order's other
+    /// events.
     MaxMatchesReached,
 
     /// Account reached limit of orders to post.
@@ -183,10 +189,10 @@ pub enum OrderErrorType {
     /// Order does not exist.
     OrderDoesNotExist,
 
-    /// Builder-code order extension failed a recoverable decode check (unknown
-    /// envelope version, or a builder field out of range) on a batched or
-    /// forwarded V2 request, so this single order was skipped while the rest of
-    /// the batch proceeded.
+    /// The order extension failed a recoverable decode check (unknown
+    /// envelope version, a builder field out of range, or a client order ID
+    /// above 32 bits) on a batched or forwarded V2 request, so this single
+    /// order was skipped while the rest of the batch proceeded.
     OrderExtensionRejected,
 
     /// Order posting failed with status.
@@ -297,12 +303,13 @@ pub struct OrderEvent {
 
     /// Address that called the exchange with the request this event results
     /// from (contract v1.1.7.6+, from `OrderRequestV3`): the account's own
-    /// address when it sent the request itself, or the administrator that
-    /// forwarded the request for it. An account that is a contract - a
-    /// delegated account whose operator sends through it - reports the
-    /// contract's address, never the operator's key, so the operator is not
-    /// told apart here. None where the event is not the result of a request,
-    /// or predates it.
+    /// address when it sent the request itself, the administrator that
+    /// forwarded the request for it, or the position administrator for a
+    /// frozen account's close and for a liquidation's close order. An account
+    /// that is a contract - a delegated account whose operator sends through
+    /// it - reports the contract's address, never the operator's key, so the
+    /// operator is not told apart here. None where the event is not the
+    /// result of a request, or predates it.
     pub sender: Option<Address>,
 
     /// Type of the event with corresponding details.
@@ -827,8 +834,9 @@ pub(crate) struct OrderContext {
     /// The ID a change gives the order from then on.
     pub(crate) new_client_order_id: Option<types::ClientOrderId>,
     /// The address that called the exchange - the account's own (a delegated
-    /// account's contract address, not its operator's key), or the
-    /// administrator that forwarded the order. `OrderRequestV3` only.
+    /// account's contract address, not its operator's key), the administrator
+    /// that forwarded the order, or the position administrator for a frozen
+    /// account's close and a liquidation's close order. `OrderRequestV3` only.
     pub(crate) sender: Option<Address>,
     pub(crate) maker_fills: Vec<types::MakerFill>,
     pub(crate) clearing_remaining_order: bool,

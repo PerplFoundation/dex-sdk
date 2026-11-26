@@ -123,9 +123,12 @@ struct OrderContext {
     perpetual_id: types::PerpetualId,
     account_id: types::AccountId,
     request_id: types::RequestId,
-    side: types::OrderSide,
+    /// Of the request types that place an order or take liquidity; a cancel,
+    /// change or decrease-collateral request has none
+    side: Option<types::OrderSide>,
     builder: Option<types::BuilderAttribution>,
     client_order_id: Option<types::ClientOrderId>,
+    new_client_order_id: Option<types::ClientOrderId>,
 }
 
 /// Pending maker fill waiting for taker match.
@@ -166,10 +169,12 @@ pub struct TradeProcessor {
     prev_tx_index: Option<u64>,
 }
 
-/// Attribution of an order observed being placed, recovered at fill time.
+/// Attribution of a maker order, recovered at fill time.
 #[derive(Clone, Copy)]
 struct PlacedOrder {
-    placed_request_id: types::RequestId,
+    /// Known when the placement was observed; an order first seen through a
+    /// change that gave it a client order ID has none.
+    placed_request_id: Option<types::RequestId>,
     client_order_id: Option<types::ClientOrderId>,
     builder: Option<types::BuilderAttribution>,
 }
@@ -262,11 +267,32 @@ impl TradeProcessor {
                     self.maker_orders.insert(
                         (context.perpetual_id, order_id),
                         PlacedOrder {
-                            placed_request_id: context.request_id,
+                            placed_request_id: Some(context.request_id),
                             client_order_id: context.client_order_id,
                             builder: context.builder,
                         },
                     );
+                }
+                None
+            },
+            // The change is applied, so the order now stores the ID the
+            // request named, which the event does not repeat. An order placed
+            // before the stream started is first seen here, with no placing
+            // request to recover
+            ExchangeEvents::OrderChanged(e) => {
+                if let Some(context) = self.order_context.as_ref()
+                    && self.config.perpetuals.contains_key(&context.perpetual_id)
+                    && let Some(order_id) = NonZeroU16::new(e.orderId.to())
+                    && let Some(new_client_order_id) = context.new_client_order_id
+                {
+                    self.maker_orders
+                        .entry((context.perpetual_id, order_id))
+                        .or_insert(PlacedOrder {
+                            placed_request_id: None,
+                            client_order_id: None,
+                            builder: None,
+                        })
+                        .client_order_id = Some(new_client_order_id);
                 }
                 None
             },
@@ -319,20 +345,18 @@ impl TradeProcessor {
         extension: types::OrderExtension,
     ) {
         let request_type: types::RequestType = order_type.into();
-        // Only track context for order types that can have fills
-        if let Some(side) = request_type.try_side() {
-            // Request fields are the caller's `OrderDesc` echoed verbatim, so
-            // they may be full-width: saturate rather than panic, see
-            // [`types::narrow`].
-            self.order_context = Some(OrderContext {
-                perpetual_id: types::narrow(perp_id),
-                account_id: types::narrow(account_id),
-                request_id: types::narrow(request_id),
-                side,
-                builder: extension.builder(),
-                client_order_id: extension.client_order_id(),
-            });
-        }
+        // Request fields are the caller's `OrderDesc` echoed verbatim, so
+        // they may be full-width: saturate rather than panic, see
+        // [`types::narrow`].
+        self.order_context = Some(OrderContext {
+            perpetual_id: types::narrow(perp_id),
+            account_id: types::narrow(account_id),
+            request_id: types::narrow(request_id),
+            side: request_type.try_side(),
+            builder: extension.builder(),
+            client_order_id: extension.client_order_id(),
+            new_client_order_id: extension.new_client_order_id(),
+        });
     }
 
     fn handle_maker_fill(&mut self, event: &super::RawEvent, fill: RawMakerFill) {
@@ -346,7 +370,7 @@ impl TradeProcessor {
                 perpetual_id: perp_id,
                 maker_account_id: fill.account_id.to(),
                 maker_order_id,
-                maker_placed_request_id: maker_order.map(|o| o.placed_request_id),
+                maker_placed_request_id: maker_order.and_then(|o| o.placed_request_id),
                 maker_client_order_id: maker_order.and_then(|o| o.client_order_id),
                 maker_builder: maker_order.and_then(|o| o.builder),
                 price: converters.price_converter.from_unsigned(fill.price_pns),
@@ -372,6 +396,8 @@ impl TradeProcessor {
         }
 
         let ctx = self.order_context.as_ref()?;
+        // Fills follow the request that took liquidity, which has a side
+        let taker_side = ctx.side?;
         let taker_tx_hash = event.tx_hash();
 
         // Validate all maker fills have the same tx_hash as the taker fill
@@ -390,7 +416,7 @@ impl TradeProcessor {
                 perpetual_id,
                 taker_account_id: ctx.account_id,
                 taker_request_id: ctx.request_id,
-                taker_side: ctx.side,
+                taker_side,
                 taker_fee: self.config.collateral_converter.from_unsigned(fee_cns),
                 taker_builder: ctx.builder,
                 taker_builder_fee: self
@@ -465,7 +491,7 @@ mod tests {
     use std::time::Duration;
 
     use alloy::{
-        primitives::I256,
+        primitives::{Address, I256},
         providers::ProviderBuilder,
         rpc::client::RpcClient,
         transports::layers::{RetryBackoffLayer, ThrottleLayer},
@@ -476,7 +502,10 @@ mod tests {
     use super::*;
     use crate::{
         Chain,
-        abi::dex::Exchange::{MakerOrderFilledV2, OrderPlaced, OrderRequestV2, TakerOrderFilledV2},
+        abi::dex::Exchange::{
+            MakerOrderFilledV2, OrderChanged, OrderPlaced, OrderRequestV2, OrderRequestV3,
+            TakerOrderFilledV2,
+        },
         stream::RawEvent,
     };
 
@@ -509,6 +538,117 @@ mod tests {
                 .map(|b| b.encode().expect("fee within range"))
                 .unwrap_or_default(),
         })
+    }
+
+    /// A v1.1.7.6 order-start event, which can name an existing order and
+    /// carry client order IDs in its envelope.
+    fn order_request_v3(
+        perpetual_id: types::PerpetualId,
+        account_id: types::AccountId,
+        request_id: types::RequestId,
+        order_id: u16,
+        order_type: u8,
+        extension: types::OrderExtension,
+    ) -> ExchangeEvents {
+        ExchangeEvents::OrderRequestV3(OrderRequestV3 {
+            perpId: U256::from(perpetual_id),
+            accountId: U256::from(account_id),
+            orderDescId: U256::from(request_id),
+            orderId: U256::from(order_id),
+            orderType: order_type,
+            pricePNS: U256::from(100),
+            lotLNS: U256::from(1),
+            expiryBlock: U256::ZERO,
+            postOnly: false,
+            fillOrKill: false,
+            immediateOrCancel: false,
+            maxMatches: U256::ZERO,
+            leverageHdths: U256::ZERO,
+            lastExecutionBlock: U256::ZERO,
+            amountCNS: U256::ZERO,
+            maxNegPnlCollatBPS: U256::ZERO,
+            gasLeft: U256::ZERO,
+            sender: Address::ZERO,
+            extension: extension.encode().expect("ids within range"),
+        })
+    }
+
+    fn order_placed(order_id: u16) -> ExchangeEvents {
+        ExchangeEvents::OrderPlaced(OrderPlaced {
+            orderId: U256::from(order_id),
+            lotLNS: U256::from(1),
+            lockedBalanceCNS: U256::ZERO,
+            amountCNS: I256::ZERO,
+            balanceCNS: U256::ZERO,
+        })
+    }
+
+    fn order_changed(order_id: u16) -> ExchangeEvents {
+        ExchangeEvents::OrderChanged(OrderChanged {
+            orderId: U256::from(order_id),
+            pricePNS: U256::from(100),
+            lotLNS: U256::from(1),
+            expiryBlock: U256::ZERO,
+            lockedBalanceCNS: U256::ZERO,
+            balanceCNS: U256::ZERO,
+        })
+    }
+
+    fn maker_order_filled(
+        perpetual_id: types::PerpetualId,
+        account_id: types::AccountId,
+        order_id: u16,
+    ) -> ExchangeEvents {
+        ExchangeEvents::MakerOrderFilledV2(MakerOrderFilledV2 {
+            perpId: U256::from(perpetual_id),
+            accountId: U256::from(account_id),
+            orderId: U256::from(order_id),
+            pricePNS: U256::from(100),
+            lotLNS: U256::from(1),
+            feeCNS: U256::ZERO,
+            lockedBalanceCNS: U256::ZERO,
+            amountCNS: I256::ZERO,
+            balanceCNS: U256::ZERO,
+            builderId: U256::ZERO,
+            builderFeeCNS: U256::ZERO,
+        })
+    }
+
+    fn taker_order_filled() -> ExchangeEvents {
+        ExchangeEvents::TakerOrderFilledV2(TakerOrderFilledV2 {
+            entryPricePNS: U256::from(100),
+            collatPricePNS: U256::from(100),
+            pnlPricePNS: U256::from(100),
+            lotLNS: U256::from(1),
+            feeCNS: U256::ZERO,
+            amountCNS: I256::ZERO,
+            balanceCNS: U256::ZERO,
+            builderId: U256::ZERO,
+            builderFeeCNS: U256::ZERO,
+        })
+    }
+
+    fn client_order_id(id: u32) -> types::ClientOrderId {
+        types::ClientOrderId::new(id).expect("non-zero")
+    }
+
+    /// Feeds the events in order and returns the fill of the one maker order
+    /// the last two, a maker and a taker fill, report.
+    fn maker_fill_after(
+        processor: &mut TradeProcessor,
+        events: impl IntoIterator<Item = ExchangeEvents>,
+    ) -> types::MakerFill {
+        let mut trade = None;
+        for event in events {
+            trade = processor.process_event(&RawEvent::empty(event));
+        }
+        trade
+            .expect("trade exists")
+            .event()
+            .maker_fills
+            .first()
+            .expect("maker fill exists")
+            .clone()
     }
 
     fn normalization_config(perpetual_id: types::PerpetualId) -> NormalizationConfig {
@@ -551,9 +691,10 @@ mod tests {
             perpetual_id: 2,
             account_id: 7,
             request_id: 42,
-            side: types::OrderSide::Ask,
+            side: Some(types::OrderSide::Ask),
             builder: None,
             client_order_id: None,
+            new_client_order_id: None,
         });
         let event = RawEvent::empty(ExchangeEvents::OrderPlaced(OrderPlaced {
             orderId: U256::from(9),
@@ -672,6 +813,78 @@ mod tests {
         assert_eq!(trade.builder_total(5), udec64!(0));
         assert!(maker_fill.builder_fee < maker_fill.fee);
         assert!(trade.taker_builder_fee < trade.taker_fee);
+    }
+
+    /// The exchange stores the ID a change names once the change is applied,
+    /// so the fill of the changed order reports the new ID, not the one it
+    /// was placed with.
+    #[test]
+    fn maker_fill_reports_the_id_an_applied_change_gave() {
+        let mut processor = TradeProcessor::new(normalization_config(1));
+        let placed = types::OrderExtension::new(None, Some(client_order_id(10)), None);
+        let change = types::OrderExtension::new(None, None, Some(client_order_id(20)));
+
+        let fill = maker_fill_after(
+            &mut processor,
+            [
+                order_request_v3(1, 7, 42, 0, 1, placed),
+                order_placed(9),
+                order_request_v3(1, 7, 43, 9, 6, change),
+                order_changed(9),
+                order_request_v3(1, 8, 84, 0, 0, types::OrderExtension::default()),
+                maker_order_filled(1, 7, 9),
+                taker_order_filled(),
+            ],
+        );
+
+        assert_eq!(fill.maker_client_order_id, Some(client_order_id(20)));
+        assert_eq!(fill.maker_placed_request_id, Some(42), "the placement is still known");
+    }
+
+    /// A change the exchange refused (no `OrderChanged` follows) stores
+    /// nothing, so the order keeps the ID it had.
+    #[test]
+    fn maker_fill_keeps_the_id_when_the_change_is_not_applied() {
+        let mut processor = TradeProcessor::new(normalization_config(1));
+        let placed = types::OrderExtension::new(None, Some(client_order_id(10)), None);
+        let change = types::OrderExtension::new(None, None, Some(client_order_id(20)));
+
+        let fill = maker_fill_after(
+            &mut processor,
+            [
+                order_request_v3(1, 7, 42, 0, 1, placed),
+                order_placed(9),
+                order_request_v3(1, 7, 43, 9, 6, change),
+                order_request_v3(1, 8, 84, 0, 0, types::OrderExtension::default()),
+                maker_order_filled(1, 7, 9),
+                taker_order_filled(),
+            ],
+        );
+
+        assert_eq!(fill.maker_client_order_id, Some(client_order_id(10)));
+    }
+
+    /// An order placed before the stream started is first seen through the
+    /// change that gives it an ID: the ID is reported, the placement is not
+    /// known.
+    #[test]
+    fn maker_fill_reports_the_id_a_change_gave_an_unobserved_order() {
+        let mut processor = TradeProcessor::new(normalization_config(1));
+        let change = types::OrderExtension::new(None, None, Some(client_order_id(30)));
+
+        let fill = maker_fill_after(
+            &mut processor,
+            [
+                order_request_v3(1, 7, 43, 9, 6, change),
+                order_changed(9),
+                order_request_v3(1, 8, 84, 0, 0, types::OrderExtension::default()),
+                maker_order_filled(1, 7, 9),
+                taker_order_filled(),
+            ],
+        );
+
+        assert_eq!(fill.maker_client_order_id, Some(client_order_id(30)));
+        assert_eq!(fill.maker_placed_request_id, None);
     }
 
     #[tokio::test]
