@@ -6,13 +6,14 @@ use fastnum::{UD64, udec128};
 use crate::{
     Chain,
     abi::dex::Exchange::{
-        AccountCreated, ContractAddedV2, ExchangeEvents, MaintenanceMarginFractionUpdated,
-        MakerOrderFilled, OrderPlaced, PositionClosed, PositionOpened, RecycleFeeToAccount,
+        AccountCreated, ContractAddedV2, ExchangeEvents, LiquidationAdlOrderCancelSkipped,
+        MaintenanceMarginFractionUpdated, MakerOrderFilled, OrderPlaced, PositionClosed,
+        PositionOpened, RecycleFeeToAccount,
     },
     num::Converter,
     state::{
-        ContractFeatures, Exchange, FeeSchedule, FeeScheduleKey, FeeScheduleRegistry, OrderContext,
-        Perpetual,
+        self, ContractFeatures, Exchange, FeeSchedule, FeeScheduleKey, FeeScheduleRegistry,
+        OrderContext, Perpetual,
     },
     stream::RawEvent,
     types::{
@@ -78,6 +79,9 @@ fn create_test_order_context(
         fill_or_kill: false,
         immediate_or_cancel: false,
         builder: None,
+        client_order_id: None,
+        new_client_order_id: None,
+        sender: None,
         maker_fills: vec![],
         clearing_remaining_order: false,
         position_closed_at_log_index: None,
@@ -317,7 +321,7 @@ fn test_smart_contract_position_closed() {
         .as_ref()
         .and_then(|context| context.maker_fills.first())
         .expect("maker fill exists");
-    assert_eq!(maker_fill.maker_client_order_id, Some(maker_client_order_id));
+    assert_eq!(maker_fill.maker_placed_request_id, Some(maker_client_order_id));
 
     // PositionClosed -> MakerOrderFilled implies Close Position
     let perps = exchange.perpetuals();
@@ -339,4 +343,46 @@ fn test_smart_contract_position_closed_recycling_fee_to_account() {
     let perps = exchange.perpetuals();
     let perp = perps.get(&TEST_PERP_ID).expect("UT");
     assert!(perp.get_order(OrderId::new(1).expect("UT")).is_none());
+}
+
+/// A forced close that leaves an account's orders resting (contract
+/// v1.1.7.6+) is reported on the position by ids, since the position itself
+/// may already be gone, and only for a tracked account.
+#[test]
+fn test_liquidation_order_cancel_skipped_is_a_position_event() {
+    let mut exchange = create_test_exchange();
+    let mut no_context = None;
+    apply_event(&mut exchange, event_account_created(1), &mut no_context, 0);
+
+    let skipped = |account_id: u64| {
+        RawEvent::new(
+            TxHash::ZERO,
+            0,
+            1,
+            ExchangeEvents::LiquidationAdlOrderCancelSkipped(LiquidationAdlOrderCancelSkipped {
+                perpId: U256::from(TEST_PERP_ID),
+                accountId: U256::from(account_id),
+                numOrders: U256::from(151),
+            }),
+        )
+    };
+    let events = exchange
+        .apply_raw_event(StateInstant::new(0, 0), &skipped(1), &mut no_context)
+        .expect("UT");
+    assert_eq!(events.len(), 1);
+    let event = events[0].as_position_event().expect("a position event");
+    assert_eq!(event.perpetual_id, TEST_PERP_ID);
+    assert_eq!(event.account_id, 1);
+    assert_eq!(event.request_id, None);
+    assert!(matches!(
+        event.r#type,
+        state::PositionEventType::LiquidationOrderCancelSkipped { num_orders: 151 }
+    ));
+
+    // An account the snapshot does not track gets nothing, like every other
+    // position event
+    let events = exchange
+        .apply_raw_event(StateInstant::new(0, 0), &skipped(2), &mut no_context)
+        .expect("UT");
+    assert!(events.is_empty());
 }

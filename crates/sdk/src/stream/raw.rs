@@ -104,27 +104,36 @@ where
 #[cfg(test)]
 mod tests {
     use alloy::{
-        providers::ProviderBuilder, rpc::client::RpcClient, transports::layers::RetryBackoffLayer,
+        providers::ProviderBuilder,
+        rpc::client::RpcClient,
+        transports::layers::{RetryBackoffLayer, ThrottleLayer},
     };
     use futures::StreamExt;
 
     use super::*;
     use crate::Chain;
 
+    /// Against mainnet: the public RPCs rate-limit at roughly 15-25 requests
+    /// a second per address, so this is throttled well below that and kept
+    /// off the host `stream::trade`'s own live test polls. `PERPL_MAINNET_RPC`
+    /// names a node of one's own instead.
     #[tokio::test]
     async fn test_stream_recent_blocks() {
+        let rpc = std::env::var("PERPL_MAINNET_RPC")
+            .unwrap_or_else(|_| "https://rpc.monad.xyz".to_string());
         let client = RpcClient::builder()
+            .layer(ThrottleLayer::new(6))
             .layer(RetryBackoffLayer::new(10, 100, 200))
-            .connect("https://testnet-rpc.monad.xyz")
+            .connect(&rpc)
             .await
             .unwrap();
         client.set_poll_interval(Duration::from_millis(100));
         let provider = ProviderBuilder::new().connect_client(client);
 
-        let testnet = Chain::testnet();
+        let mainnet = Chain::mainnet();
         let mut block_num = provider.get_block_number().await.unwrap() + 1;
         let stream =
-            raw(&testnet, provider, types::StateInstant::new(block_num, 0), tokio::time::sleep);
+            raw(&mainnet, provider, types::StateInstant::new(block_num, 0), tokio::time::sleep);
         let block_results = stream.take(10).collect::<Vec<_>>().await;
 
         for b in &block_results {

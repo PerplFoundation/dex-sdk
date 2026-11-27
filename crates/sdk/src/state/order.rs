@@ -29,12 +29,17 @@ pub enum OrderParseError {
 /// So the state of order book and particular mapping between orders and their
 /// IDs is tied to a particular point in time and should be used with care.
 ///
-/// Exchange does not support concept of client order IDs and does not store any
-/// externally-provided state with orders on-chain, but each order request emits
-/// provided [`Order::request_id()`] with it, which gets indexed and stored with
-/// the order, with the original request ID preserved as
-/// [`Order::client_order_id()`] but with the limitation that this data is
-/// available only from events, not from the original snapshot.
+/// Each order request emits its [`Order::request_id()`] with it, which gets
+/// indexed and stored with the order, with the ID of the request that placed
+/// the order preserved as [`Order::placed_request_id()`] - with the limitation
+/// that this data is available only from events, not from the original
+/// snapshot.
+///
+/// From contract v1.1.7.6 a resting order also stores the
+/// [`Order::client_order_id()`] it was placed with, which the exchange checks
+/// against a later cancel or change naming one. It is recovered from the
+/// order's placement in the event stream, or from the order locks of a
+/// tracked account at snapshot time.
 ///
 /// See [`crate::abi::dex::Exchange::OrderDesc`] for more details on particular
 /// order parameters and exchange behavior.
@@ -44,7 +49,8 @@ pub enum OrderParseError {
 pub struct Order {
     instant: types::StateInstant,
     request_id: Option<types::RequestId>,
-    client_order_id: Option<types::RequestId>,
+    placed_request_id: Option<types::RequestId>,
+    client_order_id: Option<types::ClientOrderId>,
     order_id: types::OrderId,
     r#type: types::OrderType,
     account_id: types::AccountId,
@@ -89,7 +95,11 @@ impl Order {
         Ok(Self {
             instant,
             request_id: None,
-            client_order_id: None, // Not available from snapshot
+            placed_request_id: None, // Not available from snapshot
+            // Stored on-chain from v1.1.7.6, but by the account's order locks
+            // rather than the order itself - filled in for tracked accounts
+            // by `with_client_order_id`
+            client_order_id: None,
             order_id,
             r#type: order.orderType.into(),
             account_id: order.accountId,
@@ -125,8 +135,11 @@ impl Order {
         Self {
             instant,
             request_id: Some(ctx.request_id),
-            // Original [`request_id`] becomes [`client_order_id`]
-            client_order_id: Some(ctx.request_id),
+            // The placing request is what the order is correlated by
+            placed_request_id: Some(ctx.request_id),
+            // ...and what names the ID the exchange stores with it, applied
+            // only to an order that rests - so this is it
+            client_order_id: ctx.client_order_id,
             order_id,
             r#type: ctx.r#type.into(),
             account_id: ctx.account_id,
@@ -145,6 +158,7 @@ impl Order {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn updated(
         &self,
         instant: types::StateInstant,
@@ -153,12 +167,15 @@ impl Order {
         size: Option<UD64>,
         placed_size: Option<UD64>,
         expiry_block: Option<u64>,
+        client_order_id: Option<types::ClientOrderId>,
     ) -> Self {
         Self {
             instant,
             request_id: ctx.as_ref().map(|c| c.request_id),
-            // Original [`client_order_id`] is preserved
-            client_order_id: self.client_order_id,
+            // The placing request is preserved; the ID moves only when a
+            // change gives the order a new one
+            placed_request_id: self.placed_request_id,
+            client_order_id: client_order_id.or(self.client_order_id),
             order_id: self.order_id,
             r#type: self.r#type,
             account_id: self.account_id,
@@ -196,6 +213,7 @@ impl Order {
         Self {
             instant: types::StateInstant::new(0, 0),
             request_id: None,
+            placed_request_id: None,
             client_order_id: None,
             order_id: NonZeroU16::MIN,
             r#type,
@@ -228,6 +246,7 @@ impl Order {
         Self {
             instant: types::StateInstant::new(block_number, 0),
             request_id: None,
+            placed_request_id: None,
             client_order_id: None,
             order_id,
             r#type,
@@ -262,6 +281,7 @@ impl Order {
         Self {
             instant: types::StateInstant::new(block_number, 0),
             request_id: None,
+            placed_request_id: None,
             client_order_id: None,
             order_id,
             r#type,
@@ -286,6 +306,7 @@ impl Order {
         Self {
             instant: self.instant,
             request_id: self.request_id,
+            placed_request_id: self.placed_request_id,
             client_order_id: self.client_order_id,
             order_id: self.order_id,
             r#type: self.r#type,
@@ -310,6 +331,7 @@ impl Order {
         Self {
             instant: self.instant,
             request_id: self.request_id,
+            placed_request_id: self.placed_request_id,
             client_order_id: self.client_order_id,
             order_id: self.order_id,
             r#type: self.r#type,
@@ -334,6 +356,7 @@ impl Order {
         Self {
             instant: self.instant,
             request_id: self.request_id,
+            placed_request_id: self.placed_request_id,
             client_order_id: self.client_order_id,
             order_id: self.order_id,
             r#type: self.r#type,
@@ -363,6 +386,7 @@ impl Order {
         Self {
             instant: self.instant,
             request_id: self.request_id,
+            placed_request_id: self.placed_request_id,
             client_order_id: self.client_order_id,
             order_id: self.order_id,
             r#type: self.r#type,
@@ -381,12 +405,20 @@ impl Order {
         }
     }
 
-    /// Create a copy with updated client order id.
-    #[allow(unused)]
-    pub(crate) fn with_client_order_id(&self, client_order_id: types::RequestId) -> Self {
+    /// Create a copy placed by `request_id` (for testing the book's lookup
+    /// by it).
+    #[cfg(test)]
+    pub(crate) fn with_placed_request_id(&self, request_id: types::RequestId) -> Self {
+        Self { placed_request_id: Some(request_id), ..*self }
+    }
+
+    /// Create a copy carrying the client order ID the exchange stores with the
+    /// order, as read from the account's order locks at snapshot time.
+    pub(crate) fn with_client_order_id(&self, client_order_id: types::ClientOrderId) -> Self {
         Self {
             instant: self.instant,
             request_id: self.request_id,
+            placed_request_id: self.placed_request_id,
             client_order_id: Some(client_order_id),
             order_id: self.order_id,
             r#type: self.r#type,
@@ -412,9 +444,19 @@ impl Order {
     /// Available only from real-time events, not from the initial snapshot.
     pub fn request_id(&self) -> Option<types::RequestId> { self.request_id }
 
-    /// Client order ID = ID of the request this order was placed by.
+    /// ID of the request this order was placed by.
     /// Available only from real-time events, not from the initial snapshot.
-    pub fn client_order_id(&self) -> Option<types::RequestId> { self.client_order_id }
+    pub fn placed_request_id(&self) -> Option<types::RequestId> { self.placed_request_id }
+
+    /// Client order ID the exchange stores with the order (contract
+    /// v1.1.7.6+), which a cancel or change naming one is checked against.
+    ///
+    /// `None` where the order was placed without one, where it rested before
+    /// the upgrade (such an order stores none), and where the SDK has not
+    /// seen it: it is recovered from the order's placement in the event
+    /// stream, and at snapshot time from the order locks of a *tracked*
+    /// account only.
+    pub fn client_order_id(&self) -> Option<types::ClientOrderId> { self.client_order_id }
 
     /// ID of the order in the book.
     pub fn order_id(&self) -> types::OrderId { self.order_id }
@@ -549,6 +591,11 @@ impl tabled::Tabled for Order {
             } else {
                 "-".to_string().into()
             },
+            if let Some(placed_request_id) = self.placed_request_id() {
+                placed_request_id.to_string().into()
+            } else {
+                "-".to_string().into()
+            },
             if let Some(client_order_id) = self.client_order_id() {
                 client_order_id.to_string().into()
             } else {
@@ -591,6 +638,7 @@ impl tabled::Tabled for Order {
             "Order ID".into(),
             "Account ID".into(),
             "Request ID".into(),
+            "Placed By".into(),
             "Client Order ID".into(),
             "Expiry Block".into(),
             "Leverage".into(),

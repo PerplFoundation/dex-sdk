@@ -34,7 +34,22 @@ use crate::{abi::dex::Exchange::OrderDesc, num, state};
 ///   insufficient margin or the account holder wishes to reduce leverage.
 /// * [`RequestType::Change`] is an operation to change parameters of an
 ///   existing order, gas-efficiently.
-#[derive(Clone, Copy, Debug)]
+/// * [`RequestType::RequestDecreasePositionCollateral`] files a request to
+///   withdraw collateral from an existing position, for the position
+///   administrator to execute within its own checks (contract v1.1.7.6+). The
+///   amount is the collateral to release, zero requesting the maximum
+///   withdrawable; `post_only` carries `clampToMaximum`, which lets a larger
+///   amount be clamped at execution rather than fail it. One live request per
+///   position: it expires on its own two minutes after it is filed.
+/// * [`RequestType::CancelDecreaseCollateralRequest`] withdraws such a request
+///   (contract v1.1.7.6+). Cancelling where none is pending is not an error.
+///
+/// The last two are out of the enum range of every contract before v1.1.7.6,
+/// where the ABI decoder panics and the WHOLE call reverts, batches without
+/// `revertOnFail` included - so the SDK refuses to send them until the
+/// upgrade is observed
+/// ([`crate::state::ContractFeatures::decrease_collateral_orders`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestType {
     OpenLong,
     OpenShort,
@@ -43,6 +58,8 @@ pub enum RequestType {
     Cancel,
     IncreasePositionCollateral,
     Change,
+    RequestDecreasePositionCollateral,
+    CancelDecreaseCollateralRequest,
 }
 
 /// Request to post/modify an order.
@@ -67,13 +84,17 @@ pub struct OrderRequest {
     amount: Option<UD128>,
     max_neg_pnl_collat_bps: u16,
     builder: Option<BuilderAttribution>,
+    client_order_id: Option<ClientOrderId>,
+    new_client_order_id: Option<ClientOrderId>,
 }
 
 impl OrderRequest {
     /// Create a new order request with provided parameters.
     ///
-    /// Provided [`request_id`] is stored as [`client_order_id`] once the order
-    /// gets placed.
+    /// Provided `request_id` is kept with the order once it gets placed
+    /// ([`crate::state::Order::placed_request_id`]). It is the caller's
+    /// correlation key for the *request*, not a [`ClientOrderId`] - see
+    /// [`Self::with_client_order_id`] for the latter.
     ///
     /// Use [`Self::prepare_v2`] to get an [`OrderDesc`] with its order
     /// extension and then issue transactions with
@@ -115,6 +136,8 @@ impl OrderRequest {
             amount,
             max_neg_pnl_collat_bps,
             builder: None,
+            client_order_id: None,
+            new_client_order_id: None,
         }
     }
 
@@ -130,8 +153,50 @@ impl OrderRequest {
         self
     }
 
+    /// Names a client order ID (contract v1.1.7.6+): the ID to store with an
+    /// order this request places, or the ID the order a [`RequestType::Cancel`]
+    /// or [`RequestType::Change`] names is expected to carry - the exchange
+    /// refuses the request with `ClientOrderIdMismatch` if it carries another,
+    /// which is what stops a late cancel from reaching whatever order took the
+    /// slot since.
+    ///
+    /// Carried by version 2 of the order extension envelope, so only the V2
+    /// entrypoints take it ([`Self::prepare_v2`]), and only against a contract
+    /// that knows that version: [`Self::prepare_v2`] refuses it otherwise, as
+    /// an earlier contract would skip the order outright.
+    pub fn with_client_order_id(mut self, client_order_id: ClientOrderId) -> Self {
+        self.client_order_id = Some(client_order_id);
+        self
+    }
+
+    /// On a [`RequestType::Change`]: the client order ID the order carries from
+    /// then on (contract v1.1.7.6+). Ignored by every other request type.
+    ///
+    /// A change that gives an order its *first* ID names no expected one
+    /// ([`Self::with_client_order_id`]) and is applied only while the order
+    /// has none. Giving a changed order a new ID is what stops a cancel sent
+    /// for the order as it was from reaching it as it is now.
+    pub fn with_new_client_order_id(mut self, new_client_order_id: ClientOrderId) -> Self {
+        self.new_client_order_id = Some(new_client_order_id);
+        self
+    }
+
     /// Builder attribution of the request, if any.
     pub fn builder_attribution(&self) -> Option<BuilderAttribution> { self.builder }
+
+    /// Client order ID the request names, if any - see
+    /// [`Self::with_client_order_id`].
+    pub fn client_order_id(&self) -> Option<ClientOrderId> { self.client_order_id }
+
+    /// Client order ID a change gives the order, if any - see
+    /// [`Self::with_new_client_order_id`].
+    pub fn new_client_order_id(&self) -> Option<ClientOrderId> { self.new_client_order_id }
+
+    /// Everything the request carries beside its order descriptor on the V2
+    /// entrypoints.
+    pub fn order_extension(&self) -> OrderExtension {
+        OrderExtension::new(self.builder, self.client_order_id, self.new_client_order_id)
+    }
 
     /// Prepare order request for execution via the V1 entrypoints
     /// (`execOrder`/`execOrders`), which cannot carry builder attribution.
@@ -156,14 +221,15 @@ impl OrderRequest {
     /// (`execOrderV2`/`execOrdersV2`), returning the order descriptor along
     /// with its order extension envelope.
     ///
-    /// The envelope is empty for a request without builder attribution, which
-    /// is the V1-identical fast path on-chain. A batch where no order
-    /// carries attribution can omit the `extensions` array entirely.
+    /// The envelope is empty for a request without builder attribution or
+    /// client order IDs, which is the V1-identical fast path on-chain. A batch
+    /// where no order carries either can omit the `extensions` array entirely.
     ///
-    /// Fails if the request carries builder attribution the deployed contract
-    /// does not support, or a builder fee rate the contract's decoder would
-    /// reject - which reverts `execOrderV2` and skips the order on the batched
-    /// path.
+    /// Fails if the request carries something the deployed contract does not
+    /// support - builder attribution, a client order ID, or a request type it
+    /// has no branch for ([`Self::check_supported`]) - or a builder fee rate
+    /// the contract's decoder would reject, which reverts `execOrderV2` and
+    /// skips the order on the batched path.
     pub fn prepare_v2(
         &self,
         exchange: &state::Exchange,
@@ -172,18 +238,8 @@ impl OrderRequest {
             .perpetuals()
             .get(&self.perp_id)
             .ok_or(OrderRequestBuilderError::PerpetualNotTracked(self.perp_id))?;
-        let extension = match self.builder {
-            None => Bytes::new(),
-            Some(builder) => {
-                if !exchange.features().builder_attribution() {
-                    return Err(OrderRequestBuilderError::UnsupportedByContract(
-                        "builder attribution",
-                        exchange.features(),
-                    ));
-                }
-                builder.encode()?
-            },
-        };
+        self.check_supported(exchange.features())?;
+        let extension = self.order_extension().encode()?;
         Ok((
             self.to_order_desc(
                 perp.price_converter(),
@@ -196,12 +252,43 @@ impl OrderRequest {
     }
 
     /// Order extension envelope of the request, empty without builder
-    /// attribution.
+    /// attribution or client order IDs.
     pub fn to_order_extension(&self) -> Result<Bytes, OrderExtensionError> {
-        self.builder
-            .map(|builder| builder.encode())
-            .transpose()
-            .map(Option::unwrap_or_default)
+        self.order_extension().encode()
+    }
+
+    /// Fails on whatever the request carries that the deployed contract has no
+    /// support for, each of which would fail on-chain in a worse way: a
+    /// builder envelope or a client order ID an earlier contract would reject
+    /// the order for, or a decrease-collateral request type that is out of
+    /// its enum range and reverts the whole call.
+    ///
+    /// Applied by [`Self::prepare_v2`], [`OrderRequestBuilder::build`] and
+    /// [`crate::exec::orders_call`]; the V1 [`Self::prepare`] cannot fail, so
+    /// a caller driving `execOrders` itself applies this first.
+    pub fn check_supported(
+        &self,
+        features: state::ContractFeatures,
+    ) -> Result<(), OrderRequestBuilderError> {
+        let unsupported =
+            |what| Err(OrderRequestBuilderError::UnsupportedByContract(what, features));
+        if self.builder.is_some() && !features.builder_attribution() {
+            return unsupported("builder attribution");
+        }
+        if (self.client_order_id.is_some() || self.new_client_order_id.is_some())
+            && !features.client_order_ids()
+        {
+            return unsupported("client order ids");
+        }
+        if matches!(
+            self.r#type,
+            RequestType::RequestDecreasePositionCollateral
+                | RequestType::CancelDecreaseCollateralRequest
+        ) && !features.decrease_collateral_orders()
+        {
+            return unsupported("decrease-collateral request orders");
+        }
+        Ok(())
     }
 
     pub(crate) fn to_order_desc(
@@ -245,6 +332,8 @@ impl From<u8> for RequestType {
             4 => RequestType::Cancel,
             5 => RequestType::IncreasePositionCollateral,
             6 => RequestType::Change,
+            7 => RequestType::RequestDecreasePositionCollateral,
+            8 => RequestType::CancelDecreaseCollateralRequest,
             _ => unreachable!(),
         }
     }
@@ -269,14 +358,25 @@ impl RequestType {
     /// Returns the order side for this request type, if applicable.
     ///
     /// Returns `Some(side)` for order-placing types (OpenLong, OpenShort,
-    /// CloseLong, CloseShort). Returns `None` for Cancel,
-    /// IncreasePositionCollateral, and Change.
+    /// CloseLong, CloseShort). Returns `None` for every operation on an
+    /// existing order or position.
     pub fn try_side(&self) -> Option<OrderSide> {
         match self {
             RequestType::OpenLong | RequestType::CloseShort => Some(OrderSide::Bid),
             RequestType::OpenShort | RequestType::CloseLong => Some(OrderSide::Ask),
             _ => None,
         }
+    }
+
+    /// Whether this is one of the two decrease-collateral request operations
+    /// of contract v1.1.7.6, which touch a position's pending request rather
+    /// than the book.
+    pub fn is_decrease_collateral_request(&self) -> bool {
+        matches!(
+            self,
+            RequestType::RequestDecreasePositionCollateral
+                | RequestType::CancelDecreaseCollateralRequest
+        )
     }
 }
 
@@ -299,16 +399,16 @@ impl From<RequestType> for OrderType {
 /// is valid, and stricter: it lets the exchange draw nothing.
 pub const DEFAULT_MAX_NEG_PNL_COLLAT_BPS: u16 = 1000;
 
-/// Most resting orders the matching engine will walk for a single order
-/// (`C._MAX_MATCHES`).
+/// Most resting orders the matching walk of one order may visit, filled or
+/// cleared (`C._MAX_MATCHES`).
 ///
 /// A loop bound the contract applies for gas safety, not a market parameter:
 /// it does not revert above it, it silently substitutes its own maximum, and
 /// it does the same for zero. An order that asked to match at most one resting
-/// order and got a thousand is the opposite of what was asked, so
-/// [`OrderRequestBuilder::build`] rejects anything outside `1..=1000` rather
+/// order and got 125 is the opposite of what was asked, so
+/// [`OrderRequestBuilder::build`] rejects anything outside `1..=125` rather
 /// than let the substitution happen.
-pub const MAX_MATCHES: u32 = 1000;
+pub const MAX_MATCHES: u32 = 125;
 
 /// Field of an order request a fault refers to.
 ///
@@ -361,11 +461,24 @@ pub enum OrderRequestBuilderError {
     #[error("leverage {requested} exceeds the maximum of {max} on perpetual {perp}")]
     LeverageTooHigh { perp: PerpetualId, requested: UD64, max: UD64 },
 
-    #[error("max matches {requested} is outside the exchange's range of 1 to {max}")]
+    #[error("max matches {requested} is outside the range of 1 to {max}")]
     MaxMatchesOutOfRange { requested: u32, max: u32 },
 
     #[error("a {0:?} request requires {1}")]
     MissingField(RequestType, &'static str),
+
+    #[error("a {0:?} request has no use for {1}, which the exchange would ignore")]
+    NotApplicable(RequestType, &'static str),
+
+    #[error(
+        "order {order_id} carries client order id {stored}, not the {expected:?} the request \
+         names, so the exchange would refuse it"
+    )]
+    ClientOrderIdMismatch {
+        order_id: OrderId,
+        expected: Option<ClientOrderId>,
+        stored: ClientOrderId,
+    },
 
     #[error("a change of order {0} that amends nothing would spend gas to no effect")]
     NothingToChange(OrderId),
@@ -431,6 +544,43 @@ impl OrderRequest {
         OrderRequestBuilder::new(perp_id, RequestType::Change).order_id(order_id)
     }
 
+    /// Gives resting order `order_id` the client order ID `new_client_order_id`
+    /// and changes nothing else (contract v1.1.7.6+): a change the exchange
+    /// applies without touching the order's queue place or the collateral it
+    /// locks.
+    ///
+    /// Applied only to an order that stores no ID - name the one it has with
+    /// [`OrderRequestBuilder::client_order_id`] to replace it.
+    pub fn set_client_order_id(
+        perp_id: PerpetualId,
+        order_id: OrderId,
+        new_client_order_id: ClientOrderId,
+    ) -> OrderRequestBuilder {
+        Self::change(perp_id, order_id).new_client_order_id(new_client_order_id)
+    }
+
+    /// Files a request to withdraw collateral from the account's position on
+    /// `perp_id`, for the position administrator to execute (contract
+    /// v1.1.7.6+).
+    ///
+    /// Takes the amount from [`OrderRequestBuilder::amount`], zero or unset
+    /// requesting the maximum withdrawable, and
+    /// [`OrderRequestBuilder::clamp_to_maximum`] to have a larger amount
+    /// clamped at execution rather than fail it. One live request per
+    /// position: a second one is refused with
+    /// `DecreaseCollateralRequestPending` until the first expires, two
+    /// minutes after it was filed, or is
+    /// cancelled ([`Self::cancel_decrease_collateral_request`]).
+    pub fn request_decrease_collateral(perp_id: PerpetualId) -> OrderRequestBuilder {
+        OrderRequestBuilder::new(perp_id, RequestType::RequestDecreasePositionCollateral)
+    }
+
+    /// Withdraws the account's pending decrease-collateral request on
+    /// `perp_id`, if any (contract v1.1.7.6+).
+    pub fn cancel_decrease_collateral_request(perp_id: PerpetualId) -> OrderRequestBuilder {
+        OrderRequestBuilder::new(perp_id, RequestType::CancelDecreaseCollateralRequest)
+    }
+
     /// Perpetual the request is against.
     pub fn perp_id(&self) -> PerpetualId { self.perp_id }
 
@@ -481,6 +631,20 @@ impl OrderRequest {
     /// Cap on the resting orders this order may match against, if the caller
     /// set one; see [`MAX_MATCHES`].
     pub fn max_matches(&self) -> Option<u32> { self.max_matches }
+
+    /// Collateral amount the request carries: what a
+    /// [`RequestType::IncreasePositionCollateral`] adds, or what a
+    /// [`RequestType::RequestDecreasePositionCollateral`] asks to withdraw,
+    /// `None` there meaning the maximum withdrawable.
+    pub fn amount(&self) -> Option<UD128> { self.amount }
+
+    /// Whether a [`RequestType::RequestDecreasePositionCollateral`] above the
+    /// maximum withdrawable is to be clamped to it at execution rather than
+    /// failed. Rides on the descriptor's `postOnly`, which that request type
+    /// has no other use for.
+    pub fn clamp_to_maximum(&self) -> bool {
+        matches!(self.r#type, RequestType::RequestDecreasePositionCollateral) && self.post_only
+    }
 
     /// This request as a call against `exchange`, ready to simulate or send.
     ///
@@ -543,6 +707,8 @@ pub struct OrderRequestBuilder {
     amount: Option<UD128>,
     max_neg_pnl_collat_bps: u16,
     builder: Option<BuilderAttribution>,
+    client_order_id: Option<ClientOrderId>,
+    new_client_order_id: Option<ClientOrderId>,
     // Not carried into the built request: the exchange takes the account from
     // `msg.sender`, so this only ever feeds the checks in `build`
     account: Option<AccountId>,
@@ -572,6 +738,8 @@ impl OrderRequestBuilder {
             max_neg_pnl_collat_bps: DEFAULT_MAX_NEG_PNL_COLLAT_BPS,
             account: None,
             builder: None,
+            client_order_id: None,
+            new_client_order_id: None,
         }
     }
 
@@ -652,9 +820,20 @@ impl OrderRequestBuilder {
     }
 
     /// Collateral amount, which carries meaning for
-    /// [`RequestType::IncreasePositionCollateral`] rather than a posted order.
+    /// [`RequestType::IncreasePositionCollateral`] and
+    /// [`RequestType::RequestDecreasePositionCollateral`] rather than a posted
+    /// order. On the latter, unset or zero requests the maximum withdrawable.
     pub fn amount(mut self, amount: impl Into<Option<UD128>>) -> Self {
         self.amount = amount.into();
+        self
+    }
+
+    /// On a [`RequestType::RequestDecreasePositionCollateral`]: clamp an amount
+    /// above the maximum withdrawable to it at execution, rather than fail the
+    /// request there. Rides on the descriptor's `postOnly` flag, which that
+    /// request type has no other use for.
+    pub fn clamp_to_maximum(mut self, clamp: bool) -> Self {
+        self.post_only = clamp;
         self
     }
 
@@ -689,6 +868,40 @@ impl OrderRequestBuilder {
     /// against a contract that cannot carry attribution.
     pub fn builder_attribution(mut self, builder: impl Into<Option<BuilderAttribution>>) -> Self {
         self.builder = builder.into();
+        self
+    }
+
+    /// Client order ID to store with a placed order, or the one the order a
+    /// cancel or change names is expected to carry - see
+    /// [`OrderRequest::with_client_order_id`] [default: none]. Rejected by
+    /// [`Self::build`] against a resting order the snapshot knows to carry
+    /// another.
+    ///
+    /// Carried once the deployed contract stores client order IDs (v1.1.7.6+)
+    /// and left out until then, so a client can name IDs ahead of the upgrade
+    /// and have them take effect from its first block: before it, an envelope
+    /// naming one is an unknown version the contract would skip the order
+    /// for, and a request naming none is applied unchecked - which is what
+    /// every request was until then. Use [`OrderRequest::with_client_order_id`]
+    /// to be refused instead where the ID cannot be honoured.
+    pub fn client_order_id(mut self, client_order_id: impl Into<Option<ClientOrderId>>) -> Self {
+        self.client_order_id = client_order_id.into();
+        self
+    }
+
+    /// On a [`RequestType::Change`]: the client order ID the order carries from
+    /// then on - see [`OrderRequest::with_new_client_order_id`] [default:
+    /// keep the one it has].
+    ///
+    /// Carried once the deployed contract stores client order IDs and left out
+    /// until then, like [`Self::client_order_id`] - so until then a change
+    /// that amends nothing else is
+    /// [`OrderRequestBuilderError::NothingToChange`].
+    pub fn new_client_order_id(
+        mut self,
+        new_client_order_id: impl Into<Option<ClientOrderId>>,
+    ) -> Self {
+        self.new_client_order_id = new_client_order_id.into();
         self
     }
 
@@ -792,6 +1005,62 @@ impl OrderRequestBuilder {
             // than the one order that carried it
             builder.encode()?;
         }
+        // The IDs take effect from the upgrade that stores them, and are left
+        // out before it - see `Self::client_order_id`
+        let (client_order_id, new_client_order_id) = if exchange.features().client_order_ids() {
+            (self.client_order_id, self.new_client_order_id)
+        } else {
+            (None, None)
+        };
+        // The exchange ignores a new ID anywhere but on a change, and both IDs
+        // on the collateral operations - which would still pay for a
+        // version-2 envelope to no effect
+        if new_client_order_id.is_some() && !matches!(self.r#type, RequestType::Change) {
+            return Err(OrderRequestBuilderError::NotApplicable(
+                self.r#type,
+                "a new client order ID",
+            ));
+        }
+        if self.r#type.is_decrease_collateral_request() {
+            if !exchange.features().decrease_collateral_orders() {
+                return Err(OrderRequestBuilderError::UnsupportedByContract(
+                    "decrease-collateral request orders",
+                    exchange.features(),
+                ));
+            }
+            if client_order_id.is_some() {
+                return Err(OrderRequestBuilderError::NotApplicable(
+                    self.r#type,
+                    "a client order ID",
+                ));
+            }
+            // Neither touches the book, so none of an order's own parameters
+            // apply - and a flag the exchange would ignore is a mistake worth
+            // hearing about, like a max-matches it would ignore
+            for (set, what) in [
+                (self.price.is_some(), "a price"),
+                (self.size.is_some(), "a size"),
+                (self.order_id.is_some(), "an order ID"),
+                (self.leverage.is_some(), "leverage"),
+                (self.expiry_block.is_some(), "an expiry block"),
+                (self.fill_or_kill, "fill-or-kill"),
+                (self.immediate_or_cancel, "immediate-or-cancel"),
+                (
+                    self.post_only
+                        && matches!(self.r#type, RequestType::CancelDecreaseCollateralRequest),
+                    "clamp-to-maximum",
+                ),
+                (
+                    self.amount.is_some()
+                        && matches!(self.r#type, RequestType::CancelDecreaseCollateralRequest),
+                    "an amount",
+                ),
+            ] {
+                if set {
+                    return Err(OrderRequestBuilderError::NotApplicable(self.r#type, what));
+                }
+            }
+        }
 
         // The order a cancel or a change names, which supplies whatever the
         // caller did not
@@ -808,7 +1077,14 @@ impl OrderRequestBuilder {
                     if matches!(order.r#type(), OrderType::CloseLong | OrderType::CloseShort) {
                         return Err(OrderRequestBuilderError::CannotChangeCloseOrder(order_id));
                     }
-                    if self.price.is_none() && self.size.is_none() && self.expiry_block.is_none() {
+                    // A new client order ID is a change in its own right: the
+                    // exchange stores it and reports the order's own price,
+                    // size and expiry back, without touching its queue place
+                    if self.price.is_none()
+                        && self.size.is_none()
+                        && self.expiry_block.is_none()
+                        && new_client_order_id.is_none()
+                    {
                         return Err(OrderRequestBuilderError::NothingToChange(order_id));
                     }
                     // An expired order is past the block it was good to, so
@@ -819,32 +1095,59 @@ impl OrderRequestBuilder {
                         ));
                     }
                 }
+                // The exchange compares the ID the request names with the one
+                // the order stores and refuses a mismatch; where the snapshot
+                // knows the stored ID - from the order's own placement, or
+                // from the locks of a tracked account - the refusal can be
+                // had here. A request naming none is applied whatever the
+                // order stores, except a change giving an order its first ID,
+                // which the exchange applies only to an order that has none
+                if let Some(stored) = order.client_order_id()
+                    && (client_order_id.is_some_and(|expected| expected != stored)
+                        || (client_order_id.is_none() && new_client_order_id.is_some()))
+                {
+                    return Err(OrderRequestBuilderError::ClientOrderIdMismatch {
+                        order_id,
+                        expected: client_order_id,
+                        stored,
+                    });
+                }
                 Some(order)
             },
             _ => None,
         };
 
-        // Unreachable through the constructors, each of which supplies what
-        // its request type needs - but a missing price is not something to
-        // resolve to zero and let the contract puzzle over
-        let price = self
-            .price
-            .or_else(|| resting.map(|order| order.price()))
-            .ok_or(OrderRequestBuilderError::MissingField(self.r#type, "a price"))?;
-        let size = self
-            .size
-            .or_else(|| resting.map(|order| order.size()))
-            .ok_or(OrderRequestBuilderError::MissingField(self.r#type, "a size"))?;
-        let price = quantize(price, perp.price_converter(), OrderField::Price)?;
-        let size = quantize(size, perp.size_converter(), OrderField::Size)?;
-        let leverage = match self.leverage {
-            Some(leverage) => quantize(leverage, perp.leverage_converter(), OrderField::Leverage)?,
-            // A cancel or a change describes an order that already carries
-            // one. Anything else takes the perpetual's maximum, since zero is
-            // the exchange's "use the maximum" sentinel and worth spelling out
-            None => resting
-                .map(|order| order.leverage())
-                .unwrap_or_else(|| perp.initial_margin()),
+        // The collateral operations describe no order, so every order field
+        // is the zero the exchange expects there - the checks above refused
+        // anything else. Otherwise a missing price is not something to resolve
+        // to zero and let the contract puzzle over: unreachable through the
+        // constructors, each of which supplies what its request type needs
+        let (price, size, leverage) = if self.r#type.is_decrease_collateral_request() {
+            (UD64::ZERO, UD64::ZERO, UD64::ZERO)
+        } else {
+            let price = self
+                .price
+                .or_else(|| resting.map(|order| order.price()))
+                .ok_or(OrderRequestBuilderError::MissingField(self.r#type, "a price"))?;
+            let size = self
+                .size
+                .or_else(|| resting.map(|order| order.size()))
+                .ok_or(OrderRequestBuilderError::MissingField(self.r#type, "a size"))?;
+            let price = quantize(price, perp.price_converter(), OrderField::Price)?;
+            let size = quantize(size, perp.size_converter(), OrderField::Size)?;
+            let leverage = match self.leverage {
+                Some(leverage) => {
+                    quantize(leverage, perp.leverage_converter(), OrderField::Leverage)?
+                },
+                // A cancel or a change describes an order that already carries
+                // one. Anything else takes the perpetual's maximum, since zero
+                // is the exchange's "use the maximum" sentinel and worth
+                // spelling out
+                None => resting
+                    .map(|order| order.leverage())
+                    .unwrap_or_else(|| perp.initial_margin()),
+            };
+            (price, size, leverage)
         };
         // A cancel only takes an order off the book, so the perpetual's current
         // cap is not its business - it was met when the order went on
@@ -885,6 +1188,8 @@ impl OrderRequestBuilder {
             builder: self
                 .builder
                 .or_else(|| resting.and_then(|order| order.builder())),
+            client_order_id,
+            new_client_order_id,
         })
     }
 }
@@ -1053,7 +1358,7 @@ mod tests {
     fn rejects_max_matches_the_exchange_would_substitute_its_own_for() {
         // The contract does not revert on either bound - it swaps in
         // C._MAX_MATCHES - so an order that asked to walk one resting order
-        // would quietly walk a thousand
+        // would quietly walk 125
         for requested in [0, MAX_MATCHES + 1] {
             let err = builder()
                 .max_matches(requested)
@@ -1238,6 +1543,229 @@ mod tests {
             v1.input.input().expect("calldata")[..4],
             dex::Exchange::execOrdersCall::SELECTOR,
         );
+    }
+
+    fn coid(id: u32) -> ClientOrderId { ClientOrderId::new(id).expect("non-zero client order id") }
+
+    /// A client order ID calls for a version-2 envelope, which a contract
+    /// before v1.1.7.6 skips the order for - so the builder leaves it out
+    /// until the upgrade, letting a client name IDs ahead of it, while an
+    /// explicitly built request is refused up front.
+    #[test]
+    fn client_order_ids_wait_for_the_contract_that_stores_them() {
+        let legacy = exchange_with(
+            btc().with_ask(dec("101000"), dec("0.5")),
+            ContractFeatures::of(ContractVersion::PPM_FEE_UNIT),
+            false,
+        );
+        let placed = builder()
+            .client_order_id(coid(1))
+            .build(&legacy)
+            .expect("built without the ID");
+        assert_eq!(placed.client_order_id(), None);
+        assert!(placed.order_extension().is_empty());
+        let cancel = OrderRequest::cancel(PERP_ID, oid(1))
+            .client_order_id(coid(1))
+            .build(&legacy)
+            .expect("built unchecked, as every cancel was");
+        assert_eq!(cancel.client_order_id(), None);
+        // A change that would only give the order an ID has nothing left to do
+        assert!(matches!(
+            OrderRequest::change(PERP_ID, oid(1))
+                .new_client_order_id(coid(2))
+                .build(&legacy),
+            Err(OrderRequestBuilderError::NothingToChange(_))
+        ));
+        let moved = OrderRequest::change(PERP_ID, oid(1))
+            .price(dec("102000"))
+            .new_client_order_id(coid(2))
+            .build(&legacy)
+            .expect("the price change goes through");
+        assert_eq!(moved.new_client_order_id(), None);
+
+        // ...and a request built against the current contract is refused on
+        // the way to the wire against the older one, which `prepare_v2` is
+        // the last guard before
+        let request = builder()
+            .client_order_id(coid(1))
+            .build(&exchange())
+            .expect("the current contract stores IDs");
+        assert!(matches!(
+            request.prepare_v2(&legacy),
+            Err(OrderRequestBuilderError::UnsupportedByContract("client order ids", _))
+        ));
+        assert!(matches!(
+            request.call(&legacy, offline_provider()),
+            Err(OrderRequestBuilderError::UnsupportedByContract("client order ids", _))
+        ));
+        // ...while one naming no ID still goes through V2 there, with an empty
+        // envelope
+        let (_, extension) = builder()
+            .build(&legacy)
+            .unwrap()
+            .prepare_v2(&legacy)
+            .unwrap();
+        assert!(extension.is_empty());
+    }
+
+    /// Named IDs travel in the version-2 envelope through the V2 entrypoint,
+    /// and a new ID is accepted on a change alone.
+    #[test]
+    fn client_order_ids_reach_the_envelope() {
+        let request = builder()
+            .client_order_id(coid(0xA001))
+            .build(&exchange())
+            .expect("a valid order");
+        assert_eq!(request.client_order_id(), Some(coid(0xA001)));
+        let (_, extension) = request.prepare_v2(&exchange()).unwrap();
+        let decoded = OrderExtension::decode(&extension).unwrap();
+        assert_eq!(decoded.client_order_id(), Some(coid(0xA001)));
+        assert_eq!(decoded.new_client_order_id(), None);
+        assert_eq!(decoded.builder(), None);
+
+        let tx = request
+            .call(&exchange(), offline_provider())
+            .expect("a call")
+            .into_transaction_request();
+        assert_eq!(
+            tx.input.input().expect("calldata")[..4],
+            dex::Exchange::execOrdersV2Call::SELECTOR,
+        );
+
+        // A new ID means nothing anywhere but on a change
+        assert!(matches!(
+            builder().new_client_order_id(coid(2)).build(&exchange()),
+            Err(OrderRequestBuilderError::NotApplicable(RequestType::OpenLong, _))
+        ));
+        let change = OrderRequest::change(PERP_ID, oid(1))
+            .client_order_id(coid(1))
+            .new_client_order_id(coid(2))
+            .build(&with_resting_ask("101000", "0.5"))
+            .expect("a change giving a new ID alters something");
+        let (_, extension) = change.prepare_v2(&exchange()).unwrap();
+        let decoded = OrderExtension::decode(&extension).unwrap();
+        assert_eq!(
+            (decoded.client_order_id(), decoded.new_client_order_id()),
+            (Some(coid(1)), Some(coid(2)))
+        );
+    }
+
+    /// Where the snapshot knows the ID a resting order stores, a request the
+    /// exchange would refuse for a mismatch is refused here first.
+    #[test]
+    fn rejects_a_client_order_id_the_resting_order_does_not_carry() {
+        let exchange = exchange_with(
+            btc().with_ask_client_order_id(dec("101000"), dec("0.5"), coid(7)),
+            ContractFeatures::current(),
+            false,
+        );
+        assert!(matches!(
+            OrderRequest::cancel(PERP_ID, oid(1)).client_order_id(coid(8)).build(&exchange),
+            Err(OrderRequestBuilderError::ClientOrderIdMismatch { expected, stored, .. })
+                if expected == Some(coid(8)) && stored == coid(7)
+        ));
+        // A change giving a first ID applies only to an order without one
+        assert!(matches!(
+            OrderRequest::change(PERP_ID, oid(1))
+                .new_client_order_id(coid(8))
+                .build(&exchange),
+            Err(OrderRequestBuilderError::ClientOrderIdMismatch { expected: None, .. })
+        ));
+        // The right ID, or none at all, goes through
+        assert!(
+            OrderRequest::cancel(PERP_ID, oid(1))
+                .client_order_id(coid(7))
+                .build(&exchange)
+                .is_ok()
+        );
+        assert!(
+            OrderRequest::cancel(PERP_ID, oid(1))
+                .build(&exchange)
+                .is_ok()
+        );
+        // ...and an order whose ID the snapshot does not know is left to the
+        // exchange to judge
+        assert!(
+            OrderRequest::cancel(PERP_ID, oid(1))
+                .client_order_id(coid(8))
+                .build(&with_resting_ask("101000", "0.5"))
+                .is_ok()
+        );
+    }
+
+    /// The two decrease-collateral operations describe no order: every order
+    /// field is zero on the wire, the amount is the collateral, and the
+    /// clamp rides on `postOnly`.
+    #[test]
+    fn decrease_collateral_requests_carry_only_what_they_use() {
+        let request = OrderRequest::request_decrease_collateral(PERP_ID)
+            .amount(udec128!(100))
+            .clamp_to_maximum(true)
+            .build(&exchange())
+            .expect("a valid request");
+        assert_eq!(request.request_type(), RequestType::RequestDecreasePositionCollateral);
+        assert!(request.clamp_to_maximum());
+        assert_eq!(request.amount(), Some(udec128!(100)));
+        assert_eq!(request.leverage(), UD64::ZERO);
+        let (desc, extension) = request.prepare_v2(&exchange()).unwrap();
+        assert_eq!(desc.orderType, 7);
+        assert!(desc.postOnly);
+        assert_eq!(desc.amountCNS, U256::from(100_000_000));
+        assert_eq!(desc.pricePNS, U256::ZERO);
+        assert_eq!(desc.lotLNS, U256::ZERO);
+        assert_eq!(desc.leverageHdths, U256::ZERO);
+        assert!(extension.is_empty());
+
+        let cancel = OrderRequest::cancel_decrease_collateral_request(PERP_ID)
+            .build(&exchange())
+            .expect("a valid request");
+        assert!(!cancel.clamp_to_maximum());
+        assert_eq!(cancel.prepare(&exchange()).orderType, 8);
+
+        // What the exchange would ignore is refused rather than paid for
+        for (request, what) in [
+            (OrderRequest::request_decrease_collateral(PERP_ID).price(dec("1")), "a price"),
+            (
+                OrderRequest::request_decrease_collateral(PERP_ID).immediate_or_cancel(true),
+                "immediate-or-cancel",
+            ),
+            (
+                OrderRequest::request_decrease_collateral(PERP_ID).client_order_id(coid(1)),
+                "a client order ID",
+            ),
+            (
+                OrderRequest::cancel_decrease_collateral_request(PERP_ID).amount(udec128!(1)),
+                "an amount",
+            ),
+            (
+                OrderRequest::cancel_decrease_collateral_request(PERP_ID).clamp_to_maximum(true),
+                "clamp-to-maximum",
+            ),
+        ] {
+            assert!(
+                matches!(request.build(&exchange()), Err(OrderRequestBuilderError::NotApplicable(_, w)) if w == what),
+                "{what}",
+            );
+        }
+
+        // Out of the enum range of an earlier contract, which reverts the
+        // whole batch on them - so refused up front, on every path
+        let legacy =
+            exchange_with(btc(), ContractFeatures::of(ContractVersion::PPM_FEE_UNIT), false);
+        assert!(matches!(
+            OrderRequest::request_decrease_collateral(PERP_ID).build(&legacy),
+            Err(OrderRequestBuilderError::UnsupportedByContract(
+                "decrease-collateral request orders",
+                _
+            ))
+        ));
+        assert!(matches!(
+            cancel.call(&legacy, offline_provider()),
+            Err(OrderRequestBuilderError::UnsupportedByContract(
+                "decrease-collateral request orders",
+                _
+            ))
+        ));
     }
 
     /// The BTC perpetual with one resting ask of `size` at `price`, which is

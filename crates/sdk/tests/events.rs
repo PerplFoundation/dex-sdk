@@ -139,11 +139,14 @@ async fn test_snapshot_and_events() {
                     perpetual_id: 16,
                     account_id: 1,
                     request_id: Some(10),
-                    client_order_id: Some(1), // Original request ID
+                    placed_request_id: Some(1), // Original request ID
+                    client_order_id: None,      // Placed through V1, which names none
                     order_id: Some(order_id),
                     builder: None,
-                    r#type: OrderEventType::Updated { price, size, expiry_block },
+                    sender: _,
+                    r#type: OrderEventType::Updated { price, size, expiry_block, client_order_id },
                 }) if *order_id == oid(1) => {
+                    assert_eq!(*client_order_id, None);
                     assert_eq!(*price, Some(udec64!(100100)));
                     assert_eq!(*size, Some(udec64!(1)));
                     assert_eq!(*expiry_block, None);
@@ -152,9 +155,11 @@ async fn test_snapshot_and_events() {
                     perpetual_id: 16,
                     account_id: 1,
                     request_id: Some(11),
-                    client_order_id: Some(11),
+                    placed_request_id: Some(11),
+                    client_order_id: None,
                     order_id: Some(order_id),
                     builder: None,
+                    sender: _,
                     r#type:
                         OrderEventType::Filled { fill_price, fill_size, fee, builder_fee, is_maker },
                 }) if *order_id == oid(1) => {
@@ -172,6 +177,7 @@ async fn test_snapshot_and_events() {
                     ..
                 }) => {
                     let maker_fill = maker_fills.first().expect("maker fill exists");
+                    assert_eq!(maker_fill.maker_placed_request_id, None);
                     assert_eq!(maker_fill.maker_client_order_id, None);
                     snapshot_maker_fill_seen = true;
                 },

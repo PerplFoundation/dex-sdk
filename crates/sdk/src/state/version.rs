@@ -48,6 +48,21 @@ impl ContractVersion {
     /// so they share the threshold.
     pub const PPM_FEE_UNIT: Self = Self { major: 1, minor: 7, patch: 5 };
 
+    /// First version storing a client order ID with every resting order,
+    /// carried by version 2 of the order-extension envelope and checked by a
+    /// cancel or change that names one (`ClientOrderIdMismatch`); opening
+    /// every order with `OrderRequestV3`, which adds the caller; accepting
+    /// the decrease-collateral request and its cancellation as order types
+    /// (`RequestDecreasePositionCollateral` /
+    /// `CancelDecreaseCollateralRequest`, out of the enum range of every
+    /// earlier contract, which reverts the WHOLE batch on them); keeping an
+    /// operating maintenance margin fraction per perpetual; and capping an
+    /// account at 150 resting orders per perpetual.
+    ///
+    /// Shipped together and gated together: `OrderDescEnum` gained its two
+    /// members in the release that taught the envelope decoder version 2.
+    pub const CLIENT_ORDER_IDS: Self = Self { major: 1, minor: 7, patch: 6 };
+
     pub const fn new(major: u64, minor: u64, patch: u64) -> Self { Self { major, minor, patch } }
 
     pub const fn major(&self) -> u64 { self.major }
@@ -76,6 +91,9 @@ pub struct ContractFeatures {
     builder_attribution: bool,
     perpetual_discovery: bool,
     ppm_fee_unit: bool,
+    client_order_ids: bool,
+    decrease_collateral_orders: bool,
+    operating_maintenance_margin: bool,
 }
 
 impl ContractFeatures {
@@ -89,12 +107,16 @@ impl ContractFeatures {
             builder_attribution: true,
             perpetual_discovery: true,
             ppm_fee_unit: true,
+            client_order_ids: true,
+            decrease_collateral_orders: true,
+            operating_maintenance_margin: true,
         }
     }
 
     /// Feature set of a known contract version.
     pub fn of(version: ContractVersion) -> Self {
         let builder_codes = version >= ContractVersion::BUILDER_CODES;
+        let client_order_ids = version >= ContractVersion::CLIENT_ORDER_IDS;
         Self {
             version: Some(version),
             v2_state_getters: version >= ContractVersion::V2_GETTERS,
@@ -102,6 +124,9 @@ impl ContractFeatures {
             builder_attribution: builder_codes,
             perpetual_discovery: builder_codes,
             ppm_fee_unit: version >= ContractVersion::PPM_FEE_UNIT,
+            client_order_ids,
+            decrease_collateral_orders: client_order_ids,
+            operating_maintenance_margin: client_order_ids,
         }
     }
 
@@ -138,6 +163,35 @@ impl ContractFeatures {
     /// The per-order builder fee is NOT affected: it stays `Per100K` on the
     /// wire, in order storage and in every event at any version.
     pub fn ppm_fee_unit(&self) -> bool { self.ppm_fee_unit }
+
+    /// Client order IDs are available: version 2 of the order-extension
+    /// envelope is accepted, every resting order stores the ID it was placed
+    /// with (`getOrderLocksV2`), a cancel or change naming one is checked
+    /// against it (`ClientOrderIdMismatch`), and every order opens with
+    /// `OrderRequestV3`.
+    ///
+    /// To an earlier contract a version-2 envelope is an unknown version -
+    /// the order is skipped, or the single-order call reverts - so a request
+    /// naming an ID is refused by [`crate::types::OrderRequestBuilder::build`]
+    /// and [`crate::types::OrderRequest::prepare_v2`] until the upgrade is
+    /// observed.
+    pub fn client_order_ids(&self) -> bool { self.client_order_ids }
+
+    /// The decrease-collateral request and its cancellation are order types
+    /// ([`crate::types::RequestType::RequestDecreasePositionCollateral`] /
+    /// [`crate::types::RequestType::CancelDecreaseCollateralRequest`]).
+    ///
+    /// Out of the enum range of every earlier contract, where the ABI decoder
+    /// panics and the WHOLE call reverts - batches with `revertOnFail = false`
+    /// included - so a request of either type is refused until the upgrade
+    /// is observed, rather than let it take a batch down with it.
+    pub fn decrease_collateral_orders(&self) -> bool { self.decrease_collateral_orders }
+
+    /// Each perpetual keeps an operating maintenance margin fraction
+    /// (`getOperatingMaintMarginFraction`,
+    /// `OperatingMaintMarginFractionUpdated`) beside the contractual one -
+    /// see [`crate::state::Perpetual::operating_maintenance_margin`].
+    pub fn operating_maintenance_margin(&self) -> bool { self.operating_maintenance_margin }
 
     /// Converter for the fee-SCHEDULE rates this deployment reports, resolving
     /// the v1.1.7.5 redenomination.
@@ -181,6 +235,9 @@ impl ContractFeatures {
             builder_attribution: false,
             perpetual_discovery: false,
             ppm_fee_unit: false,
+            client_order_ids: false,
+            decrease_collateral_orders: false,
+            operating_maintenance_margin: false,
         };
         if let Some(perp_id) = probe_perpetual {
             features
@@ -235,5 +292,47 @@ impl std::fmt::Display for ContractFeatures {
                 if self.v2_state_getters { "V2 getters" } else { "V0 getters" },
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The v1.1.7.6 boundary decides whether a version-2 envelope is read and
+    /// whether the decrease-collateral order types may be sent. Unknown is
+    /// below it, like every other gate here.
+    #[test]
+    fn client_order_ids_threshold() {
+        for (version, want) in [
+            (ContractVersion::V2_GETTERS, false),
+            (ContractVersion::BUILDER_CODES, false),
+            (ContractVersion::PPM_FEE_UNIT, false), // the last release without them
+            (ContractVersion::CLIENT_ORDER_IDS, true), // exactly the threshold
+            (ContractVersion::new(8, 0, 0), true),
+        ] {
+            let features = ContractFeatures::of(version);
+            assert_eq!(features.client_order_ids(), want, "{version}");
+            assert_eq!(features.decrease_collateral_orders(), want, "{version}");
+            assert_eq!(features.operating_maintenance_margin(), want, "{version}");
+            // Nothing below the threshold moved
+            assert_eq!(features.ppm_fee_unit(), version >= ContractVersion::PPM_FEE_UNIT);
+            assert_eq!(features.builder_attribution(), version >= ContractVersion::BUILDER_CODES);
+        }
+        assert!(ContractFeatures::current().client_order_ids());
+    }
+
+    /// The signal is followed in both directions: a rollback below the
+    /// threshold withdraws the features, as the forwarder would otherwise
+    /// send what the rolled-back contract reverts on.
+    #[test]
+    fn version_observed_in_both_directions() {
+        let mut features = ContractFeatures::of(ContractVersion::PPM_FEE_UNIT);
+        features.observe_version(ContractVersion::CLIENT_ORDER_IDS);
+        assert!(features.client_order_ids());
+        features.observe_version(ContractVersion::PPM_FEE_UNIT);
+        assert!(!features.client_order_ids());
+        assert_eq!(features.version(), Some(ContractVersion::PPM_FEE_UNIT));
+        assert_eq!(ContractVersion::CLIENT_ORDER_IDS.to_string(), "v1.1.7.6");
     }
 }

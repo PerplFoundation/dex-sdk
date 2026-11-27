@@ -48,8 +48,20 @@ pub enum AccountAddressOrID {
 /// always non-zero.
 pub type OrderId = std::num::NonZeroU16;
 
-/// Order request ID.
+/// Order request ID (`OrderDesc.orderDescId`): the caller's correlation key
+/// for one request, echoed by every event the request produces.
 pub type RequestId = u64;
+
+/// Client order ID a sender attaches to an order it places, stored with the
+/// order on-chain and checked by a later cancel or change that names it
+/// (contract v1.1.7.6+). The exchange stores it as a `uint32` with zero
+/// meaning "no ID", hence the non-zero type.
+///
+/// Not to be confused with [`RequestId`]: a request ID identifies a
+/// *request*, this identifies the resting *order*, so that a cancel which
+/// arrives after the order's slot was reused by another order is refused
+/// rather than applied to the wrong one.
+pub type ClientOrderId = std::num::NonZeroU32;
 
 /// Order ID of a request, `None` for trigger order requests - their order IDs
 /// might exceed `u16::MAX` and they are not supported by the SDK yet.

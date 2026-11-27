@@ -14,11 +14,15 @@ pub struct MakerFill {
     /// Maker order ID.
     pub maker_order_id: super::OrderId,
 
-    /// Maker client order ID, if known.
+    /// ID of the request that placed the maker order, if known.
     ///
     /// Available only when the order placement was observed in processed
     /// events, not for orders loaded from the initial snapshot.
-    pub maker_client_order_id: Option<super::RequestId>,
+    pub maker_placed_request_id: Option<super::RequestId>,
+
+    /// Client order ID the exchange stores with the maker order (contract
+    /// v1.1.7.6+), if known - see [`crate::state::Order::client_order_id`].
+    pub maker_client_order_id: Option<super::ClientOrderId>,
 
     /// Fill price (normalized decimal).
     #[debug("{price}")]

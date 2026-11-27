@@ -184,8 +184,31 @@ fn describe(fault: OrderRequestBuilderError, exchange: &Exchange) -> anyhow::Err
             )
         },
         OrderRequestBuilderError::NothingToChange(order_id) => anyhow::anyhow!(
-            "nothing to change about order {}: pass `--price`, `--size` or `--expiry-block`",
+            "nothing to change about order {}: pass `--price`, `--size`, `--expiry-block` or \
+             `--new-client-order-id`",
             order_id,
+        ),
+        OrderRequestBuilderError::ClientOrderIdMismatch { order_id, expected, stored } => {
+            match expected {
+                Some(expected) => anyhow::anyhow!(
+                    "order {} carries client order ID {}, not {}; the exchange would refuse the \
+                     request, so is it still the order you mean?",
+                    order_id,
+                    stored,
+                    expected,
+                ),
+                None => anyhow::anyhow!(
+                    "order {} already carries client order ID {}: pass it as `--client-order-id` \
+                     to replace it",
+                    order_id,
+                    stored,
+                ),
+            }
+        },
+        OrderRequestBuilderError::UnsupportedByContract(what, features) => anyhow::anyhow!(
+            "the deployed exchange contract ({}) does not support {}",
+            features,
+            what,
         ),
         OrderRequestBuilderError::ChangeExpiredOrderNeedsNewExpiry(_) => {
             anyhow::anyhow!("{}, pass `--expiry-block`", fault)
@@ -239,8 +262,22 @@ fn print_summary(
                     amendment_of(resting.map(Order::expiry_block), expiry),
                 );
             }
+            if let Some(new_id) = request.new_client_order_id() {
+                println!(
+                    "  New client ID   {}",
+                    match resting.and_then(Order::client_order_id) {
+                        Some(from) => format!("{from} -> {new_id}"),
+                        None => new_id.to_string(),
+                    },
+                );
+            }
         },
         _ => print_order(perp, request),
+    }
+    // The ID a cancel or change expects the order to carry, or the one an order
+    // is placed with
+    if let Some(client_order_id) = request.client_order_id() {
+        println!("  Client order ID {}", client_order_id);
     }
 
     // A deadline on the request rather than on the order, so it reads the same
@@ -249,9 +286,9 @@ fn print_summary(
         println!("  Not after       block {}", block);
     }
 
-    // The request is the authority on the client order ID, which it defaulted
-    // from the clock where none was given
-    println!("  Client order ID {}", request.request_id());
+    // The request is the authority on the request ID, which it defaulted from
+    // the clock where none was given
+    println!("  Request ID      {}", request.request_id());
     if !matches!(request.request_type(), RequestType::Cancel) && perp.is_mark_price_obsolete() {
         println!(
             "  {}",

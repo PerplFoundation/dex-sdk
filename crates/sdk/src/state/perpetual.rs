@@ -55,6 +55,8 @@ pub struct Perpetual {
     initial_margin: UD64, // SC allocates 16 bits
     #[debug("{maintenance_margin}")]
     maintenance_margin: UD64, // SC allocates 16 bits
+    #[debug("{:?}", operating_maintenance_margin.map(|v| format!("{v}")))]
+    operating_maintenance_margin: Option<UD64>, // SC allocates 16 bits, 0 = unset
 
     #[debug("{last_price}")]
     last_price: UD64, // SC allocates 32 bits
@@ -99,6 +101,7 @@ impl Perpetual {
         fee_schedule: FeeSchedule,
         initial_margin: U256,
         maintenance_margin: U256,
+        operating_maintenance_margin: U256,
     ) -> Self {
         let price_converter = num::Converter::new(info.priceDecimals.to());
         let size_converter = num::Converter::new(info.lotDecimals.to());
@@ -131,6 +134,10 @@ impl Perpetual {
             initial_margin: leverage_converter.from_unsigned(initial_margin),
             // Margins are in hundredths
             maintenance_margin: leverage_converter.from_unsigned(maintenance_margin),
+            // Zero is the contract's "unset", also what every contract before
+            // v1.1.7.6 reads as
+            operating_maintenance_margin: (!operating_maintenance_margin.is_zero())
+                .then(|| leverage_converter.from_unsigned(operating_maintenance_margin)),
 
             last_price: price_converter.from_unsigned(info.lastPNS),
             last_price_block: None,
@@ -204,6 +211,8 @@ impl Perpetual {
             initial_margin: leverage_converter.from_unsigned(initial_margin),
             // Margins are in hundredths
             maintenance_margin: leverage_converter.from_unsigned(maintenance_margin),
+            // Unset at listing; set separately by the owner
+            operating_maintenance_margin: None,
 
             last_price: UD64::ZERO,
             last_price_block: None,
@@ -306,8 +315,36 @@ impl Perpetual {
     /// Minimal initial margin fraction required to open a position.
     pub fn initial_margin(&self) -> UD64 { self.initial_margin }
 
-    /// Minimal maintenance margin fraction required to keep a position.
+    /// Contractual maintenance margin fraction: the one the contract itself
+    /// liquidates a position below (`CantLiquidatePosAboveMMR` refuses any
+    /// attempt above it). Expressed, like [`Self::initial_margin`], as the
+    /// leverage the position's notional is divided by to get its requirement.
     pub fn maintenance_margin(&self) -> UD64 { self.maintenance_margin }
+
+    /// Operating maintenance margin fraction (contract v1.1.7.6+): the one the
+    /// exchange's liquidation bot *operates* at, in the same unit as
+    /// [`Self::maintenance_margin`]. Set by the owner at or above the
+    /// contractual fraction - a higher leverage figure, so a smaller
+    /// requirement and a liquidation price further from entry - to give
+    /// positions a larger buffer than the contract's own floor, and raised
+    /// along with the contractual one so it never falls below it. `None` where
+    /// unset, or on an earlier contract.
+    ///
+    /// Read by no trading path on-chain: it is published for the liquidation
+    /// bot and indexers. Since it is what positions are in practice held to,
+    /// every position's [`super::Position::maintenance_margin_requirement`]
+    /// and [`super::Position::liquidation_price`] here follow
+    /// [`Self::effective_maintenance_margin`].
+    pub fn operating_maintenance_margin(&self) -> Option<UD64> { self.operating_maintenance_margin }
+
+    /// [`Self::operating_maintenance_margin`] where set, otherwise the
+    /// contractual [`Self::maintenance_margin`]: the fraction a position is
+    /// in practice liquidated below, and the one its requirement is derived
+    /// from.
+    pub fn effective_maintenance_margin(&self) -> UD64 {
+        self.operating_maintenance_margin
+            .unwrap_or(self.maintenance_margin)
+    }
 
     /// The price last trade was executed at.
     pub fn last_price(&self) -> UD64 { self.last_price }
@@ -598,6 +635,15 @@ impl Perpetual {
         self.instant = instant;
     }
 
+    pub(crate) fn update_operating_maintenance_margin(
+        &mut self,
+        instant: types::StateInstant,
+        operating_maintenance_margin: Option<UD64>,
+    ) {
+        self.operating_maintenance_margin = operating_maintenance_margin;
+        self.instant = instant;
+    }
+
     pub(crate) fn update_last_price(&mut self, instant: types::StateInstant, last_price: UD64) {
         self.last_price = last_price;
         self.last_price_block = Some(instant.block_number());
@@ -710,6 +756,7 @@ impl Perpetual {
             fee_schedule: FeeSchedule::flat(FeeScheduleKey::Default, UD64::ZERO, UD64::ZERO),
             initial_margin: UD64::ZERO,
             maintenance_margin: UD64::ZERO,
+            operating_maintenance_margin: None,
             last_price: UD64::ZERO,
             last_price_block: None,
             last_price_timestamp: 0,
@@ -807,6 +854,25 @@ impl Perpetual {
             .expect("failed to add ask order");
         self
     }
+
+    /// As [`Self::with_ask`], the order storing `client_order_id` (contract
+    /// v1.1.7.6+).
+    pub fn with_ask_client_order_id(
+        mut self,
+        price: UD64,
+        size: UD64,
+        client_order_id: types::ClientOrderId,
+    ) -> Self {
+        use std::num::NonZeroU16;
+        let order_id =
+            NonZeroU16::new((self.l3_book.total_orders() + 1) as u16).expect("order id overflow");
+        let order = Order::for_l3_testing(types::OrderType::OpenShort, price, size, 0, order_id, 0)
+            .with_client_order_id(client_order_id);
+        self.l3_book
+            .add_order(&order)
+            .expect("failed to add ask order");
+        self
+    }
 }
 
 #[cfg(feature = "display")]
@@ -890,7 +956,16 @@ impl std::fmt::Display for Perpetual {
                     self.fee_schedule.base_maker_fee(),
                     self.fee_schedule.key(),
                 ),
-                format!("Margin: {} / {} (ini/mnt)", self.initial_margin, self.maintenance_margin),
+                match self.operating_maintenance_margin {
+                    Some(operating) => format!(
+                        "Margin: {} / {} / {} (ini/mnt/opr)",
+                        self.initial_margin, self.maintenance_margin, operating,
+                    ),
+                    None => format!(
+                        "Margin: {} / {} (ini/mnt)",
+                        self.initial_margin, self.maintenance_margin
+                    ),
+                },
                 format!("Price Max Age: {}", self.price_max_age_sec),
                 format!("Funding Start: {}", self.funding_start_block),
             ],

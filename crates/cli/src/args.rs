@@ -184,8 +184,8 @@ pub struct CreateOrderArgs {
     #[arg(long, default_value_t = false)]
     pub fok: bool,
 
-    /// Maximum resting orders this order may match against, from 1 to 1000
-    /// [default: 1000, which is what the exchange walks for an order that
+    /// Maximum resting orders this order may match against, from 1 to 125
+    /// [default: 125, which is what the exchange walks for an order that
     /// names none]
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=types::MAX_MATCHES as i64))]
     pub max_matches: Option<u32>,
@@ -208,6 +208,13 @@ pub struct CreateOrderArgs {
     /// fraction of the traded amount, eg. `0.0001` for 1bp
     #[arg(long, requires = "builder_id", value_name = "DECIMAL", value_parser = decimal)]
     pub builder_fee: Option<UD64>,
+
+    /// Client order ID to store with the order, 1 to 4294967295, which a
+    /// later cancel or change can name to be sure of reaching this order and
+    /// not whatever took its slot. Left out until the contract stores them
+    /// (v1.1.7.6+)
+    #[arg(long, value_name = "ID")]
+    pub client_order_id: Option<types::ClientOrderId>,
 
     #[command(flatten)]
     pub tx: OrderTxArgs,
@@ -234,6 +241,7 @@ impl CreateOrderArgs {
             .immediate_or_cancel(self.ioc)
             .fill_or_kill(self.fok)
             .builder_attribution(self.builder())
+            .client_order_id(self.client_order_id)
     }
 
     /// Builder attribution of the order, `None` when unattributed. Both parts
@@ -255,6 +263,12 @@ pub struct CancelOrderArgs {
     #[arg(long, value_name = "ID")]
     pub order_id: types::OrderId,
 
+    /// Client order ID the order is expected to carry: the exchange refuses
+    /// the cancel if the slot holds an order with another, or with none. Left
+    /// out until the contract stores them (v1.1.7.6+)
+    #[arg(long, value_name = "ID")]
+    pub client_order_id: Option<types::ClientOrderId>,
+
     #[command(flatten)]
     pub tx: OrderTxArgs,
 }
@@ -264,6 +278,7 @@ impl CancelOrderArgs {
     /// `--perp`.
     pub fn to_builder(&self, perp_id: types::PerpetualId) -> types::OrderRequestBuilder {
         types::OrderRequest::cancel(perp_id, self.order_id)
+            .client_order_id(self.client_order_id)
             .last_exec_block(self.tx.last_exec_block)
             .request_id(self.tx.request_id)
     }
@@ -294,6 +309,19 @@ pub struct ChangeOrderArgs {
     #[arg(long)]
     pub expiry_block: Option<u64>,
 
+    /// Client order ID the order is expected to carry: the exchange refuses
+    /// the change if the slot holds an order with another. Left out until the
+    /// contract stores them (v1.1.7.6+)
+    #[arg(long, value_name = "ID")]
+    pub client_order_id: Option<types::ClientOrderId>,
+
+    /// Client order ID the order carries from now on [default: keep the one
+    /// it has]. On its own, a change that amends nothing else; without
+    /// `--client-order-id` it applies only to an order that has none
+    /// (v1.1.7.6+)
+    #[arg(long, value_name = "ID")]
+    pub new_client_order_id: Option<types::ClientOrderId>,
+
     #[command(flatten)]
     pub tx: OrderTxArgs,
 }
@@ -311,6 +339,8 @@ impl ChangeOrderArgs {
             .price(self.price)
             .size(self.size)
             .expiry_block(self.expiry_block)
+            .client_order_id(self.client_order_id)
+            .new_client_order_id(self.new_client_order_id)
             .last_exec_block(self.tx.last_exec_block)
             .request_id(self.tx.request_id)
     }
@@ -320,8 +350,8 @@ impl ChangeOrderArgs {
 /// to say what should happen before it is.
 #[derive(clap::Args, Debug)]
 pub struct OrderTxArgs {
-    /// Client order ID to tag the request with. The exchange takes it as an
-    /// idempotency key and wants it strictly increasing per account [default:
+    /// Request ID to tag the request with, echoed by every event it produces.
+    /// Not the `--client-order-id` the exchange stores with an order [default:
     /// derived from the current time]
     #[arg(long)]
     pub request_id: Option<u64>,

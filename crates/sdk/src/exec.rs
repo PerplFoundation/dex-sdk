@@ -22,20 +22,27 @@ use crate::{abi::dex, state, types};
 /// rather than letting the exchange skip it and emit an error event.
 ///
 /// Picks the entrypoint the deployed contract supports: `execOrdersV2` carries
-/// the builder-attribution envelopes, and the V1 `execOrders` has nothing to
-/// put them in, so a contract without V2 support cannot honour an attributed
-/// order at all - which is the error [`types::OrderRequest::prepare_v2`]
-/// returns.
+/// the order-extension envelopes - builder attribution and client order IDs -
+/// and the V1 `execOrders` has nothing to put them in, so a contract without
+/// V2 support cannot honour a request carrying either at all. That, and a
+/// request type the contract has no branch for, is the error
+/// [`types::OrderRequest::check_supported`] returns.
 pub fn orders_call<P: Provider>(
     exchange: &state::Exchange,
     provider: P,
     requests: &[types::OrderRequest],
     revert_on_fail: bool,
 ) -> Result<RawCallBuilder<P>, types::OrderRequestBuilderError> {
-    let attributed = requests
+    // Checked on both paths: the V1 one cannot fail on its own, and a
+    // decrease-collateral request type sent to a contract without it reverts
+    // the whole batch rather than the one order
+    for request in requests {
+        request.check_supported(exchange.features())?;
+    }
+    let with_envelope = requests
         .iter()
-        .any(|request| request.builder_attribution().is_some());
-    let input = if attributed || exchange.features().builder_attribution() {
+        .any(|request| !request.order_extension().is_empty());
+    let input = if with_envelope || exchange.features().builder_attribution() {
         let mut order_descs = Vec::with_capacity(requests.len());
         let mut extensions = Vec::with_capacity(requests.len());
         for request in requests {

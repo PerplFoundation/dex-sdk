@@ -19,7 +19,11 @@
 //!   known, and this is the one place that ordering is exercised end to end;
 //! - afterwards the same stream carries `OrderRequestV2` and the V2 fills,
 //!   builder attribution works, and fills are charged at the redenominated (and
-//!   halved) rates.
+//!   halved) rates;
+//! - the v1.1.7.6 transaction migrates nothing and only stamps the version, so
+//!   a request naming a client order ID - refused by the SDK until then, as the
+//!   contract would skip it - is accepted from the next block, every order
+//!   opens with `OrderRequestV3`, and the ID reaches both sides of a fill.
 
 use std::time::Duration;
 
@@ -29,7 +33,7 @@ use perpl_sdk::{
     state::{self, SnapshotBuilder},
     testing,
     types::{
-        self, BuilderAttribution,
+        self, BuilderAttribution, ClientOrderId, OrderRequestBuilderError,
         RequestType::{OpenLong, OpenShort},
     },
 };
@@ -39,6 +43,7 @@ use perpl_sdk::{
 struct RawEventCounts {
     order_request_v1: usize,
     order_request_v2: usize,
+    order_request_v3: usize,
     maker_filled_v1: usize,
     maker_filled_v2: usize,
     contract_added_v1: usize,
@@ -52,6 +57,7 @@ impl RawEventCounts {
     fn is_complete(&self) -> bool {
         self.order_request_v1 > 0
             && self.order_request_v2 > 0
+            && self.order_request_v3 > 0
             && self.maker_filled_v1 > 0
             && self.maker_filled_v2 > 0
             && self.contract_added_v1 > 0
@@ -115,10 +121,16 @@ const MAKER_FEES_PPM: [UD64; state::FEE_TIERS] = [
 const BUILDER: types::BuilderId = 11;
 const BUILDER_FEE: UD64 = udec64!(0.001);
 
+/// Client order IDs named once the contract can store them.
+const MAKER_ID: u32 = 0xA001;
+const TAKER_ID: u32 = 0xA002;
+
+fn coid(id: u32) -> ClientOrderId { ClientOrderId::new(id).expect("non-zero client order id") }
+
 #[tokio::test]
 async fn test_contract_upgrade_mid_stream() {
-    // ── the previous contract generation ────────────────────────────────────
-    let exchange = testing::TestExchange::new_at_previous_version().await;
+    // ── the oldest contract generation ──────────────────────────────────────
+    let exchange = testing::TestExchange::new_at(testing::Generation::V1173).await;
     let maker = exchange.account(0, 1_000_000).await;
     let taker = exchange.account(1, 100_000).await;
     // The old generation carries fees per contract, set through setters this
@@ -208,7 +220,7 @@ async fn test_contract_upgrade_mid_stream() {
         .with_legacy_fees(udec64!(0.0005), udec64!(0.0002))
         .await;
 
-    // ── the upgrades ────────────────────────────────────────────────────────
+    // ── the fee upgrades ────────────────────────────────────────────────────
     //
     // Two transactions, as mainnet took them. Nothing trades in between: the
     // implementation is already v1.1.7.5 after the first, so until the migration
@@ -256,6 +268,86 @@ async fn test_contract_upgrade_mid_stream() {
         .await
         .unwrap();
 
+    // ── the v1.1.7.6 upgrade ────────────────────────────────────────────────
+    //
+    // Wait for the stream to observe the fee upgrades first - without draining
+    // the state events the checks below the upgrade are after - as what is
+    // refused here is refused on the strength of the version observed so far
+    let caught_up = async {
+        while state.snapshot().contract_version() != Some(state::ContractVersion::PPM_FEE_UNIT) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(30), caught_up)
+        .await
+        .expect("the fee upgrades reach the stream");
+    {
+        let snapshot = state.snapshot().clone();
+        assert!(!snapshot.features().client_order_ids());
+        assert!(!snapshot.features().decrease_collateral_orders());
+
+        // A version-2 envelope is an unknown version to this contract, which
+        // would skip the order, and the decrease-collateral order types are
+        // out of its enum range, which would revert the whole batch - so
+        // neither is let through
+        let refused = order(30, btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
+            .with_client_order_id(coid(MAKER_ID))
+            .prepare_v2(&snapshot);
+        assert!(
+            matches!(
+                refused,
+                Err(OrderRequestBuilderError::UnsupportedByContract("client order ids", _))
+            ),
+            "{refused:?}",
+        );
+        assert!(matches!(
+            types::OrderRequest::request_decrease_collateral(btc_perp.id).build(&snapshot),
+            Err(OrderRequestBuilderError::UnsupportedByContract(
+                "decrease-collateral request orders",
+                _
+            )),
+        ));
+        // ...while the builder leaves an ID out rather than refuse it, so a
+        // client can name IDs before the upgrade and have them carried after
+        let early =
+            types::OrderRequest::builder(btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
+                .client_order_id(coid(MAKER_ID))
+                .build(&snapshot)
+                .expect("built without the ID");
+        assert_eq!(early.client_order_id(), None);
+        // ...and a builder-only envelope still goes through: version 1, which
+        // this contract knows
+        order(30, btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
+            .with_builder_attribution(builder)
+            .prepare_v2(&snapshot)
+            .expect("a version-1 envelope");
+    }
+
+    exchange.upgrade_client_order_ids().await;
+
+    // Trade with client order IDs, which the upgraded contract stores and checks
+    _ = btc_perp
+        .order_v2(
+            maker.id,
+            order(30, btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
+                .with_builder_attribution(builder)
+                .with_client_order_id(coid(MAKER_ID)),
+        )
+        .await
+        .get_receipt()
+        .await
+        .unwrap();
+    _ = btc_perp
+        .order_v2(
+            taker.id,
+            order(31, btc_perp.id, OpenLong, udec64!(100000), udec64!(0.1))
+                .with_client_order_id(coid(TAKER_ID)),
+        )
+        .await
+        .get_receipt()
+        .await
+        .unwrap();
+
     // ── what the stream carried across the boundary ─────────────────────────
     let mut v1_fill_seen = false;
     let mut version_seen = false;
@@ -267,6 +359,8 @@ async fn test_contract_upgrade_mid_stream() {
     let mut v2_fill_seen = false;
     let mut new_perp_fill_seen = false;
     let mut legacy_fee_seen = false;
+    let mut v3_placed_seen = false;
+    let mut v3_fill_seen = false;
     // Listings, each tagged with whether the upgrade had already been observed -
     // `ContractVersionSet` is the last log of the upgrade transaction, so it
     // separates the two listing generations exactly
@@ -383,6 +477,37 @@ async fn test_contract_upgrade_mid_stream() {
                     assert_eq!(*fee, udec64!(3.45));
                     v2_fill_seen = true;
                 },
+                // After the v1.1.7.6 upgrade: the ID the maker named is stored
+                // with its order, and reaches the fill from both sides
+                state::StateEvents::Order(state::OrderEvent {
+                    request_id: Some(30),
+                    placed_request_id: Some(30),
+                    client_order_id,
+                    builder,
+                    sender,
+                    r#type: state::OrderEventType::Placed { .. },
+                    ..
+                }) => {
+                    assert_eq!(*client_order_id, Some(coid(MAKER_ID)));
+                    assert_eq!(builder.map(|b| b.builder_id()), Some(BUILDER));
+                    assert_eq!(*sender, Some(maker.address), "OrderRequestV3 names the caller");
+                    v3_placed_seen = true;
+                },
+                state::StateEvents::Order(state::OrderEvent {
+                    request_id: Some(31),
+                    client_order_id,
+                    r#type: state::OrderEventType::Filled { is_maker, .. },
+                    ..
+                }) if !*is_maker => {
+                    assert_eq!(*client_order_id, Some(coid(TAKER_ID)));
+                    v3_fill_seen = true;
+                },
+                state::StateEvents::Trade(trade) if trade.taker_request_id == 31 => {
+                    let fill = trade.maker_fills.first().expect("maker fill");
+                    assert_eq!(fill.maker_client_order_id, Some(coid(MAKER_ID)));
+                    assert_eq!(fill.maker_placed_request_id, Some(30));
+                    assert_eq!(fill.builder.map(|b| b.builder_id()), Some(BUILDER));
+                },
                 state::StateEvents::Trade(trade) if trade.taker_request_id == 11 => {
                     let fill = trade.maker_fills.first().expect("maker fill");
                     assert_eq!(fill.builder.map(|b| b.builder_id()), Some(BUILDER));
@@ -398,7 +523,7 @@ async fn test_contract_upgrade_mid_stream() {
             }
         }
 
-        if state.request_id_seen(21) {
+        if state.request_id_seen(31) {
             break;
         }
     }
@@ -413,6 +538,7 @@ async fn test_contract_upgrade_mid_stream() {
             match event.event() {
                 ExchangeEvents::OrderRequest(_) => raw.order_request_v1 += 1,
                 ExchangeEvents::OrderRequestV2(_) => raw.order_request_v2 += 1,
+                ExchangeEvents::OrderRequestV3(_) => raw.order_request_v3 += 1,
                 ExchangeEvents::MakerOrderFilled(_) => raw.maker_filled_v1 += 1,
                 ExchangeEvents::MakerOrderFilledV2(_) => raw.maker_filled_v2 += 1,
                 ExchangeEvents::ContractVersionSet(_) => raw.version_set += 1,
@@ -428,8 +554,9 @@ async fn test_contract_upgrade_mid_stream() {
     assert!(raw.order_request_v1 > 0, "no V1 order request in the stream: {raw:?}");
     assert!(raw.maker_filled_v1 > 0, "no V1 maker fill in the stream: {raw:?}");
     assert_eq!(raw.contract_added_v1, 1, "one listing on the old generation: {raw:?}");
-    assert_eq!(raw.version_set, 2, "each upgrade stamps the version exactly once: {raw:?}");
+    assert_eq!(raw.version_set, 3, "each upgrade stamps the version exactly once: {raw:?}");
     assert!(raw.order_request_v2 > 0, "no V2 order request in the stream: {raw:?}");
+    assert!(raw.order_request_v3 > 0, "no V3 order request in the stream: {raw:?}");
     assert!(raw.maker_filled_v2 > 0, "no V2 maker fill in the stream: {raw:?}");
     assert_eq!(raw.contract_added_v2, 1, "one listing after the upgrade: {raw:?}");
 
@@ -437,8 +564,12 @@ async fn test_contract_upgrade_mid_stream() {
     assert!(version_seen, "ContractVersionSet not seen");
     assert_eq!(
         versions_seen,
-        vec![state::ContractVersion::BUILDER_CODES, state::ContractVersion::PPM_FEE_UNIT],
-        "both upgrades reported, in order",
+        vec![
+            state::ContractVersion::BUILDER_CODES,
+            state::ContractVersion::PPM_FEE_UNIT,
+            state::ContractVersion::CLIENT_ORDER_IDS,
+        ],
+        "every upgrade reported, in order",
     );
     assert!(default_schedule_seen, "default fee schedule seed not seen");
     assert!(migrated_schedule_seen, "redenominated fee schedule not seen");
@@ -446,6 +577,8 @@ async fn test_contract_upgrade_mid_stream() {
     assert!(v2_fill_seen, "post-upgrade V2 fill not seen");
     assert!(new_perp_fill_seen, "fill on the contract listed after the upgrade not seen");
     assert!(legacy_fee_seen, "deprecated per-contract fee update not seen");
+    assert!(v3_placed_seen, "post-v1.1.7.6 placement with a client order ID not seen");
+    assert!(v3_fill_seen, "post-v1.1.7.6 taker fill with a client order ID not seen");
 
     // Both listings were tracked, on the correct side of the upgrade
     assert_eq!(
@@ -473,11 +606,13 @@ async fn test_contract_upgrade_mid_stream() {
 
         // The version event is authoritative, so the features it implies are now
         // available to a caller that has been streaming since before the upgrade
-        assert_eq!(snapshot.contract_version(), Some(state::ContractVersion::PPM_FEE_UNIT));
+        assert_eq!(snapshot.contract_version(), Some(state::ContractVersion::CLIENT_ORDER_IDS));
         assert!(snapshot.features().keyed_fee_schedules());
         assert!(snapshot.features().builder_attribution());
         assert!(snapshot.features().perpetual_discovery());
         assert!(snapshot.features().ppm_fee_unit());
+        assert!(snapshot.features().client_order_ids());
+        assert!(snapshot.features().decrease_collateral_orders());
 
         // Tiered fees, on both the exchange and every contract - the two learned
         // from the initial snapshot, the one listed on the old generation, and the
@@ -520,6 +655,30 @@ async fn test_contract_upgrade_mid_stream() {
             .prepare_v2(&snapshot)
             .expect("upgraded contract carries builder attribution");
         assert_eq!(BuilderAttribution::decode(&extension).unwrap(), Some(builder));
+        // ...as does the one the v1.1.7.5 contract had to, now a version-2
+        // envelope
+        let (_, extension) = order(12, btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
+            .with_client_order_id(coid(MAKER_ID))
+            .prepare_v2(&snapshot)
+            .expect("upgraded contract carries client order ids");
+        assert_eq!(
+            types::OrderExtension::decode(&extension)
+                .unwrap()
+                .client_order_id(),
+            Some(coid(MAKER_ID))
+        );
+        assert!(
+            types::OrderRequest::request_decrease_collateral(btc_perp.id)
+                .build(&snapshot)
+                .is_ok()
+        );
+        // ...and the builder now carries what it left out before
+        let late =
+            types::OrderRequest::builder(btc_perp.id, OpenShort, udec64!(100000), udec64!(0.1))
+                .client_order_id(coid(MAKER_ID))
+                .build(&snapshot)
+                .expect("a valid order");
+        assert_eq!(late.client_order_id(), Some(coid(MAKER_ID)));
     }
 }
 

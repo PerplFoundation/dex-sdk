@@ -40,8 +40,13 @@ use crate::{state::Order, types};
 pub struct OrderBook {
     /// Storage for all orders, keyed by OrderId.
     orders: HashMap<types::OrderId, BookOrder>,
-    /// Orders keyed by client order ID, per account ID.
-    client_orders: HashMap<(types::AccountId, types::RequestId), types::OrderId>,
+    /// Orders keyed by the ID of the request that placed them, per account
+    /// ID - only those whose placement was observed in the event stream.
+    placed_requests: HashMap<(types::AccountId, types::RequestId), types::OrderId>,
+    /// Orders keyed by the client order ID they store, per account ID. The
+    /// exchange does not keep these unique, so the entry is the order most
+    /// recently seen to carry the ID.
+    client_orders: HashMap<(types::AccountId, types::ClientOrderId), types::OrderId>,
     /// Ask levels sorted by price (ascending, best ask first).
     asks: BTreeMap<UD64, BookLevel>,
     /// Bid levels sorted by price (descending, best bid first).
@@ -116,14 +121,36 @@ impl OrderBook {
         self.orders.get(&order_id)
     }
 
-    /// Get a specific order by client order ID (O(1) via HashMap lookup).
-    pub fn get_order_by_client_id(
+    /// Get a specific order by the ID of the request that placed it (O(1)
+    /// via HashMap lookup). Only an order whose placement was observed in the
+    /// event stream is found this way - see
+    /// [`Order::placed_request_id`].
+    pub fn get_order_by_request_id(
         &self,
         account_id: types::AccountId,
-        client_id: types::RequestId,
+        request_id: types::RequestId,
+    ) -> Option<&BookOrder> {
+        self.placed_requests
+            .get(&(account_id, request_id))
+            .and_then(|order_id| self.orders.get(order_id))
+    }
+
+    /// Get a specific order by the client order ID the exchange stores with
+    /// it (contract v1.1.7.6+) - see [`Order::client_order_id`] (O(1) via
+    /// HashMap lookup).
+    ///
+    /// The exchange does not require these IDs to be unique, and a sender
+    /// that reuses one has two orders the ID could mean. The index keeps the
+    /// order most recently seen to carry it - placed, changed to it, or
+    /// recovered from the snapshot - and forgets the ID when that order
+    /// leaves the book, even if an older one still carries it.
+    pub fn get_order_by_client_order_id(
+        &self,
+        account_id: types::AccountId,
+        client_order_id: types::ClientOrderId,
     ) -> Option<&BookOrder> {
         self.client_orders
-            .get(&(account_id, client_id))
+            .get(&(account_id, client_order_id))
             .and_then(|order_id| self.orders.get(order_id))
     }
 
@@ -201,10 +228,11 @@ impl OrderBook {
 
         // Insert into hashmaps
         self.orders.insert(order_id, l3_order);
-        if let Some(client_order_id) = order.client_order_id() {
-            self.client_orders
-                .insert((order.account_id(), client_order_id), order_id);
+        if let Some(request_id) = order.placed_request_id() {
+            self.placed_requests
+                .insert((order.account_id(), request_id), order_id);
         }
+        self.index_client_order_id(order);
 
         // Link at tail
         self.link_at_tail(side, order.price(), old_tail, order_id, order.size());
@@ -241,6 +269,7 @@ impl OrderBook {
             .get_mut(&order_id)
             .ok_or(OrderBookError::OrderNotFound { order_id })?
             .update_order(*order);
+        self.reindex_client_order_id(order, prev_order);
 
         // Update level cached size
         let level = self
@@ -296,10 +325,11 @@ impl OrderBook {
             .orders
             .remove(&order_id)
             .ok_or(OrderBookError::OrderNotFound { order_id })?;
-        if let Some(client_order_id) = removed.client_order_id() {
-            self.client_orders
-                .remove(&(removed.account_id(), client_order_id));
+        if let Some(request_id) = removed.placed_request_id() {
+            self.placed_requests
+                .remove(&(removed.account_id(), request_id));
         }
+        self.unindex_client_order_id(&removed);
 
         Ok(*removed)
     }
@@ -335,6 +365,7 @@ impl OrderBook {
             if let Some(l3_order) = self.orders.get_mut(&order_id) {
                 l3_order.update_order(*order);
             }
+            self.reindex_client_order_id(order, prev_order);
             let level = self
                 .get_level_mut(side, price)
                 .ok_or(OrderBookError::LevelNotFound { price, side })?;
@@ -376,6 +407,7 @@ impl OrderBook {
         } else {
             return Err(OrderBookError::OrderNotFound { order_id });
         }
+        self.reindex_client_order_id(order, prev_order);
 
         // Update level tail and size - need to re-borrow
         let level = self
@@ -390,6 +422,38 @@ impl OrderBook {
         }
 
         Ok(())
+    }
+
+    /// Points the client order ID index at `order`, if it stores one - the
+    /// latest order seen to carry the ID wins.
+    fn index_client_order_id(&mut self, order: &Order) {
+        if let Some(client_order_id) = order.client_order_id() {
+            self.client_orders
+                .insert((order.account_id(), client_order_id), order.order_id());
+        }
+    }
+
+    /// Drops the index entry for the ID `order` stores, if the entry is this
+    /// order's: an entry a later order took over is left to it.
+    fn unindex_client_order_id(&mut self, order: &Order) {
+        if let Some(client_order_id) = order.client_order_id()
+            && self
+                .client_orders
+                .get(&(order.account_id(), client_order_id))
+                == Some(&order.order_id())
+        {
+            self.client_orders
+                .remove(&(order.account_id(), client_order_id));
+        }
+    }
+
+    /// Follows a change of the ID an order stores: a change can give it a
+    /// new one, and the snapshot fills in one it did not know at first.
+    fn reindex_client_order_id(&mut self, order: &Order, prev_order: &BookOrder) {
+        if prev_order.client_order_id() != order.client_order_id() {
+            self.unindex_client_order_id(prev_order);
+            self.index_client_order_id(order);
+        }
     }
 
     /// Add orders from a snapshot, reconstructing FIFO order from linked list
@@ -443,6 +507,7 @@ impl OrderBook {
             l3_order.set_next(order.next_order_id());
 
             self.orders.insert(order_id, l3_order);
+            self.index_client_order_id(order);
         }
 
         // Second pass: build levels with head/tail and cached aggregates

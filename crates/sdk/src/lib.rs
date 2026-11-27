@@ -17,11 +17,18 @@
 //!
 //! [`types::OrderRequest::cancel`] and [`types::OrderRequest::change`] go the
 //! same way, and read what the contract wants about a resting order off the
-//! snapshot's own book rather than asking the caller to restate it.
+//! snapshot's own book rather than asking the caller to restate it. An order
+//! placed with a [`types::ClientOrderId`] is one a later cancel or change can
+//! name to be sure of reaching it rather than whatever reused its slot
+//! (contract v1.1.7.6+), and
+//! [`types::OrderRequest::request_decrease_collateral`] files a request to
+//! withdraw collateral from a position the same way.
 //!
 //! The deployed contract may lag behind the revision the SDK targets, so the
 //! snapshot detects the contract's [`state::ContractFeatures`] and degrades
-//! gracefully rather than failing on a missing selector.
+//! gracefully rather than failing on a missing selector - and follows an
+//! upgrade in flight from the version it stamps, refusing to send what the
+//! contract cannot take until then.
 //!
 //! See `./tests` for examples.
 //!
