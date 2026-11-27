@@ -172,11 +172,11 @@ pub enum OrderErrorType {
     /// Failed to settle maker order.
     MakerOrderSettlementFailed,
 
-    /// The taker order made the last visit to a resting order it was allowed
-    /// ([`types::MAX_MATCHES`]). Not by itself a failure: the exchange reports
-    /// it also when the order filled in full on that visit, and when its rest
-    /// was then posted. What became of the rest is in the order's other
-    /// events.
+    /// The taker order made the last visit to a resting order its
+    /// `maxMatches` allowed (125, [`types::MAX_MATCHES`], when it names none).
+    /// Not by itself a failure: the exchange reports it also when the order
+    /// filled in full on that visit, and when its rest was then posted. What
+    /// became of the rest is in the order's other events.
     MaxMatchesReached,
 
     /// Account reached limit of orders to post.
@@ -254,9 +254,10 @@ pub enum ExchangeEvent {
     /// inside a bid on one of `handlers` is refused with
     /// [`OrderErrorType::TakerOrderInFastLaneBid`]. The contract stores one
     /// handler and reports it as a list - empty while none is set - so that a
-    /// later release can serve several without changing the event. Any
-    /// administrator key can switch the filter, so every one of these is
-    /// worth matching to an approved change.
+    /// later release can serve several without changing the event. The owner
+    /// sets the handler; the owner or any administrator key can switch the
+    /// filter on or off, so every one of these is worth matching to an
+    /// approved change.
     FastLaneFilterUpdated { handlers: Vec<Address>, enabled: bool },
 
     /// Exchange halted/unhalted.
